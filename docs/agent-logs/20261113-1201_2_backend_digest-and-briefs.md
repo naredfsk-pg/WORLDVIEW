@@ -228,3 +228,61 @@
 - ยังไม่ rebase ตามคำสั่ง; เมื่อ `feature/admin` merge แล้ว: ลบ `migrations/0002_source_validators.sql` + snapshot/journal entry ของมัน, rebase บน `main`, แล้ว `npm run db:generate` ให้ได้ `0003`
 - จุดที่น่าจะ conflict: `schema.ts` (sources columns), `types/repositories.ts` (DigestRepository / BriefRepository / LlmCallRepository), `repositories/digest.ts` (`saveEventContent` + admin check ควรใช้ `admin_actions` หรือ `content_revisions` ตามที่ admin lane บันทึกจริง)
 - dev DB ถูก reset แล้ว (ข้อมูล live smoke เดิมหาย); screenshot ใน `docs/screenshots/wave2/` ยังเป็นหลักฐานของ smoke
+
+## Rebase + admin follow-up
+
+| Field | Value |
+|---|---|
+| Started | 2026-11-13 13:19:36 (Asia/Bangkok) |
+| Finished | 2026-11-13 13:29:30 (Asia/Bangkok) |
+| Input | ข้อความจาก coordinator: `feature/admin` merge เข้า `main` แล้ว (`9900760`) |
+| Status | done |
+
+### ขั้นตอน (ตามเวลา)
+
+1. 13:19 — `git rebase main` (16 commits): conflict เฉพาะ commit `feat(ingest): conditional GET…` ที่ `migrations/meta/_journal.json` และ `migrations/meta/0002_snapshot.json` (add/add)
+2. 13:20 — แก้ conflict: ใช้ `_journal.json` และ `0002_snapshot.json` ของ `main`, ลบ `0002_source_validators.sql` ของผม แล้ว `npx drizzle-kit generate --name source_validators` (คำสั่งเดียวกับ `npm run db:generate` แต่ตั้งชื่อ) ได้ `0003_source_validators.sql` ภายใน commit เดิม จึงทุก commit หลังจากนั้นมี migration ตรงกับ schema; `git rebase --continue` ผ่านจนจบโดยไม่มี conflict อื่น (`schema.ts`, `types/*`, `repositories/*` auto-merge ได้ทั้งหมด)
+3. 13:21 — `npm ci`, `npm run check` 0 errors, `npx vitest run` 52 files / 655 passed
+4. 13:22 — ตรวจ contract ของ admin บน `main`: `updateEventIfCurrent` เขียน `content_revisions` (`changed_by` = email ของ admin) ใน transaction เดียวกัน และตั้ง `updated_at = now` เป็น version token → เงื่อนไข `changed_by != 'system'` ของผมถูกต้อง; พบว่า `markContentChecked` ไม่ได้ขยับ `updated_at` → เพิ่มพารามิเตอร์ `now` (commit `c84d932`) ส่วน write อื่นของ digest (`saveEventContent`, `markEventForReview`, `linkArticles`, `mergeDraftEvent`) ตั้ง `updated_at` อยู่แล้ว
+5. 13:23–13:27 — admin follow-up: registry เพิ่ม `onClaimed` และ `allowOpenWindow`; `manual-ingest.server.ts` → `startManualJob(type, { date }, runner)` ผ่าน `runJobByType`; `/admin/jobs` มีฟอร์มของทุก job type (`?/rerun`, ช่อง date สำหรับ brief/archive); `ADMIN_ACTION_TYPES` เพิ่ม `rerun_{job_type}` + migration `0004_admin_rerun_actions` (CHECK constraint); unit tests + admin e2e 1 ข้อ; ARCHITECTURE §3 แถว `/admin/jobs`, ย่อหน้า `admin_actions`, mermaid และ §8
+6. 13:27 — `npm run db:reset` จากศูนย์ แล้วรัน gates ครบ; commit `874a70e`
+
+### ไฟล์ที่ conflict และวิธีแก้
+
+| File | Conflict | Resolution |
+|---|---|---|
+| `migrations/meta/_journal.json` | content | ใช้ของ `main` (0000, 0001, 0002_admin_actions) แล้ว generate 0003 ต่อท้าย |
+| `migrations/meta/0002_snapshot.json` | add/add | ใช้ของ `main`; snapshot ของผมกลายเป็น `0003_snapshot.json` |
+| `migrations/0002_source_validators.sql` | (ชนเลข) | ลบ แทนด้วย `0003_source_validators.sql` (เนื้อหาเหมือนเดิม: ADD COLUMN `etag`, `last_modified`) |
+| `schema.ts`, `types/domain.ts`, `types/repositories.ts`, `repositories/*` | ไม่มี (auto-merge) | ตรวจด้วย `npm run check` และ tests ทั้งหมดหลัง rebase: ผ่าน |
+
+### Migration list (หลัง rebase)
+
+`0000_init` → `0001_fts` → `0002_admin_actions` (admin lane) → `0003_source_validators` → `0004_admin_rerun_actions`; `npm run db:reset` จากศูนย์ผ่าน และ e2e server สร้าง `data/e2e.db` จาก migration ชุดเดียวกันผ่าน
+
+### Decisions
+
+- **admin rerun ไม่ข้าม brief window**: แยก `allowOpenWindow` ออกจาก `force` — CLI `--force` ยังสร้าง brief ก่อนเวลาได้ (ผู้ดูแลระบบตั้งใจ) แต่ปุ่ม admin เป็น `force` เพื่อรันซ้ำ slot ที่จบแล้วเท่านั้น จึงแสดง `window_open` ตามที่ coordinator ต้องการ
+- **cooldown 5 นาทีนับต่อ job type** (เดิมมีแค่ ingest): รัน digest ซ้ำไม่ต้องรอ ingest; ยังกันการกดซ้ำงานเดียวกัน
+- **คงชื่อไฟล์ `manual-ingest.server.ts`** ตามที่ coordinator ระบุ แม้ตอนนี้รองรับทุก job type (บันทึกใน header ของไฟล์)
+
+### Commands run & results (รอบนี้)
+
+| Time | Command | Result |
+|---|---|---|
+| 13:19 | `git rebase main` | conflict 2 ไฟล์ใน commit ที่ 2/16 |
+| 13:20 | `npx drizzle-kit generate --name source_validators` | `0003_source_validators.sql`; journal: 0000, 0001, 0002_admin_actions, 0003 |
+| 13:20 | `git rebase --continue` | สำเร็จ 16/16 |
+| 13:21 | `npm ci` · `npm run check` · `npx vitest run` | ok · 0 errors · 52 files / 655 passed |
+| 13:23 | `npx drizzle-kit generate --name admin_rerun_actions` | `0004_admin_rerun_actions.sql` (rebuild table สำหรับ CHECK ใหม่) |
+| 13:26 | `npx vitest run src/routes/admin src/lib/server/jobs/registry.test.ts` | 42 passed |
+| 13:27 | `npm run db:reset` · `check` · `lint` · `test` · `build` | exit 0 · 0 errors · 1 error → แก้ → exit 0 · 52 files / 660 passed · exit 0 |
+| 13:28 | `npm run test:e2e` (public + admin suite, `data/e2e.db`) | 70 passed |
+
+### Errors & problems (รอบนี้)
+
+| # | Time | Where | Error | Cause | Resolution |
+|---|---|---|---|---|---|
+| B1 | 13:19 | `git rebase main` (commit `feat(ingest): conditional GET…`) | conflict `_journal.json`, `0002_snapshot.json` | ทั้งสอง branch สร้าง migration หมายเลข 0002 | ใช้ของ `main` แล้ว generate เป็น 0003 ตามแผนของ coordinator; หมายเหตุ: ข้อความ commit นั้นยังเขียนว่า "migration 0002" (แก้ข้อความ commit ย้อนหลังไม่ได้เพราะห้าม interactive rebase) |
+| B2 | 13:22 | `repositories/digest.ts` `markContentChecked` | ไม่ขยับ `updated_at` (version token ของ admin editor) | method เพิ่มในรอบ review ก่อนที่ optimistic concurrency ของ admin จะ merge | เพิ่มพารามิเตอร์ `now` และตั้ง `updated_at`; repo test ตรวจค่า |
+| B3 | 13:27 | `npm run lint` → `admin-actions.test.ts` | `'createJobRunRepository' is defined but never used` | test เดิมใช้สร้าง deps ของ ingest แต่ seam ใหม่ใช้ fake runner | ลบ import |
