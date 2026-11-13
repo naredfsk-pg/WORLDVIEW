@@ -2,6 +2,10 @@
 	import './layout.css';
 	import { navigating, page } from '$app/state';
 	import favicon from '#lib/assets/favicon.svg';
+	import notoThai400 from '@fontsource/noto-sans-thai/files/noto-sans-thai-thai-400-normal.woff2?url';
+	import notoLatin400 from '@fontsource/noto-sans-thai/files/noto-sans-thai-latin-400-normal.woff2?url';
+	import notoThai700 from '@fontsource/noto-sans-thai/files/noto-sans-thai-thai-700-normal.woff2?url';
+	import notoLatin700 from '@fontsource/noto-sans-thai/files/noto-sans-thai-latin-700-normal.woff2?url';
 	import AppShell from '#lib/components/AppShell.svelte';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import type { LayoutProps } from './$types';
@@ -23,6 +27,12 @@
 
 <svelte:head>
 	<link rel="icon" href={favicon} />
+	<!-- BUG-QA-010: fetch the body and heading faces with the HTML instead of after the CSS.
+	     Late, staggered swaps (Latin subset first, Thai later) re-wrapped the /archive date row
+	     twice on slow mobile (CLS 0.31). Same hashed files as the @fontsource CSS. -->
+	{#each [notoThai400, notoLatin400, notoThai700, notoLatin700] as font (font)}
+		<link rel="preload" href={font} as="font" type="font/woff2" crossorigin="anonymous" />
+	{/each}
 </svelte:head>
 
 <AppShell pathname={page.url.pathname} freshness={data.freshness} demoMode={data.demo_mode}>

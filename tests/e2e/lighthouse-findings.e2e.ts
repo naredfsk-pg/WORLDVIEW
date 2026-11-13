@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 /**
  * Reproductions of the two Lighthouse mobile findings in docs/qa/BASELINE.md, so that they can
- * be checked without Lighthouse. Both are `test.fixme` until fixed (docs/qa/BUGS.md). The
+ * be checked without Lighthouse. Both were fixed in Wave 3 (docs/qa/BUGS.md). The
  * thresholds are Lighthouse's own pass marks (CLS "good" < 0.1; legible text >= 60 %), not new
  * performance targets.
  */
@@ -18,7 +18,7 @@ test.describe('Lighthouse mobile findings', () => {
 		}
 	});
 
-	test.fixme('BUG-QA-010: /archive has CLS < 0.1 on a throttled mobile load', async ({ page }) => {
+	test('BUG-QA-010: /archive has CLS < 0.1 on a throttled mobile load', async ({ page }) => {
 		expect(await throttledCls(page, '/archive')).toBeLessThan(0.1);
 	});
 });
