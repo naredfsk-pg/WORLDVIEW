@@ -86,3 +86,65 @@
 - `/connections` ใช้ช่วง 30 วันจากเวลาปัจจุบัน; ถ้านาฬิกาเลยจาก fixture (พ.ย. 2026) ไปเกิน 30 วัน หน้านี้และ e2e ข้อ connections จะว่าง
 - ต่างจาก prototype: DemoNotice/stale banner อยู่บนสุดของทุกหน้า (prototype อยู่ใต้ intro), ปุ่ม icon 44px บนมือถือ (prototype 38px), Connections เป็นรายการไม่ใช่ graph (ตาม spec MVP), event detail เป็นหน้า route ไม่ใช่ modal, ปรับสี `--muted`/`--faint`/`--gold` ฝั่ง light ให้ผ่าน contrast AA
 - ยังไม่ได้ทดสอบกับ screen reader จริง (VoiceOver/NVDA) — ทดสอบเฉพาะ semantic/ARIA ผ่าน Playwright roles
+
+---
+
+## รอบแก้ตาม review
+
+| Field | Value |
+|---|---|
+| Started | 2026-11-13 11:27:39 (Asia/Bangkok) |
+| Finished | 2026-11-13 11:36:30 (Asia/Bangkok) |
+| Status | done |
+| Input | `C:\Project\WORLDVIEW\docs\agent-logs\20261113-1123_1_reviewer_ui-shell-and-pages.md` + ข้อความจาก orchestrator (findings 1–13, defer 14) |
+
+### ขั้นตอน (ตามเวลา)
+1. 11:27 — อ่าน review log ตรวจว่า worktree สะอาดและอยู่บน branch `feature/ui-shell-and-pages`
+2. 11:28 — ตรวจ source ของ SvelteKit ว่า `%sveltekit.error.message%` ใน `src/error.html` ถูก `escape_html` (`runtime/server/page/respond_with_error.js`) และ `%sveltekit.status%` เป็นตัวเลข → ใส่ใน template ได้อย่างปลอดภัย
+3. 11:29 — `format.ts`: เพิ่ม `parsePageNumber`, `isHttpUrl`, `MIN_YEAR = 1970` และ comment `TODO(wave2)`
+4. 11:29 — สร้าง `EvidenceLinks.svelte` (dedupe + `isHttpUrl`) ใช้แทน evidence links ที่ซ้ำกันใน `EventDetail` (claims, updates) และ `ConnectionList`; เปลี่ยน key ของ corrections/learning objectives/glossary/key questions/further reading เป็น index; `SourceList` และ further reading ใช้ `isHttpUrl`
+5. 11:30 — wording (#5, #6), `FreshnessBadge` แสดงตลอด (#7), progress (#11), lesson route canonical (#10), search clamp + redirect (#1, #8), `connections/window.ts` (#2), archive state (#12), `src/error.html` (#4)
+6. 11:32 — unit tests: เพิ่ม `format.test.ts` (page, URL scheme, ปี < 1970), `storage.test.ts` (known ids), `progress.test.ts` (save ล้มเหลว), `EvidenceLinks.test.ts` (SSR render ด้วย `svelte/server`: URL ซ้ำ, `javascript:`), `connections/window.test.ts` (นาฬิกาปี 2031 + seed DB ใน memory) → 21 files / 137 tests ผ่าน
+7. 11:33 — e2e: เพิ่ม describe `review fixes` (search page ใหญ่/เกินช่วง, `/day/01` = 404, archive เก็บ region/category, freshness แสดงตลอด) → 1 fail (ดูตาราง error) → แก้ test → 57 passed
+8. 11:34 — gate: check 0 errors, lint ผ่าน (exit 0), test 137 passed, build ok, e2e 57 passed
+9. 11:34 — ทดสอบ `src/error.html` จริง: `DATABASE_URL=file:./no-such-dir/missing.db PORT=4173 node build` แล้ว `curl /` → 503 พร้อม title ภาษาไทย, ข้อความ escaped, ปุ่ม "ลองใหม่" (server ปิดเองด้วย `timeout 15`)
+10. 11:35 — commit 8 commits (fix ×6, feat ×1, test ×1) แล้วเขียน log นี้
+
+### ผลต่อ finding แต่ละข้อ
+| # | ระดับ | การแก้ |
+|---|---|---|
+| 1 | high | `parsePageNumber()` รับเฉพาะ `Number.isSafeInteger` ≥ 1 และ clamp ที่ `MAX_PAGE = 50` (ค่าแปลก → 1); หลัง query ถ้า `page > lastPage` → `redirect(307)` ไปหน้าสุดท้าย; unit test (ค่า 1e18, 400 หลัก, 2.5, ติดลบ) + e2e (ทุกค่าได้ 200 และไปจบหน้าที่มีผลลัพธ์) |
+| 2 | high | `src/routes/connections/window.ts` `relationWindowStart(latestBriefDate, now)` = เที่ยงคืนเวลาไทย 30 วันก่อน brief ล่าสุด (ไม่มี brief → 30 วันก่อน now); load ใช้ `getLatestPublishedBriefDate()`; test ฉีดนาฬิกาปี 2031 กับ seed DB in-memory แล้วยังได้ relation (รวม `potential_impact`) |
+| 3 | medium | `EvidenceLinks` dedupe URL ก่อน `{#each}` (key ไม่ซ้ำ), corrections และรายการจากไฟล์บทเรียนใช้ key เป็น index; SSR test ด้วย URL ซ้ำ 3 ครั้ง → แสดง 2 ลิงก์. ไม่ได้แก้ `evidenceUrls()` ใน `server/db/repositories/shared.ts` เพราะอยู่นอก lane (แก้ที่ call site ตามที่อนุญาต) |
+| 4 | medium | เพิ่ม `src/error.html` ภาษาไทย inline CSS (token light/dark ผ่าน `prefers-color-scheme`), ไม่มี script/asset ภายนอก, แสดง status + message (escaped โดย SvelteKit), ปุ่ม "ลองใหม่" (`href=""`) และ "กลับหน้าแรก"; ทดสอบจริงด้วย DB path ที่เปิดไม่ได้ → 503 |
+| 5 | medium | DemoNotice: "มีข้อมูลตัวอย่าง (สมมติ) ปะปนอยู่ — รายการที่เป็นข้อมูลตัวอย่างมีป้ายกำกับ"; ป้ายต่อ card ยังเป็นตัวกำกับหลัก |
+| 6 | low-med | `/connections`: "ความเชื่อมโยงที่เผยแพร่ใน 30 วันล่าสุดของข้อมูล" + อธิบายว่าป้าย "ตรวจโดยบรรณาธิการแล้ว" แสดงเฉพาะรายการที่ `reviewed`; `EventDetail`: "ยังไม่มีความเชื่อมโยงที่เผยแพร่" |
+| 7 | low | `AppShell` แสดง `FreshnessBadge` ทุกหน้าเสมอ: ปกติ = แบบย่อ "อัปเดตล่าสุด 13 พ.ย. 2026 · 07:00 น. (GMT+7)" สีเรียบ, stale = ข้อความเต็มตาม §15 สี gold |
+| 8 | low | `/search`: มี `EmptyState` เมื่อ total > 0 แต่หน้าปัจจุบันไม่มีรายการ (กันไว้อีกชั้นแม้มี redirect ใน #1) |
+| 9 | low | `isBriefDate`/`isYearMonth` ปฏิเสธปี < 1970; unit test `0050-01-01`, `1969-12-31`, `0050-01` |
+| 10 | low | lesson route รับ day เฉพาะ `/^[1-9]\d?$/` และ week ต้องตรงตัว → `/day/01`, `/week/01` = 404 (URL เดียวต่อบท); e2e |
+| 11 | low | `KNOWN_LESSON_IDS` (30 id จาก split 7/7/7/9) ใน `storage.ts`; `readProgress()` เก็บเฉพาะ id ที่รู้จัก → count ≤ 30; `toggle()` เขียนก่อน ถ้าเขียนไม่ได้จะไม่เปลี่ยน state และตั้ง `saveFailed` → หน้าเรียนแสดง `role="alert"` "บันทึกความคืบหน้าไม่ได้ …"; unit tests |
+| 12 | low | `ArchiveCalendar` รับ `region` และส่ง category+region ในลิงก์เดือน/วัน; date form ส่ง hidden `region`; FilterChips keep `month`+`date`+`region`; "กลับไปวันล่าสุด" เก็บ category+region; ลิงก์ล้างภูมิภาคเก็บ month; e2e |
+| 13 | medium | `isHttpUrl()` (ใช้ `new URL()` ตรวจ protocol http/https) ใช้ทุก href ภายนอกจากข้อมูล: sources, evidence (claims/updates/relations ผ่าน `EvidenceLinks`), further reading; ค่าอื่นแสดงเป็นข้อความ; unit test (`javascript:` หลายแบบ, `data:`, `//evil`, relative) + SSR test. ตรวจตอน ingest เป็นงานของ backend |
+| 14 | low | Defer ตามสั่ง: เพิ่ม `// TODO(wave2): move the date helpers to #lib/utils/date.ts` ใน `format.ts` |
+
+### Commands run & results
+| Time | Command | Result |
+|---|---|---|
+| 11:32 | `npm test` | 21 files / 137 tests passed |
+| 11:33 | `npm run check` · `npm run lint` | 0 errors · Prettier + ESLint ผ่าน |
+| 11:33 | `npm run test:e2e` | 56 passed, 1 failed (test สมมติจำนวนผลลัพธ์ผิด) |
+| 11:34 | `npm run check` · `lint` · `test` · `build` · `test:e2e` | ผ่านทั้งหมด: 0 errors, lint exit 0, 137 tests, build ok, 57 e2e passed |
+| 11:34 | `DATABASE_URL=file:./no-such-dir/missing.db node build` + `curl /` | 503, หน้า `error.html` ภาษาไทย |
+
+### Errors & problems
+| Time | Where (file/command/step) | Error | Cause | Resolution |
+|---|---|---|---|---|
+| 11:29–11:31 | python edit scripts ผ่าน bash heredoc | `SyntaxWarning: invalid escape sequence "\d"` / `"\/"` | regex ใน string Python ที่ไม่ใช่ raw string | ไม่กระทบผล (Python คง `\d` ตามตัวอักษร); ตรวจไฟล์ผลลัพธ์แล้วถูกต้อง |
+| 11:30 | Edit `ConnectionList.svelte` | Edit tool ปฏิเสธ: file has not been read yet | ไฟล์ถูกแก้ด้วย script ก่อนหน้า | ลบบรรทัด label ซ้ำด้วย `sed` |
+| 11:33 | e2e `review fixes › search …` | expected `page=1` got `page=2` | test สมมติว่า "AI" มีผลลัพธ์ไม่เกิน 20 รายการ แต่จริงมีมากกว่า (หน้าสุดท้าย = 2) | เปลี่ยน test ให้ตรวจว่า redirect มาหน้าที่ 1 ≤ page < 999 และมีผลลัพธ์แสดง ไม่ขึ้นกับจำนวน |
+
+### Open issues หลังรอบนี้
+- #3: `evidenceUrls()` ใน `server/db/repositories/shared.ts` ยังไม่ dedupe (นอก lane) — UI dedupe แล้ว; backend อาจ dedupe ซ้ำอีกชั้น
+- #13: ควร validate scheme ของ `canonical_url` ตอน ingest (`server/news`) ด้วย
+- #14 และ `hooks.server.ts`/`handleError`: Wave 2
