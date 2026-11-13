@@ -10,9 +10,9 @@ describe('parseJobCliArgs', () => {
 				date: null,
 				force: false,
 				trigger: 'cron',
-				strict: false,
 				dry_run: false,
-				fixtures: false
+				fixtures: false,
+				max_events: null
 			}
 		});
 	});
@@ -23,12 +23,14 @@ describe('parseJobCliArgs', () => {
 			ok: true,
 			options: { fixtures: true, dry_run: true, force: true, trigger: 'manual' }
 		});
-		expect(parseJobCliArgs(['archive_snapshot', '--date', '2026-11-12', '--strict'])).toMatchObject(
-			{
-				ok: true,
-				options: { job_type: 'archive_snapshot', date: '2026-11-12', strict: true }
-			}
-		);
+		expect(parseJobCliArgs(['archive_snapshot', '--date', '2026-11-12'])).toMatchObject({
+			ok: true,
+			options: { job_type: 'archive_snapshot', date: '2026-11-12' }
+		});
+		expect(parseJobCliArgs(['digest', '--max-events', '3'])).toMatchObject({
+			ok: true,
+			options: { job_type: 'digest', max_events: 3 }
+		});
 	});
 
 	it.each([
@@ -40,7 +42,12 @@ describe('parseJobCliArgs', () => {
 		['a malformed date', ['brief_morning', '--date', '13/11/2026']],
 		['an impossible date', ['brief_morning', '--date', '2026-02-30']],
 		['--fixtures outside ingest', ['digest', '--fixtures']],
-		['--dry-run outside ingest', ['brief_evening', '--dry-run']]
+		['--dry-run outside ingest', ['brief_evening', '--dry-run']],
+		['a date before 1970', ['archive_snapshot', '--date', '1969-12-31']],
+		['--max-events outside digest', ['ingest', '--max-events', '3']],
+		['--max-events 0', ['digest', '--max-events', '0']],
+		['a fractional --max-events', ['digest', '--max-events', '1.5']],
+		['the removed --strict flag', ['digest', '--strict']]
 	])('rejects %s', (_name, argv) => {
 		expect(parseJobCliArgs(argv)).toMatchObject({ ok: false, error: expect.any(String) });
 	});

@@ -21,6 +21,8 @@ export interface RunJobDeps {
 	logger: Logger;
 	now: () => Date;
 	maxDurationMs?: number;
+	/** Caller cancellation (e.g. the admin lane); combined with the 20-minute limit. */
+	signal?: AbortSignal;
 }
 
 export type RunJobResult =
@@ -60,7 +62,8 @@ export async function runJob(
 		trigger: run.trigger
 	});
 
-	const signal = AbortSignal.timeout(deps.maxDurationMs ?? MAX_JOB_DURATION_MS);
+	const timeout = AbortSignal.timeout(deps.maxDurationMs ?? MAX_JOB_DURATION_MS);
+	const signal = deps.signal ? AbortSignal.any([deps.signal, timeout]) : timeout;
 	let outcome: JobOutcome;
 	try {
 		outcome = await execute({ run, now: deps.now, logger, signal });
