@@ -2,8 +2,23 @@
 <html lang="th">
 	<head>
 		<meta charset="utf-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 		<meta name="text-scale" content="scale" />
+		<meta name="theme-color" content="#f7f8f5" media="(prefers-color-scheme: light)" />
+		<meta name="theme-color" content="#101917" media="(prefers-color-scheme: dark)" />
+		<script>
+			// Pick the theme before first paint (no flash): saved choice, else the OS preference.
+			(function () {
+				var theme = null;
+				try {
+					theme = localStorage.getItem('worldview:theme');
+				} catch (error) {}
+				if (theme !== 'light' && theme !== 'dark') {
+					theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+				}
+				document.documentElement.dataset.theme = theme;
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
