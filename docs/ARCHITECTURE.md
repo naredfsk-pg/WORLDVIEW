@@ -587,7 +587,7 @@ infographics:                        # 1–2 diagram specs; the first is the mai
   - type: "hub"                      # flow | cycle | timeline | compare | hub | stats | layers
     title: "…"                       # ≤80
     summary: "…"                     # ≤200, caption + accessible description
-    source: "…"                      # optional; required for stats (with a year)
+    source: "…"                      # optional; required for stats (name the period when the lesson gives one)
     center: { label: "…", detail: "…" }
     spokes: [{ label: "…", detail: "…" }]
 ---
@@ -605,9 +605,13 @@ makes the strict loader, `academy:sync` and the site fail with the file path and
 | `cycle` | `steps`: 3–6 nodes | numbered cards + a return bracket; the loop is also stated in text |
 | `timeline` | `events`: 3–8 `{ date ≤24, label, detail? }`, oldest first | vertical line with date chips |
 | `compare` | `columns`: 2–3 `{ title, points: 1–5 strings ≤120 }` | side-by-side titled lists (stacked when narrow) |
-| `hub` | `center` node, `spokes`: 3–8 nodes | centre with spokes left/right (≥36rem) or below |
-| `stats` | `items`: 2–6 `{ value ≤16, unit?, label, detail? }`, `source` required | number tiles |
-| `layers` | `layers`: 2–6 nodes, top first; `variant`: `stack` (default) or `pyramid` | stacked bars, pyramid narrows upward |
+| `hub` | `center` node, `spokes`: 3–8 nodes | centre with spokes left/right (≥36rem) or below; one `<ul>` either way |
+| `stats` | `items`: 2–6 `{ value ≤16, unit?, label, detail? }`, `source` required | number tiles; a leading `~` / `<` / `>` is also read out as ประมาณ / น้อยกว่า / มากกว่า |
+| `layers` | `layers`: 2–6 nodes, top first; `variant`: `stack` (default) or `pyramid` | stacked bars (numbered for `stack`), pyramid narrows upward |
+
+The `Infographic` type is written by hand for readability; `SCHEMA_MATCHES_TYPE` in `infographic.ts`
+fails `npm run check` if it and the schema output drift apart. Takeaways replace the closing
+"## สรุปสั้น" section that lessons used to have (removed in the review fixes, 2026-11-13).
 
 Components: `components/infographic/*` (one per type, plus `Infographic.svelte` as the `<figure>` with
 `aria-labelledby` title / `aria-describedby` caption). Diagrams are HTML lists laid out with CSS grid and
@@ -623,7 +627,7 @@ Type: `LessonFrontmatter` / `Lesson`. **`src/lib/content` API:**
 // academy.ts (pure)
 export const ACADEMY_WEEKS: AcademyWeekMeta[];                       // 4 themes from PRD FR-01
 export function parseLessonFile(path: string, raw: string): Lesson;   // YAML frontmatter + Zod; throws with file path
-export function renderLessonMarkdown(md: string): { html: string; toc: TocItem[] };
+export function renderLessonMarkdown(md: string): { html: string; toc: TocItem[]; folded: boolean };
 // academy.server.ts (node:fs, memoized per process)
 export function loadAllLessons(contentDir?: string): Lesson[];        // validates 30 unique ids/days, week/day consistency
 export function listLessonSummaries(): LessonSummary[];
@@ -637,9 +641,10 @@ Rendering:
 - `##` and `###` headings get ids `section-{n}` (Thai text makes poor slugs).
 - Skimmable reading path: each `##` section keeps its heading and first block visible; when the rest has
   ≥280 characters of text it is wrapped in a native `<details class="lesson-more">` ("อ่านต่อ", with the
-  heading in an sr-only span). Whole top-level blocks only, nothing is removed. `LessonArticle` has an
-  "open all" button and opens the folded section that holds an in-page anchor target (TOC click,
-  `hashchange`, deep link on load).
+  heading in an sr-only span). Whole top-level blocks only, nothing is removed. `folded` (→
+  `LessonDetail.has_folded_sections`) says whether any section was folded. `LessonArticle` then shows an
+  "open all" button (`aria-expanded`) and opens the folded section that holds an in-page anchor target (TOC click,
+  `hashchange`, deep link on load) and scrolls to it.
 - Tables get `tabindex="0"` because they scroll horizontally inside themselves on phones.
 - `LessonDetail.html` is the **only** `{@html}` in the app. Event text is plain text and Svelte escapes it.
 - A `further_reading` entry with `url: null` renders as a citation without a link.

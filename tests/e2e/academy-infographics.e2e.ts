@@ -116,9 +116,11 @@ test.describe('folded reading path', () => {
 		const toggleAll = page.getByTestId('toggle-all-sections');
 		await toggleAll.click();
 		await expect(toggleAll).toHaveText('ย่อทุกหัวข้อ');
+		await expect(toggleAll).toHaveAttribute('aria-expanded', 'true');
 		expect(await page.locator('.lesson-prose details.lesson-more:not([open])').count()).toBe(0);
 		await toggleAll.click();
 		await expect(toggleAll).toHaveText('เปิดอ่านทุกหัวข้อ');
+		await expect(toggleAll).toHaveAttribute('aria-expanded', 'false');
 	});
 
 	test('a TOC link into a folded section opens it and scrolls there', async ({ page }) => {
@@ -143,9 +145,23 @@ test.describe('folded reading path', () => {
 			.locator('.lesson-prose details.lesson-more h3')
 			.first()
 			.getAttribute('id');
+		// A real document load of the hash URL (not a same-document hash change), from another route.
+		await page.goto('/academy');
 		await page.goto(`/academy/week/1/day/1#${id}`);
-		await expect(page.locator(`#${id}`)).toBeVisible();
+		const target = page.locator(`#${id}`);
+		await expect(target).toBeVisible();
+		await expect(target).toBeInViewport();
 	});
+});
+
+test('a hash change to a folded heading opens it and scrolls there', async ({ page }) => {
+	await page.goto('/academy/week/1/day/1');
+	const heading = page.locator('.lesson-prose details.lesson-more h3').first();
+	const id = await heading.getAttribute('id');
+	await expect(heading).toBeHidden();
+	await page.evaluate((hash) => (location.hash = hash), `#${id}`);
+	await expect(heading).toBeVisible();
+	await expect(heading).toBeInViewport();
 });
 
 test('the Academy roadmap links all 30 days in order', async ({ page }) => {
