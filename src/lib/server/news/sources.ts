@@ -12,10 +12,11 @@
  * official, has at least 5 items, its newest item is at most 14 days old, and it does not re-date
  * old stories:
  * - `who-afro-news` (WHO Regional Office for Africa, featured news): 20 items, newest 2026-11-12,
- *   item dates match the article pages. Enabled. It replaces `who-news`, because no global
- *   www.who.int feed qualifies: `rss-feeds/news-english.xml` is stale (newest 2026-10-10, mostly
- *   re-dated 2020 stories), `rss-feeds/feature-stories-english.xml` is 24 days old, and the other
- *   WHO feed paths tried answer 404.
+ *   item dates match the article pages. It replaces `who-news`, because no global www.who.int
+ *   feed qualifies: `rss-feeds/news-english.xml` is stale (newest 2026-10-10, mostly re-dated
+ *   2020 stories), `rss-feeds/feature-stories-english.xml` is 24 days old, and the other WHO feed
+ *   paths tried answer 404. **Disabled**: the owner declined a regional-only WHO feed on
+ *   2026-11-13; WHO stays off until a working global feed exists.
  * - `imf-news`: disabled. The imf.org RSS paths tried answer 404, and `mediacenter.imf.org/Rss`
  *   works but its newest item is 2026-10-17 (27 days old).
  */
@@ -46,7 +47,7 @@ export const NEWS_SOURCES: readonly SourceDefinition[] = [
 		license_notes: OWNER_APPROVAL,
 		allow_excerpt: true,
 		is_demo: false,
-		enabled: true
+		enabled: false
 	},
 	{
 		id: 'imf-news',

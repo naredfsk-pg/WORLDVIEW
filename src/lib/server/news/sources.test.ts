@@ -33,8 +33,7 @@ describe('source registry', () => {
 			'aljazeera-all',
 			'bbc-world',
 			'guardian-world',
-			'un-news',
-			'who-afro-news'
+			'un-news'
 		]);
 		expect(enabled('fixtures')).toEqual([]);
 	});
