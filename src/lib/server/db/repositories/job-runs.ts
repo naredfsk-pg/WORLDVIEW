@@ -75,18 +75,22 @@ export function createJobRunRepository(db: Db): JobRunRepository {
 			);
 		},
 
-		// CONTRACT-GAP: `finish(runId, …)` carries no claim token (e.g. `attempts`), so a process
-		// whose stale claim was reclaimed can still overwrite the newer attempt's outcome.
-		async finish(runId, outcome, finishedAt) {
-			db.update(jobRuns)
+		// `attempts` is the claim token: every (re)claim increments it inside the IMMEDIATE
+		// transaction above, so (id, attempts, running) matches only the current claim holder.
+		async finish(runId, attempt, outcome, finishedAt) {
+			const result = db
+				.update(jobRuns)
 				.set({
 					status: outcome.status,
 					counters: outcome.counters,
 					error: outcome.error,
 					finished_at: finishedAt
 				})
-				.where(eq(jobRuns.id, runId))
+				.where(
+					and(eq(jobRuns.id, runId), eq(jobRuns.attempts, attempt), eq(jobRuns.status, 'running'))
+				)
 				.run();
+			return result.changes === 1;
 		},
 
 		async listRecent(limit) {

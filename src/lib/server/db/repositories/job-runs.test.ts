@@ -38,6 +38,7 @@ describe('JobRunRepository.claim', () => {
 		if (!first.claimed) throw new Error('expected claim');
 		await jobs.finish(
 			first.run.id,
+			first.run.attempts,
 			{ status: 'succeeded', counters: { articles_inserted: 3 }, error: null },
 			'2026-11-12T23:02:00.000Z'
 		);
@@ -60,6 +61,7 @@ describe('JobRunRepository.claim', () => {
 		if (!first.claimed) throw new Error('expected claim');
 		await jobs.finish(
 			first.run.id,
+			first.run.attempts,
 			{ status: 'failed', counters: {}, error: 'boom' },
 			'2026-11-12T23:01:00.000Z'
 		);
@@ -84,10 +86,55 @@ describe('JobRunRepository.claim', () => {
 		if (!run.claimed) throw new Error('expected claim');
 		await jobs.finish(
 			run.run.id,
+			run.run.attempts,
 			{ status: 'succeeded', counters: {}, error: null },
 			'2026-11-12T23:02:00.000Z'
 		);
 		expect(await jobs.lastSucceeded('ingest')).toMatchObject({ id: run.run.id });
 		expect(await jobs.lastSucceeded('digest')).toBeNull();
+	});
+});
+
+describe('JobRunRepository.finish', () => {
+	it('lets only the current claim holder finish; a reclaimed stale process cannot overwrite it', async () => {
+		const stale = await jobs.claim(input());
+		if (!stale.claimed) throw new Error('expected claim');
+		const fresh = await jobs.claim(input({ now: '2026-11-12T23:31:00.000Z' }));
+		if (!fresh.claimed) throw new Error('expected stale reclaim');
+
+		const staleFinished = await jobs.finish(
+			stale.run.id,
+			stale.run.attempts,
+			{ status: 'failed', counters: {}, error: 'late stale process' },
+			'2026-11-12T23:40:00.000Z'
+		);
+		expect(staleFinished).toBe(false);
+		expect((await jobs.listRecent(1))[0]).toMatchObject({ status: 'running', attempts: 2 });
+
+		const freshFinished = await jobs.finish(
+			fresh.run.id,
+			fresh.run.attempts,
+			{ status: 'succeeded', counters: { articles_inserted: 2 }, error: null },
+			'2026-11-12T23:41:00.000Z'
+		);
+		expect(freshFinished).toBe(true);
+		expect((await jobs.listRecent(1))[0]).toMatchObject({
+			status: 'succeeded',
+			attempts: 2,
+			counters: { articles_inserted: 2 }
+		});
+	});
+
+	it('does not finish the same claim twice', async () => {
+		const run = await jobs.claim(input());
+		if (!run.claimed) throw new Error('expected claim');
+		const outcome = { status: 'succeeded' as const, counters: {}, error: null };
+
+		expect(
+			await jobs.finish(run.run.id, run.run.attempts, outcome, '2026-11-12T23:02:00.000Z')
+		).toBe(true);
+		expect(
+			await jobs.finish(run.run.id, run.run.attempts, outcome, '2026-11-12T23:03:00.000Z')
+		).toBe(false);
 	});
 });
