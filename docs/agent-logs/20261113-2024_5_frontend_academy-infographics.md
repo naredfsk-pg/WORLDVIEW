@@ -3,7 +3,7 @@
 | Field      | Value                              |
 | ---------- | ---------------------------------- |
 | Started    | 2026-11-13 20:24:04 (Asia/Bangkok) |
-| Finished   | 2026-11-13 20:58:00 (Asia/Bangkok)         |
+| Finished   | 2026-11-13 21:28:00 (Asia/Bangkok)         |
 | Status     | done                               |
 | Agent type | frontend (+ 4 implementer sub-agents for content, one per week) |
 
@@ -137,3 +137,37 @@
   - day 23: map ถ่านหินว่า "มีแหล่งในประเทศ" เข้ากับมิติความมั่นคง
 - วัด Lighthouse หลัง merge เพื่อยืนยัน CLS ของหน้าบทเรียน (baseline 0.007) ตอนนี้ทุกอย่าง render ฝั่ง server ไม่มีอะไรโหลดทีหลัง และ roadmap/progress เปลี่ยนแค่สี ไม่เปลี่ยนขนาด
 - ถ้าต้องการให้พิมพ์บทเรียนได้ครบ ให้เพิ่ม `beforeprint` handler ที่เปิด `<details>` ทุกอัน
+
+## Review fixes (2026-11-13 21:07–21:28)
+
+orchestrator ส่งผล review อิสระกลับมา (ไม่พบ bug ด้าน security/correctness ในโค้ด) โดยมีข้อที่ต้องแก้ 3 ข้อ (MUST), ข้อที่ควรแก้ 7 ข้อ (SHOULD) และ nit ที่เป็น optional ทำครบทุกข้อ
+
+1. 21:07 — **MUST 1** day 4 timeline `พ.ค.–ก.ย. 1945`: detail เดิมอ่านแล้วเหมือนเยอรมนียอมแพ้หลังระเบิดปรมาณู เปลี่ยนเป็น "เยอรมนียอมแพ้ พ.ค. ส่วนญี่ปุ่นยอมแพ้ ส.ค.–ก.ย. หลังระเบิดปรมาณูและโซเวียตประกาศสงคราม" (label เดิมถูกอยู่แล้ว) **MUST 2** takeaway ปี 1939 ใส่ "ในยุโรป" กลับเข้าไป **MUST 3** source ของ stats วันที่ 25 เปลี่ยนเป็น "ตัวเลขโดยประมาณตามเนื้อหาบทเรียน (ช่วงทศวรรษ 1960 ถึงต้นทศวรรษ 2020)" เพราะในบทเรียนไม่ได้อ้าง UN WPP ส่วนเอกสารกับ schema ให้ตรงกันโดย**เอาคำว่า "with a year" ออก** (comment ของ `statsSchema` และ ARCHITECTURE §13) แทนการบังคับปี 4 หลัก เพราะบทเรียนส่วนใหญ่ไม่มีปีให้ และการบังคับจะทำให้ต้องแต่งปีขึ้นมาเอง
+2. 21:10–21:16 — **SHOULD 6** (orchestrator ตัดสินใจแทนเจ้าของ) ลบ `## สรุปสั้น` ออกจากทั้ง 30 บท เพราะซ้ำกับ takeaways แบ่งให้ implementer 2 ตัวรันขนาน (สัปดาห์ 1–2 และ 3–4) โดยใช้กติกาว่า bullet ไหนมีข้อเท็จจริงที่ takeaways ไม่มี ให้รวมเข้า takeaways (ยังคง 3–5 ข้อ ≤140 ตัวอักษร) แล้วลบ section ไม่มีเนื้อหาหาย ทุกบทยังมี 5 ข้อ ยาวสุด 139 ตัวอักษร (วันที่ 19) และ diff เนื้อหาคือ +66/−323 บรรทัด
+   - **บทที่รวมเนื้อหาเข้า takeaways:** 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30
+     - เช่น วันที่ 1: เพิ่มคลองสุเอซ/ปานามา และนิยามขั้วอำนาจ
+     - วันที่ 6: รวม takeaway เรื่อง NATO สองข้อเป็นข้อเดียว และเพิ่มข้อเรื่องข้อจำกัดขององค์การ
+     - วันที่ 11: เพิ่มนิยามอัตราแลกเปลี่ยน สาเหตุวิกฤต 1997 และบทบาทดอลลาร์
+     - วันที่ 19: เพิ่มท่อ/LNG จุดคอขวดที่ขาดไป และกองทุนน้ำมัน
+     - วันที่ 20: รวมสองข้อแรกเข้าด้วยกัน และเพิ่มแร่สำคัญอื่น
+     - วันที่ 30: แก้ทั้ง 5 ข้อ
+   - **บทที่ไม่ต้องรวม:** 15 (ต่างกันแค่ถ้อยคำ)
+   - **คำที่ตัดออกเพื่อให้ไม่เกิน 140 ตัวอักษร:** ยังอยู่ในเนื้อหาครบ ได้แก่ "ทางยุทธศาสตร์" (วันที่ 19) และ "เสมอ" (วันที่ 30)
+3. 21:17 — ตรวจซ้ำ: validator 30 OK, ไม่เหลือ `## สรุปสั้น`, ไม่พบ character แปลกปลอม และตัวเลขทุกตัวใน takeaways/infographic ยังอยู่ในเนื้อหา (ยกเว้น "2026" ใน source วันที่ 6 เหมือนเดิม) **SHOULD 8** วันที่ 14 เอา "1."–"5." ออกจาก label ของ layers และให้ layers แบบ `stack` แสดงเลขลำดับเป็น badge แทน (pyramid ไม่มีเลข) จากนั้น commit เนื้อหา
+4. 21:18–21:21 — โค้ด
+   - **SHOULD 5:** `hashchange` ที่เปิด section ที่พับอยู่จะ scroll ไปที่เป้าหมายด้วย (ใช้ helper `scrollToHashTarget` ร่วมกับตอนโหลด)
+   - **SHOULD 7:** stats ที่ค่าขึ้นต้นด้วย `~`/`<`/`>` ให้ตัวเลขที่เห็นเป็น `aria-hidden` และมี sr-only "ประมาณ / น้อยกว่า / มากกว่า N"
+   - **SHOULD 9:** hub ใช้ `<ul>` เดียว วางซ้าย/ขวาด้วย grid (`--row` + `@xl:[grid-row:var(--row)]`) โดย list กับ centre ใช้คอลัมน์ชุดเดียวกัน
+   - **SHOULD 10:** ปุ่ม open-all มี `aria-expanded`
+   - **Nit (folded flag):** `renderLessonMarkdown` คืน `folded` ซึ่งไปเป็น `LessonDetail.has_folded_sections` แทนการ sniff HTML
+   - **Nit (type check):** ยังคงเขียน type `Infographic` เองเพื่อให้อ่านง่าย และไม่ให้ `types/` ต้อง import จาก `content/` แต่เพิ่ม `SCHEMA_MATCHES_TYPE` ที่ทำให้ `npm run check` fail เมื่อ type กับ zod output ไม่ตรงกัน ทดสอบแล้วว่าทำงานจริง (ลองเพิ่ม variant `funnel` ให้ type ได้ 2 errors) ส่วน `INFOGRAPHIC_TYPES` ย้ายไปอยู่ใน fixtures (`Object.keys(VALID_SPECS)` โดย fixtures ถูกบังคับให้ครบทุก type)
+   - เพิ่ม unit test ของ hub (list เดียว), stats (คำอ่าน), เลขของ stack และ flag `folded`
+5. 21:19–21:22 — **SHOULD 4** e2e deep link ไปที่ `/academy` ก่อน แล้วโหลด `/academy/week/1/day/1#id` (เป็นการโหลด document จริง ไม่ใช่ hash nav ในหน้าเดิม) และ assert `toBeInViewport()` นอกจากนี้เพิ่ม test hashchange ที่เปลี่ยน `location.hash` แล้ว assert ว่าเห็นและอยู่ใน viewport และ assert `aria-expanded` ของปุ่ม open-all
+6. 21:21–21:24 — e2e ของ academy รอบแรก 4 failed (ดู Error #10) แก้แล้วผ่าน 41/41 พร้อม regenerate screenshot ทั้ง 12 ภาพของบทเรียน (roadmap ไม่เปลี่ยน) และเปิดดู `w1-d1-1280-light.png` เพื่อยืนยัน layout ของ hub
+7. 21:24–21:26 — gate ทั้งหมด: check 0 errors, lint ผ่าน, `npm test` 66 files / 1086 tests, build / build:scripts exit 0, verify:prod-build ok, academy:sync 30 lessons และ `E2E_PORT=4973 npm run test:e2e` **359 passed** จากนั้น commit `7385358` (content), `b427ea1` (code), `cc15e54` (tests + docs + screenshots)
+
+### Errors (review fixes)
+
+10. e2e: 768 px ล้นแนวนอนบนวันที่ 1 และ 4 (hub) โดย `<li>` ฝั่งขวาไปอยู่ที่ x=869 สาเหตุคือ `<ul>` ใช้ `col-span-3 row-start-1` แต่ไม่ได้ระบุคอลัมน์เริ่ม ช่องที่ 2 ของแถว 1 มี centre อยู่แล้ว auto-placement จึงสร้างคอลัมน์ implicit ต่อไปทางขวา → แก้ด้วย `@xl:col-start-1` ส่วนที่ซ้อนกับ centre ตั้งใจให้ซ้อน เพราะคอลัมน์กลางของ list ว่าง (debug ด้วย spec ชั่วคราว `zz-debug.e2e.ts` ซึ่งลบแล้ว)
+11. svelte-check: `{@const}` ต้องเป็นลูกโดยตรงของ `{#each}` → ย้ายขึ้นไปไว้หัว each
+12. `python` ใน Git Bash ไม่มี `yaml` module และ stdout เป็น cp1252 → ใช้ regex แทน และตั้ง `PYTHONIOENCODING=utf-8`
