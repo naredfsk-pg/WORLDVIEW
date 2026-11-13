@@ -81,7 +81,7 @@ flowchart LR
   pages --> browser["mobile / desktop browser"]
   browser -->|"/admin/* (Cloudflare Access)"| admin["admin form actions"]
   admin -->|"AdminRepository + content_revisions"| db
-  admin -.->|"rerun: spawn detached CLI"| cli
+  admin -.->|"rerun: runJobByType in-process"| cli
 ```
 
 The UI only reads persisted data. If the LLM or a provider is down, every page keeps working from the database (PRD §11 #9).
@@ -108,13 +108,13 @@ Every route is server-rendered and none is prerendered: the root layout reads fr
 | `/admin/events/[id]` | `AdminEventEditData` | Any status. Actions `?/save` (Thai fields + category, zod: length caps, required fields Thai, no URL/domain in any field; `change_reason`, optional `public_note_th`), `?/publish`, `?/hide`, `?/flag`. Shows revision history. **Optimistic concurrency:** the form carries `loaded_updated_at` and `original_<field>`; the patch holds only fields whose submitted value differs from the loaded value (never compared with the current row), and `updateEventIfCurrent` writes it only while `events.updated_at` is unchanged, otherwise 409 (Thai "reload" message, input kept). |
 | `/admin/relations` | `{ relations, published_relations }` (`AdminRelationRow[]`) | Pending relations (including ones whose events have no category yet) and the latest 50 published ones, with evidence links. Actions `?/approve` (pending → published), `?/reject` (pending or published → rejected, i.e. unpublish). |
 | `/admin/briefs` | `{ briefs: DailyBrief[] }` | Latest 30 briefs. Action `?/visibility` (published ↔ hidden). |
-| `/admin/jobs` | `{ runs, ingest_running, manual_reruns }` | Run history and the last manual reruns. Action `?/rerunIngest` (`change_reason` required): `ingest --force --manual` started **in-process** (same claim as the CLI, so a live `running` slot is never started twice); at most one manual start per `MANUAL_RERUN_MIN_INTERVAL_MS` (5 min, 429 otherwise); a skip reports the real reason; each start appends an `admin_actions` row (actor, reason, target `{idempotency_key}#{attempt}`). Other job types are shown disabled until `server/jobs/registry.ts` (`runJobByType`) lands. |
+| `/admin/jobs` | `{ runs, jobs: [{ job_type, takes_date, running, manual_reruns }], today, yesterday }` | Run history and, per job type, its live claim and last manual reruns. Action `?/rerun` (`job_type`, `date` for brief / archive jobs, `change_reason` required): `runJobByType(type, { date, force: true, manual: true, onClaimed })` started **in-process**; the action answers once the claim is decided and the job finishes in the background (same claim as the CLI, so a live `running` slot is never started twice). A forced admin rerun still respects the brief window (no `allowOpenWindow`). At most one manual start per job type per `MANUAL_RERUN_MIN_INTERVAL_MS` (5 min, 429 otherwise); a skip reports the real reason (`running`, `already_done`, `window_open`; 409); each start appends an `admin_actions` row `rerun_{job_type}` (actor, reason, target `{idempotency_key}#{attempt}`). |
 
 Every admin action requires `change_reason` (3–300 chars) and writes `content_revisions` through `AdminRepository` in the same transaction as the change. State transitions are checked inside that transaction (`AdminTransitionResult`: `not_found` / `invalid_state` / `conflict` / `gate_failed`).
 
 **Admin-edited text (contract for the digest side):** every `?/save` appends `content_revisions` with `entity_type = 'event'`, `entity_id = events.id`, `changed_by = <admin email>` (automated writers use `'system'`, so "admin" = `changed_by <> 'system'`), `changed_at` = UTC ISO (same format as `events.summarized_at`, so they compare as strings), and `before_after.after` holding exactly the edited keys (`title_th`, `summary_th`, `what_happened_th`, `why_it_matters_th`, `background_th`, `uncertain_th`, `category`). Status actions (publish/hide/flag) also write `entity_type = 'event'` rows, but their `after` holds only `status` / `review_reasons`. So "admin-owned text newer than the last summary" is: `EXISTS (SELECT 1 FROM content_revisions WHERE entity_type = 'event' AND entity_id = ? AND changed_by <> 'system' AND changed_at > events.summarized_at AND json_extract(before_after, '$.after.title_th') IS NOT NULL ...)` (OR over the edited keys), served by the `(entity_type, entity_id, changed_at)` index.
 
-Non-content admin operations (manual job reruns) go to the append-only `admin_actions` table (`id`, `created_at`, `action`, `actor`, `target`, `reason`), migration `0002_admin_actions`.
+Non-content admin operations (manual job reruns) go to the append-only `admin_actions` table (`id`, `created_at`, `action`, `actor`, `target`, `reason`), migration `0002_admin_actions`; migration `0004_admin_rerun_actions` widens the `action` CHECK to one `rerun_{job_type}` per job type.
 
 Errors: loads throw `error(status, thaiMessage)` and the root `+error.svelte` renders them. `handleError` in `hooks.server.ts` keeps app errors, translates framework errors (404 …) to Thai, and for unexpected errors logs `{ error_id, path, message }` (name + message, paths redacted, max 200 chars, never the stack; for `DrizzleError` / `DrizzleQueryError` or any SQL-looking message only the error name plus `cause.name` / `cause.code`, so no SQL text or params) and returns a Thai message with the `error_id` (`App.Error.error_id`). SEO: every page sets `<title>`, a meta description and `og:url = PUBLIC_SITE_URL + path`.
 
@@ -247,7 +247,11 @@ When formatting a `BriefDate`, interpret it as Bangkok noon so it never shifts b
 
 ```
 npm run job -- <ingest|digest|brief_morning|brief_evening|archive_snapshot> [--date YYYY-MM-DD] [--force] [--manual]
+npm run job -- ingest [--fixtures] [--dry-run]
+npm run job -- digest [--max-events N]
 ```
+
+`scripts/job.ts` is a thin CLI over **`runJobByType(type, { date, force, manual, dryRun, fixtures, maxEvents, signal, allowOpenWindow, onClaimed })`** in `src/lib/server/jobs/registry.ts` (Wave 2), which returns `{ status, exitCode, counters, runId?, reason? }`. `onClaimed(run)` fires once the slot is claimed (the admin page answers then). The registry is the jobs composition root: the one file under `server/jobs` that reads config and opens the concrete database (one connection per call, closed at the end). Job bodies still see repository interfaces only. It never throws: setup failures return `failed`/1, usage errors `usage_error`/64. The admin lane calls it too. `--max-events N` bounds how many events digest gives content to (bounded smoke runs); `--dry-run` fetches and normalizes without any database access.
 
 Exit codes: `0` succeeded or skipped (already done, or running elsewhere) · `2` partial · `1` failed · `64` usage error. Other scripts: `academy:sync` (content → `academy_lessons` + FTS), plus `db:migrate` and `db:seed`, which 0.2/0.3 own. At the end of every job, log one JSON line with the counters and `process.memoryUsage().rss` (the RAM baseline for PRD §11 #12).
 
@@ -273,7 +277,7 @@ Jobs abort themselves after 20 min through `JobContext.signal`. Data writes are 
 
 A forced rerun therefore never duplicates anything (PRD §11 #4).
 
-**Counters** (`JobCounters`, a JSON object in `job_runs.counters`) use the keys in `JOB_COUNTER_KEYS`: ingest (`sources_ok`, `items_fetched`, `articles_inserted`, `duplicates_url`, `duplicates_content`, …), digest (`events_created`, `events_published`, `events_pending_review`, `relations_*`, `lesson_links`, `llm_requests`, `llm_cache_hits`, `llm_failures`, `llm_tokens`) and briefs (`brief_candidates`, `brief_events`).
+**Counters** (`JobCounters`, a JSON object in `job_runs.counters`) use the keys in `JOB_COUNTER_KEYS`: ingest (`sources_ok`, `items_fetched`, `articles_inserted`, `duplicates_url`, `duplicates_content`, …), digest (`events_created`, `events_published`, `events_pending_review`, `relations_*`, `lesson_links`, `llm_requests`, `llm_cache_hits`, `llm_failures`, `llm_tokens`) and briefs (`brief_candidates`, `brief_events`). In digest, `llm_requests` and `llm_tokens` are the network calls recorded in `llm_calls` for the run's `job_run_id`; `llm_cache_hits` and `llm_failures` count task results (a failure is a task that returned `ok: false`). `events_updated` includes drafts merged by clustering. A digest with any LLM failure or failed step is `partial`: grouping, each tagging batch, each merge pair, each event and its links are isolated, so one failing unit (an admin hide meanwhile, a concurrent job) is skipped and recorded, never failing the run.
 
 **Retry/backoff** (`withRetry(fn, policy, isRetryable)` in `utils/retry.ts`):
 - Delay = `min(max, base·2^(n-1)) · rand(0.5..1)`. `Retry-After` is honoured, up to `max`.
@@ -308,19 +312,31 @@ The two steps are joined with `;`, not `&&`, so digest still processes earlier a
 | evening D | D-1 19:00 → D 19:00 |
 | daily_snapshot D | D 00:00 → D+1 00:00, merged with the events of the D morning and evening briefs |
 
-Ranking (`editorial.rankBriefCandidates`) is pure:
-- Inputs: `signals`, recency, `source_count`, continuity (`is_continuing`) and a region quota (no single region above 40% of items when alternatives exist).
-- Output: at most `DAILY_EVENT_TARGET_MAX` items, never padded up to MIN, each with a Thai `selection_reason`.
+`briefWindow` lives in `server/jobs/briefs.ts`; the snapshot merge is `listCandidateEvents({ …, include_briefs_of: D })` (items of D's *published* morning/evening briefs). Real events are preferred: demo events enter a brief only when no real candidate exists (an empty dev DB).
+
+- **Window must be closed** (Wave 2 review): `runJobByType` refuses `brief_morning` / `brief_evening` / `archive_snapshot` before the window's end unless `allowOpenWindow` is set (the CLI sets it with `--force`; the admin page never does), *before* claiming the slot, and returns `skipped` with `reason: 'window_open'` (exit 0). Otherwise an early run would take the day's slot with half the news.
+- **Daily snapshot is a superset** (FR-03, coordinator decision): every event of D's published morning and evening briefs is kept, outside the cap and the quota; the remaining slots up to `DAILY_EVENT_TARGET_MAX` are ranked from D's window. If the carried events already exceed MAX, the snapshot is just their union.
+- **Recency is what was known at the window end**: ranking uses the newest article evidence *inside the window* (`window_evidence_at`), never a later `last_updated_at`, so a forced rerun of a past day ranks as it would have at the time.
+- **Shortfalls are visible**: a brief with no item, or fewer than `DAILY_EVENT_TARGET_MIN`, makes the run `partial` (exit 2). A run that finds no item never replaces an already published brief (`saveBrief` ignores a draft over a published row).
+
+Ranking (`rankBriefCandidates`, pure) lives in `server/jobs/brief-ranking.ts` (Wave 2; `editorial` was outside that lane):
+- Score = 3·`impact_breadth` + 3·`thailand_relevance` + 2·recency (1 at the window end, 0 a day earlier) + 1.5·`is_continuing` + source diversity (`source_count` − 1, max 3). Credibility is not scored separately: every source is owner-approved.
+- Region quota: no region except `global` above 40% of the items while other candidates remain; leftover slots are then filled in score order.
+- Output: at most `DAILY_EVENT_TARGET_MAX` items, never padded up to MIN (fewer than MIN is logged), each with a short Thai `selection_reason` built from the strongest signals (e.g. "ผลกระทบในวงกว้าง · รายงานจาก 3 แหล่งข่าว").
+- `saveBrief` keeps an admin-hidden brief hidden; a brief with no items is a `draft`.
 
 To add late reports to a past day, run `archive_snapshot --date D --force`.
 
 ## 9. News ingestion (`types/news.ts`)
 
+- **Sources** (Wave 2): the owner approved the six registry feeds on 2026-11-13 for headline + link only (`allow_excerpt: false`). UN News, BBC World, Guardian World and Al Jazeera are enabled. WHO (stale feed, re-dated 2020 items) and IMF (HTTP 404, no working RSS URL found) stay disabled until a working URL is confirmed.
+- **Conditional GET** (Wave 2): `sources.etag` / `sources.last_modified` (migration 0002) hold the validators of the last successful fetch. The RSS adapter sends `If-None-Match` / `If-Modified-Since`; a 304 ingests nothing; validators are stored only after the inserts commit, and `syncSources` clears them when a source's `feed_url` changes.
 - **`NewsSourceAdapter`** has one adapter per `SourceKind` (`rss` covers RSS and Atom; `fixture` reads a local XML file). An adapter only fetches and parses into `RawFeedItem[]`. It does not normalize or touch the DB.
 - **`SafeFetch`** (SSRF):
   - only https, and only hosts taken from enabled registry `feed_url`s
   - at most 3 redirects, all inside the allowlist
   - 15 s timeout, 5 MB body cap
+  - asks for `identity`, but inflates a gzip body anyway (UN News sends one), with the inflated size capped at the same 5 MB; other encodings are refused
   - generic `User-Agent: WorldviewBot/0.1`
   - no scraping of article pages
 - **Normalization** (`normalizeFeedItem(source, raw, now): NormalizedArticle | null`, pure):
@@ -341,21 +357,25 @@ To add late reports to a past day, run `archive_snapshot --date D --force`.
   - `content_hash = sha256hex(norm(title) + '\n' + (excerpt ? norm(excerpt) : 'publisher:' + norm(publisher_name)))`, where `norm` = NFKC, lower-case, keep only `\p{L}\p{N}`, collapse whitespace.
   - When there is no excerpt, the publisher is part of the hash, so identical generic titles from different outlets do not collide.
 - **Dedup** (`insertArticleIfNew`): an existing `canonical_url` → `duplicate_url`; the same `content_hash` ingested in the last 7 days → `duplicate_content`. Existing rows are never updated.
-- **Grouping** (digest, `news/grouping.ts`, pure):
+- **Grouping vs tagging** (AGENT_PLAN Wave 2 decision (a)): rule-based grouping runs at the end of **ingest** (and again at the start of digest for anything left unassigned). Digest tags articles `WHERE taxonomy IS NULL` whether grouped or not, and the LLM `clustering` task runs only for ambiguous pairs. Real and demo articles never share an event.
+- **Grouping** (`news/grouping.ts`, pure):
   - Compare against events whose `last_updated_at` is within 72 h.
   - Score = title-token Jaccard plus tag overlap.
   - ≥ 0.6 → `join`; 0.3–0.6 → `ambiguous` (LLM `clustering`); < 0.3 → `new_event`.
-  - If clustering fails, ambiguous pairs become new events. Wrong merges are worse than duplicates.
+  - Ingest turns an ambiguous match into a new draft event. Digest recomputes the score of each draft it processes (`bestEventMatch`) and sends the 0.3–0.6 pairs (max 20 per call) to `clustering`; `same_event` with confidence ≥ 0.7 merges the draft into the other event (`mergeDraftEvent`, one transaction). Anything else, or a failed call, keeps them separate. A draft an admin edited is never merged away (`mergeDraftEvent` resolves false), and real and demo events are never merged. Wrong merges are worse than duplicates.
   - The thresholds are named constants (data-scientist may tune them).
 
-**Digest order:**
-1. Load unassigned articles (72 h, up to 200).
-2. `tagging` (up to 20 per call), then `saveArticleTaxonomy`.
-3. Group, then `createDraftEvent` / `linkArticles`.
-4. For up to 30 `listEventsNeedingContent`: `extraction` → `summary` → `evaluateEventForPublish` → `saveEventContent` or `markEventForReview`.
-5. For events that were just published or updated:
-   - `relations`: up to 8 candidate published events from the last 14 days that share a tag or category, then the relation gate, then `upsertRelation`.
-   - `academy_linking`: up to 8 prefiltered lessons, then validated `lesson_id`s → `replaceLessonLinks`.
+**Digest order** (`server/jobs/digest.ts`, Wave 2):
+1. Group unassigned articles (72 h, up to 200) by rules: `createDraftEvent` / `linkArticles`.
+2. Take up to 30 (or `--max-events`) `listEventsNeedingContent` (newest evidence first, id tie-break; published events with `manual_flag` are left out, since the gate could only keep them) and tag their articles `WHERE taxonomy IS NULL` (up to 20 per call), then `saveArticleTaxonomy`. Tagging errors are tracked per article: only `invalid_request` / `input_too_large` reach a human (`llm_request_rejected`); anything else, including articles the model left out, is retried as `llm_failed`.
+3. Ambiguous clustering for the drafts among them (see Grouping); after a merge, steps 2–3 list again.
+4. Per event: `extraction` → `summary` (with the previous wording for a published event) → `evaluateEventForPublish` (with `current_review_reasons`) → `saveEventContent` (output present) or `markEventForReview` (no output); nothing is written on `keep_hidden`, nor on `keep_published` after a transient `[llm_failed]` (retried next run); any other `keep_published` calls `markContentChecked`, so the event returns only when newer evidence is linked. `summarized_at` (and that marker) is the time the events were *listed*, so an article linked while the LLM works triggers the next re-summary. Claim evidence goes through `mapRefsToArticleIds`. `signals` = summary `impact_breadth` / `thailand_relevance` + extraction `sensitive`. An event with no tagged article skips the LLM and records the tagging failure (`llm_failed`, retried).
+   - **Admin corrections win** (PRD FR-06, §9.2): `saveEventContent` never overwrites a content field that any admin revision of the event changed (a `content_revisions` row with `entity_type = 'event'` whose `changed_by` is not `system`; the fields are the keys of `before_after.after`). It checks every admin revision, not only those newer than `summarized_at`, so a field stays protected after later re-summaries. Untouched fields still follow the new evidence, a published event stays published, and the `system` revision notes "admin-edited fields kept". An unpublished event with admin edits is never auto-published: it stays `pending_review` with `manual_flag` until the admin publishes it. (Option (a) of the Wave 2 review. Option (b), skipping the re-summary and queueing the event, was not used: the review queue lists only `pending_review` events, and a published event is never auto-demoted.)
+5. For events published or re-summarized in this run, using the row as stored (admin-kept title, category and tags), not the LLM output:
+   - `relations`: up to 8 published events from the last 14 days that share a tag or a region other than `global` (and the same `is_demo`), 3 articles each, then the relation gate, then `upsertRelation` on `store`.
+   - `academy_linking`: up to 8 lessons sharing a tag (2 points) or the category (1 point), then `selectLessonLinks(links, existing ids)` → `replaceLessonLinks`. A failed call keeps the previous links.
+
+Every LLM call passes `{ job_run_id, signal }`; no failure throws.
 
 Event taxonomy: `category` is the majority of the articles' `taxonomy.category` (a tie goes to the earliest article). `regions`, `countries` and `tags` are the union (tags capped at 10).
 

@@ -98,4 +98,49 @@ describe('IngestRepository', () => {
 		});
 		expect(row?.last_error).toHaveLength(300);
 	});
+
+	it.each([
+		['canonical_url', { canonical_url: 'javascript:alert(1)' }],
+		['source_url', { source_url: 'ftp://example.com/test/1' }]
+	])('refuses a non-http(s) %s', async (_field, overrides) => {
+		await expect(ingest.insertArticleIfNew(article(overrides))).rejects.toThrow(/http\(s\)/);
+		expect(db.select().from(articles).all()).toHaveLength(0);
+	});
+
+	it('stores the HTTP validators of a successful fetch and keeps them on a failure', async () => {
+		await ingest.recordSourceFetch('test-wire', {
+			ok: true,
+			at: '2026-11-13T00:00:00.000Z',
+			validators: { etag: 'W/"abc"', last_modified: 'Fri, 13 Nov 2026 00:00:00 GMT' }
+		});
+		await ingest.recordSourceFetch('test-wire', {
+			ok: false,
+			at: '2026-11-13T01:00:00.000Z',
+			error: 'timeout'
+		});
+
+		const [row] = await ingest.listEnabledSources();
+		expect(row).toMatchObject({
+			etag: 'W/"abc"',
+			last_modified: 'Fri, 13 Nov 2026 00:00:00 GMT'
+		});
+	});
+
+	it('drops the stored validators when a source moves to a new feed URL', async () => {
+		const validators = { etag: '"v1"', last_modified: 'Fri, 13 Nov 2026 00:00:00 GMT' };
+		await ingest.recordSourceFetch('test-wire', {
+			ok: true,
+			at: '2026-11-13T00:00:00.000Z',
+			validators
+		});
+
+		await ingest.syncSources([source]);
+		expect((await ingest.listEnabledSources())[0]).toMatchObject(validators);
+
+		await ingest.syncSources([{ ...source, feed_url: 'tests/fixtures/feeds/b.xml' }]);
+		expect((await ingest.listEnabledSources())[0]).toMatchObject({
+			etag: null,
+			last_modified: null
+		});
+	});
 });

@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { getRepositories } from '#lib/server/db/repositories/index.js';
 import { STALE_RUNNING_CLAIM_MS } from '#lib/server/db/repositories/job-runs.js';
+import { DATE_JOBS } from '#lib/server/jobs/cli-args.js';
+import type { AdminAction, AdminActionType } from '#lib/types/domain.js';
+import { JOB_TYPES, type JobType } from '#lib/types/jobs.js';
+import { addDays, isBriefDate, todayBriefDate } from '#lib/utils/date.js';
 import {
 	changeReason,
 	failure,
@@ -11,53 +15,80 @@ import {
 } from '../admin-forms.server';
 import {
 	MANUAL_RERUN_MIN_INTERVAL_MS,
-	productionIngestDeps,
-	startManualIngest
+	manualJobRunner,
+	startManualJob,
+	type SkipReason
 } from './manual-ingest.server';
 import type { Actions, PageServerLoad } from './$types';
 
 const RUNS_SHOWN = 30;
 const MANUAL_RERUNS_SHOWN = 5;
 
-/** `/admin/jobs`: run history, whether an ingest claim is live, and who reran it recently. */
+/** `/admin/jobs`: run history, and per job type whether a claim is live and who reran it recently. */
 export const load: PageServerLoad = async ({ locals }) => {
 	requireAdmin(locals);
 	const repos = getRepositories();
-	const [runs, manualReruns] = await Promise.all([
+	const [runs, ...reruns] = await Promise.all([
 		repos.jobs.listRecent(RUNS_SHOWN),
-		repos.admin.listRecentAdminActions('rerun_ingest', MANUAL_RERUNS_SHOWN)
+		...JOB_TYPES.map((type) =>
+			repos.admin.listRecentAdminActions(rerunAction(type), MANUAL_RERUNS_SHOWN)
+		)
 	]);
 	const nowMs = Date.now();
-	const ingestRunning = runs.some(
-		(run) =>
-			run.job_type === 'ingest' &&
-			run.status === 'running' &&
-			nowMs - Date.parse(run.started_at) < STALE_RUNNING_CLAIM_MS
-	);
-	return { runs, ingest_running: ingestRunning, manual_reruns: manualReruns };
+	const jobs = JOB_TYPES.map((type, index) => ({
+		job_type: type,
+		takes_date: DATE_JOBS.includes(type),
+		running: runs.some(
+			(run) =>
+				run.job_type === type &&
+				run.status === 'running' &&
+				nowMs - Date.parse(run.started_at) < STALE_RUNNING_CLAIM_MS
+		),
+		manual_reruns: reruns[index] as AdminAction[]
+	}));
+	const today = todayBriefDate();
+	return { runs, jobs, today, yesterday: addDays(today, -1) };
 };
 
-const rerunForm = z.object({ change_reason: changeReason });
+const rerunForm = z.object({
+	job_type: z.enum(JOB_TYPES, { error: 'ไม่รู้จักงานนี้' }),
+	date: z
+		.string()
+		.trim()
+		.optional()
+		.transform((value) => value || undefined),
+	change_reason: changeReason
+});
 
-const SKIP_MESSAGE = {
-	running: 'งานดึงข่าวรอบนี้กำลังทำงานอยู่แล้ว ไม่ได้เริ่มซ้ำ',
-	already_done: 'งานดึงข่าวรอบนี้ทำเสร็จแล้ว ไม่ได้เริ่มใหม่'
-} as const;
+const SKIP_MESSAGE: Record<SkipReason, string> = {
+	running: 'งานนี้กำลังทำงานอยู่แล้ว ไม่ได้เริ่มซ้ำ',
+	already_done: 'งานรอบนี้ทำเสร็จแล้ว ไม่ได้เริ่มใหม่',
+	window_open: 'ช่วงเวลาของข่าวในวันที่เลือกยังไม่ปิด จึงยังสร้างสรุปหรือคลังของวันนั้นไม่ได้'
+};
 
 export const actions: Actions = {
 	/**
-	 * `ingest --force --manual`, in-process. Needs `change_reason`, waits at least
-	 * MANUAL_RERUN_MIN_INTERVAL_MS after the previous manual start, never starts a live slot
-	 * twice (claim), and records who started it in `admin_actions`.
+	 * `<job_type> --force --manual`, in-process through `runJobByType`. Needs `change_reason`
+	 * (and, for brief / archive jobs, an optional date), waits at least
+	 * MANUAL_RERUN_MIN_INTERVAL_MS after the previous manual start of the same job type, never
+	 * starts a live slot twice (claim), never builds a brief before its window closes, and
+	 * records who started it in `admin_actions`.
 	 */
-	rerunIngest: async ({ request, locals }) => {
+	rerun: async ({ request, locals }) => {
 		const admin = requireAdmin(locals);
 		const parsed = rerunForm.safeParse(await readForm(request));
 		if (!parsed.success) return failure(400, null, firstIssue(parsed.error.issues));
+		const { job_type: jobType, change_reason: reason } = parsed.data;
+		const takesDate = DATE_JOBS.includes(jobType);
+		const date = takesDate ? parsed.data.date : undefined;
+		if (date !== undefined && !isBriefDate(date)) {
+			return failure(400, null, 'วันที่ต้องอยู่ในรูปแบบ YYYY-MM-DD');
+		}
 
 		const repos = getRepositories();
 		const now = new Date();
-		const [last] = await repos.admin.listRecentAdminActions('rerun_ingest', 1);
+		const action = rerunAction(jobType);
+		const [last] = await repos.admin.listRecentAdminActions(action, 1);
 		const waitMs = last
 			? Date.parse(last.created_at) + MANUAL_RERUN_MIN_INTERVAL_MS - now.getTime()
 			: 0;
@@ -66,25 +97,32 @@ export const actions: Actions = {
 			return failure(
 				429,
 				null,
-				`สั่งรันเองได้อีกครั้งในอีก ${minutes} นาที (เว้นอย่างน้อย ${MANUAL_RERUN_MIN_INTERVAL_MS / 60_000} นาทีระหว่างการสั่งรัน)`
+				`สั่งรันงานนี้เองได้อีกครั้งในอีก ${minutes} นาที (เว้นอย่างน้อย ${MANUAL_RERUN_MIN_INTERVAL_MS / 60_000} นาทีระหว่างการสั่งรัน)`
 			);
 		}
 
-		const result = await startManualIngest(productionIngestDeps(repos));
+		const result = await startManualJob(jobType, { date }, manualJobRunner());
 		if (result.status === 'skipped') return failure(409, null, SKIP_MESSAGE[result.reason]);
+		if (result.status === 'failed') {
+			return failure(500, null, 'เริ่มงานไม่ได้ กรุณาตรวจ log ของเซิร์ฟเวอร์');
+		}
 
 		await repos.admin.recordAdminAction({
 			created_at: now.toISOString(),
-			action: 'rerun_ingest',
+			action,
 			actor: admin.email,
 			target: `${result.run.idempotency_key}#${result.run.attempts}`,
-			reason: parsed.data.change_reason
+			reason
 		});
 		return {
 			ok: true,
-			message: 'เริ่มดึงข่าวแล้ว รีเฟรชหน้านี้เพื่อดูสถานะ',
+			message: 'เริ่มงานแล้ว รีเฟรชหน้านี้เพื่อดูสถานะ',
 			id: result.run.id,
 			reasons: []
 		} satisfies AdminActionData;
 	}
 };
+
+function rerunAction(type: JobType): AdminActionType {
+	return `rerun_${type}`;
+}

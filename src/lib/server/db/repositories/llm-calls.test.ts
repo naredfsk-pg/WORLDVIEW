@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { LlmCall } from '../../../types/llm';
 import type { Db } from '../client';
 import { openTestDb } from '../test-db';
+import { createJobRunRepository } from './job-runs';
 import { createLlmCallRepository } from './llm-calls';
 
 let db: Db;
@@ -63,5 +64,27 @@ describe('LlmCallRepository', () => {
 			tokens: 160
 		});
 		expect(await calls.usageSince('2026-11-14T00:00:00.000Z')).toEqual({ requests: 0, tokens: 0 });
+	});
+
+	it('counts only the calls of one job run', async () => {
+		const jobs = createJobRunRepository(db);
+		const claim = (key: string) =>
+			jobs.claim({
+				job_type: 'digest',
+				idempotency_key: key,
+				scheduled_for: '2026-11-13T00:00:00.000Z',
+				trigger: 'cron',
+				force: false,
+				now: '2026-11-13T00:00:00.000Z'
+			});
+		const mine = await claim('digest:a');
+		const other = await claim('digest:b');
+		if (!mine.claimed || !other.claimed) throw new Error('claims expected');
+		await calls.record(call({ job_run_id: mine.run.id }));
+		await calls.record(call({ job_run_id: mine.run.id, status: 'error', tokens_out: 0 }));
+		await calls.record(call({ job_run_id: other.run.id }));
+		await calls.record(call());
+
+		expect(await calls.usageForJobRun(mine.run.id)).toEqual({ requests: 2, tokens: 250 });
 	});
 });

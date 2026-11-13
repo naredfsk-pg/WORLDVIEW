@@ -6,9 +6,9 @@
  */
 import type { JsonObject } from '#lib/types/domain.js';
 import type { NormalizedArticle, RawFeedItem, SourceDefinition } from '#lib/types/news.js';
-import { canonicalizeUrl } from './canonical-url.js';
+import { parseFeedTimestamp } from '#lib/utils/date.js';
+import { canonicalizeUrl } from '#lib/utils/url.js';
 import { computeContentHash } from './fingerprint.js';
-import { parseFeedTimestamp } from './timestamps.js';
 
 export const MAX_TITLE_LENGTH = 300;
 export const MAX_EXCERPT_LENGTH = 500;

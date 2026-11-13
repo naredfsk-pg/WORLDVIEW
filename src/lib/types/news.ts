@@ -5,7 +5,16 @@
 import type { Article, IsoUtc, Source, Tag } from './domain';
 
 /** Checked-in registry entry (`src/lib/server/news/sources.ts`). Upserted into `sources` at ingest start. */
-export type SourceDefinition = Omit<Source, 'last_success_at' | 'last_error_at' | 'last_error'>;
+export type SourceDefinition = Omit<
+	Source,
+	'last_success_at' | 'last_error_at' | 'last_error' | 'etag' | 'last_modified'
+>;
+
+// CONTRACT-CHANGE: added (Wave 2) for conditional GET. Values are opaque header strings.
+export interface FeedValidators {
+	etag: string | null;
+	last_modified: string | null;
+}
 
 /** One item as parsed from RSS/Atom, before any normalization. All fields untrusted. */
 export interface RawFeedItem {
@@ -36,11 +45,16 @@ export interface FetchContext {
 	safeFetch: SafeFetch;
 	signal: AbortSignal;
 	now: Date;
+	// CONTRACT-CHANGE: added (Wave 2). Validators of the previous fetch; null → unconditional GET.
+	conditional?: FeedValidators | null;
 }
 
 export interface FetchResult {
 	items: RawFeedItem[];
 	fetched_at: IsoUtc;
+	// CONTRACT-CHANGE: added (Wave 2). True on HTTP 304; `validators` are the ones to store next.
+	not_modified: boolean;
+	validators: FeedValidators;
 }
 
 /** One adapter per `SourceKind`. Adapters fetch and parse only; they do not normalize or touch the DB. */
@@ -90,6 +104,8 @@ export interface EventMatchCandidate {
 	first_seen_at: IsoUtc;
 	last_updated_at: IsoUtc;
 	article_titles: string[];
+	// CONTRACT-CHANGE: added (Wave 2). Real articles never join a demo event (and vice versa).
+	is_demo: boolean;
 }
 
 /** Rule-based grouping verdict; `ambiguous` pairs go to the LLM `clustering` task. */

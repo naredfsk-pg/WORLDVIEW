@@ -1,0 +1,288 @@
+# 2 · backend · digest-and-briefs
+
+| Field | Value |
+|---|---|
+| Started | 2026-11-13 12:01:52 (Asia/Bangkok) |
+| Finished | 2026-11-13 12:52:00 (Asia/Bangkok) |
+| Status | done |
+| Agent type | backend (Wave 2, lane "Digest & Briefs") |
+
+## Goal
+
+เชื่อม pipeline ingest → digest → briefs ให้หน้า public แสดงเนื้อหาภาษาไทยที่ LLM เขียนและผ่าน editorial gates แล้ว: รวม helper เข้า `#lib/utils`, แก้ carry-over จาก Wave 1 (evidence dedupe, http(s) guard, tie-break, ETag/Last-Modified + conditional GET), เปิดใช้ source ที่ owner อนุมัติ, สร้าง digest job, brief jobs (morning/evening) พร้อม region quota และ `selection_reason`, `archive_snapshot`, job registry (`runJobByType`) + CLI แบบบาง, อัปเดต ARCHITECTURE §8/§9, และรัน live smoke แบบจำกัดจำนวน LLM request
+
+## What I did (in order)
+
+1. 12:01 — ตรวจ worktree (`feature/digest-and-briefs` ที่ `df27f9a`), อ่าน ARCHITECTURE ทั้งไฟล์, AGENT_PLAN (Wave 2 decisions), log ของ Wave 1 (llm-provider, news-ingestion, reviewer ทั้งสาม), types, repositories, jobs, news, llm, editorial
+2. 12:02 — setup: `npm ci`, `cp .env.example .env`, `npm run db:reset`; baseline `npm test` ผ่าน 471 tests
+3. 12:03–12:11 — **utils consolidation** (commit `db39a16`): ย้าย `canonicalizeUrl` (+ `isHttpUrl`) → `utils/url.ts`, `parseFeedTimestamp` + `hourSlot` → `utils/date.ts`, `withRetry`/`backoffDelayMs` → `utils/retry.ts` ด้วย `git mv` (เก็บประวัติ test); เพิ่ม helper ตาม §7 (`todayBriefDate`, `isBriefDate`, `isYearMonth`, `monthOf`, `addDays`, `bangkokDateTimeToUtc`, `bangkokDayRangeUtc`, `formatThaiDate`, `formatThaiTime`) และ `utils/params.ts` (`parseCategory`, `parseEdition`, `parsePageNumber`); `components/format.ts` ลบสำเนาซ้ำแล้ว re-export จาก utils เพื่อให้ไฟล์ `.svelte` ไม่ต้องแก้; route `+page.server.ts` ทั้งสี่ import parser จาก utils โดยตรง; `job-slots.ts` สร้าง slot ทั้งหมดบน utils (เพิ่ม `briefJobSlot`, `archiveJobSlot`)
+4. 12:11–12:16 — **carry-overs** (commit `a2099a9`): `evidenceUrls()` dedupe, `insertArticleIfNew` ปฏิเสธ URL ที่ไม่ใช่ http(s), `listMatchableEvents` เรียง `last_updated_at desc, id asc`, คอลัมน์ `sources.etag/last_modified` (migration `0002_source_validators.sql` จาก `drizzle-kit generate --name source_validators` ซึ่งเป็นคำสั่งเดียวกับ `npm run db:generate`), RSS adapter ส่ง `If-None-Match`/`If-Modified-Since` และเก็บ validator หลัง insert สำเร็จเท่านั้น; ระหว่างอ่านโค้ดพบว่า seed demo events ลงวันที่วันนี้ จึงเพิ่มการแยก real/demo ใน grouping และ relation candidates (ไม่ให้ข่าวจริงไปรวมกับ event สมมติ)
+5. 12:16–12:24 — **sources** (commit `c572b09`): เปิด `enabled: true` ทั้ง 6 ตัวพร้อม `license_notes: "Owner approved 2026-11-13: headline + link only"`; `ingest --dry-run` จริงครั้งแรกพบปัญหา 3 feeds (ดู Errors) → แก้ SafeFetch ให้คลาย gzip แบบจำกัดขนาด (UN News ใช้ได้), ปิด WHO (feed ค้าง) และ IMF (404) แล้ว dry-run ซ้ำผ่าน 4/4
+6. 12:24–12:31 — **digest job** (commit `16f341d`): `jobs/digest.ts` (orchestrator, tagging, ambiguous clustering), `digest-content.ts` (extraction → summary → gate → save), `digest-links.ts` (relations + academy), `digest-llm.ts` (ส่ง `{job_run_id, signal}` ทุก call และนับ counter); เพิ่ม `bestEventMatch` ใน `news/grouping.ts`, `DigestRepository.mergeDraftEvent`, เปลี่ยน relation candidates เป็น "tag หรือ region ที่ไม่ใช่ global"; tests 8 ข้อ + repo tests 2 ข้อ
+7. 12:31–12:35 — **brief jobs + archive_snapshot** (commit `27a0a00`): `jobs/briefs.ts` (`runBrief`, `briefWindow`), `jobs/brief-ranking.ts` (pure ranking + region quota 40% + `selection_reason` ภาษาไทย), `listCandidateEvents({ include_briefs_of })` สำหรับ snapshot merge; tests 11 ข้อ
+8. 12:35–12:38 — **registry + CLI** (commit `b847e2e`): `jobs/registry.ts` (`runJobByType`), `scripts/job.ts` เหลือเป็น CLI บาง ๆ, ลบ `--strict` และ branch "not implemented", เพิ่ม `--max-events`, `runJob` รับ `signal` จากผู้เรียก; registry test ใช้ DB ไฟล์ชั่วคราวและบังคับ LLM เป็น not configured (ไม่มี network)
+9. 12:39–12:43 — **live smoke** (รายละเอียดด้านล่าง): `db:reset` → ingest จริง → digest จริง `--max-events 3` (cap 40 requests) → `brief_morning` → dev server + screenshot → ปิด dev server
+10. 12:42 — อัปเดต ARCHITECTURE §8/§9 (commit `86d4150`)
+11. 12:43–12:45 — gates ทั้งหมด: check, lint, test (543), build, test:e2e (57 ผ่านบน DB ที่ seed ใหม่ ดู Errors #15)
+12. 12:45 — เขียน log นี้
+13. 12:46–12:51 — **requirement เพิ่มจาก coordinator** (ผล security review ของ admin lane): pipeline เขียนทับการแก้ไขของ admin ได้ → `saveEventContent` ป้องกัน field ที่ admin แก้ (ดูหัวข้อ Decisions) + tests 3 ข้อ + ARCHITECTURE §9 digest order ข้อ 4; รัน gates ทั้งหมดซ้ำแล้ว commit
+
+## Files created / changed
+
+- `src/lib/utils/{date,url,retry,params}.ts` + tests (`date.test.ts`, `url.test.ts`, `retry.test.ts`, `feed-timestamp.test.ts`) — helper กลาง
+- `src/lib/components/format.ts` — ลบสำเนาซ้ำ, re-export จาก utils (พฤติกรรมเดิม, `format.test.ts` ผ่านทุกข้อ)
+- `src/routes/{archive,brief/[date],connections,search}/+page.server.ts` — เปลี่ยนเฉพาะ import path
+- `src/lib/types/{domain,news,repositories}.ts` — CONTRACT-CHANGE (ดูหัวข้อด้านล่าง)
+- `src/lib/server/db/schema.ts`, `migrations/0002_source_validators.sql`, `migrations/meta/*` — คอลัมน์ `etag`, `last_modified`
+- `src/lib/server/db/repositories/{ingest,digest,briefs,shared}.ts` + tests (`shared.test.ts` ใหม่)
+- `src/lib/server/news/{adapters,safe-fetch,grouping,sources,normalize}.ts` + tests (`sources.test.ts` ใหม่); ลบ `news/canonical-url.ts`, `news/timestamps.ts`
+- `src/lib/server/jobs/{digest,digest-content,digest-links,digest-llm,briefs,brief-ranking,registry}.ts` + tests (`digest.test.ts`, `briefs.test.ts`, `registry.test.ts`)
+- `src/lib/server/jobs/{ingest,group-articles,job-slots,cli-args,runner}.ts` + tests ที่เกี่ยวข้อง
+- `scripts/job.ts` — CLI บางบน registry, crontab comment อัปเดต
+- `docs/ARCHITECTURE.md` — §8, §9 เท่านั้น
+- `docs/screenshots/wave2/event-390.png`, `event-1440.png`
+- `docs/agent-logs/20261113-1201_2_backend_digest-and-briefs.md` — log นี้
+- (requirement เพิ่ม) `db/repositories/digest.ts` (`adminEditedContentFields`, `SYSTEM_ACTOR`), `jobs/digest-content.ts`, `jobs/digest.test.ts`, `types/repositories.ts`, `docs/ARCHITECTURE.md` §9
+
+ไม่ได้แก้ `src/lib/server/llm/**`, `src/lib/server/editorial/**`, `hooks.server.ts`, `src/routes/admin/**`, `docs/AGENT_LOG.md`
+
+## Commands run & results
+
+| Time | Command | Result |
+|---|---|---|
+| 12:02 | `npm ci` · `cp .env.example .env` · `npm run db:reset` | ok (warning `allow-scripts` เดิม) |
+| 12:02 | `npm test` (baseline) | 41 files, 471 passed |
+| 12:10 | `npm run check` · `npx vitest run` (หลัง refactor) | 0 errors · 498 passed |
+| 12:13 | `npx drizzle-kit generate --name source_validators` | `0002_source_validators.sql` (ADD COLUMN ×2) |
+| 12:16 | `npx vitest run` | 507 passed |
+| 12:17 | `npm run job -- ingest --dry-run` (จริง ครั้งที่ 1) | exit 2: 4 ok, un-news parse_error, imf-news 404, who-news 83/83 dropped |
+| 12:19–12:20 | probe ผ่าน SafeFetch (1 request ต่อ URL): un-news, who-news, IMF `/en/News/RSS`, IMF `/en/Publications/RSS`, un-news (หลังแก้ gzip) | ดูตาราง feed ด้านล่าง |
+| 12:21 | `npm run job -- ingest --dry-run` (จริง ครั้งที่ 2) | exit 0: sources_ok 4, items_fetched 133, items_dropped 17 |
+| 12:30 | `npx vitest run src/lib/server/jobs/digest.test.ts` | 8 passed (หลังแก้ Errors #9–#11) |
+| 12:34 | `npx vitest run src/lib/server/jobs/briefs.test.ts` | 11 passed |
+| 12:37 | `npm run job -- scrape` · `digest --max-events 0` | exit 64 ทั้งคู่ |
+| 12:39 | `npm run db:reset` | ok; digest จะไม่หยิบ seed event (`listEventsNeedingContent` = []) |
+| 12:39 | `npm run job -- ingest` (จริง) | exit 0 (counters ด้านล่าง) |
+| 12:39 | `npx tsx --env-file=C:\Project\WORLDVIEW\.env scripts/job.ts digest --max-events 3` (env: `LLM_DAILY_MAX_REQUESTS=40`, `DATABASE_URL=file:./data/worldview.db`) | exit 0, succeeded (ดูด้านล่าง) |
+| 12:41 | `npm run job -- brief_morning` | exit 0, 1 event (ต่ำกว่า target, log warn) |
+| 12:41 | `npx vite dev --port 5173` + curl `/`, `/brief/2026-11-13`, `/events/<id>` ×2 | 200 ทุกหน้า มีหัวข้อภาษาไทยจริง |
+| 12:41 | Playwright screenshot 390/1440 ของ `/events/6b97f38d-…` | ไม่มี horizontal overflow; ปิด dev server แล้ว |
+| 12:43 | `npm run check` · `npm run lint` · `npm test` · `npm run build` | 0 errors · exit 0 · 46 files / 543 passed · exit 0 |
+| 12:44 | `npm run test:e2e` (dev DB ที่มีข้อมูล smoke) | 56 passed, 1 failed (Errors #15) |
+| 12:45 | `DATABASE_URL=file:./data/e2e.db npm run db:reset` + `npm run test:e2e` | 57 passed |
+| 12:51 | หลังแก้ admin protection: `check` · `lint` · `test` · `build` · `test:e2e` (e2e DB) | 0 errors · exit 0 · 46 files / 546 passed · exit 0 · 57 passed |
+
+## Feed verification (2026-11-13, ผ่าน SafeFetch, 1 request ต่อ URL)
+
+| Source | URL | Result | Action |
+|---|---|---|---|
+| UN News | `https://news.un.org/feed/subscribe/en/news/all/rss.xml` | 200 แต่ body เป็น gzip ทั้งที่ขอ `identity` → malformed XML; หลังแก้ SafeFetch: 30 items, 19 ภายใน 72 ชม. | enabled |
+| WHO | `https://www.who.int/rss-feeds/news-english.xml` | 200, 83 items แต่ล่าสุด 2026-10-10 และส่วนใหญ่เป็นข่าวปี 2020 ที่ถูกเปลี่ยน pubDate | disabled (จะทำให้ข่าวเก่าดูเหมือนข่าวใหม่) |
+| IMF | `https://www.imf.org/en/News/rss?language=eng` | HTTP 404; ลอง `/en/News/RSS?language=eng` และ `/en/Publications/RSS?language=eng` ก็ 404; หน้า Social Hub ของ imf.org ไม่มีลิงก์ RSS แล้ว | disabled |
+| BBC World | `https://feeds.bbci.co.uk/news/world/rss.xml` | 200, 33 items | enabled |
+| Guardian World | `https://www.theguardian.com/world/rss` | 200, 45 items | enabled |
+| Al Jazeera | `https://www.aljazeera.com/xml/rss/all.xml` | 200, 25 items | enabled |
+
+## Live smoke results (ไม่มี secret)
+
+**Ingest** (`ingest:2026-11-13T12`, succeeded): sources_ok 4, sources_failed 0, items_fetched 133, items_dropped 17, articles_inserted 116, duplicates_url 0, duplicates_content 0, articles_grouped 116, events_created 114, events_updated 0 (ambiguous → new 14)
+
+**Digest** (`digest:2026-11-13T12`, `--max-events 3`, succeeded, ~66 วินาที): events_published 3, events_pending_review 0, events_updated 2 (clustering merge 2 คู่), relations 0 (published/pending/dropped = 0), lesson_links 5, llm_requests 14, llm_cache_hits 0, llm_failures 0, llm_tokens 33,458
+
+`llm_calls` ตามจริง: tagging 2 (`cx/gpt-5.6-luna`), clustering 1 (`cx/gpt-5.6-luna`), extraction 3, summary 3, relations 2, academy_linking 3 (`cc/claude-sonnet-5-5`) = 14 requests, error 0, ไม่มี repair/fallback (ต่ำกว่า cap 40 มาก)
+
+**Brief** (`brief_morning:2026-11-13`): brief_candidates 1, brief_events 1 — อีกสอง event เผยแพร่หลัง 07:00 ICT จึงอยู่นอก window ของรอบเช้าอย่างถูกต้อง
+
+**หน้าเว็บ**: `/`, `/brief/2026-11-13`, `/events/6b97f38d-…`, `/events/30ac288d-…` ตอบ 200 และแสดงสรุปภาษาไทยจริง; screenshots `docs/screenshots/wave2/event-390.png`, `event-1440.png`
+
+**ประเมินคุณภาพ (event Nvidia `6b97f38d-…`)**
+- หัวข้อ: "เจนเซน หวง อดีตซีอีโอ Nvidia ถูกระบุว่าจะให้ปากคำต่อสภาคองเกรสสหรัฐฯ"; แหล่งข่าว 2 แห่ง (BBC News, The Guardian) ทั้งสองลิงก์ไปที่ article ที่เก็บไว้จริง
+- สรุปบอกตรง ๆ ว่ามีเพียงพาดหัวข่าว และแยกว่าแต่ละสำนักพูดอะไร (BBC ใช้คำว่า "ถูกเรียกตัว", Guardian ใช้ "คาดว่าจะให้ปากคำ")
+- ส่วน "สิ่งที่ยังไม่ชัดเจน" ระบุความขัดแย้งเรื่องตำแหน่ง ("อดีต" ซีอีโอ) และที่มาของข้อกล่าวหาเรื่องสายลับ ไม่พบข้อมูลที่แต่งขึ้นเอง
+- จุดอ่อน: หัวข้อใช้คำว่า "อดีตซีอีโอ" ตามพาดหัว BBC เหมือนเป็นข้อเท็จจริง แม้ส่วน uncertain จะบอกว่าไม่แน่ชัด (ควรให้ prompt ของ summary ใส่การอ้างที่มาในหัวข้อด้วย)
+- event อื่น: claims มีผู้กล่าวอ้างชัดเจน (เช่น "พระสันตะปาปาลีโอ", "The Guardian (ตามพาดหัวข่าวของบทความ)") และ evidence ชี้ไปที่ article จริง; การ merge ข่าว Nvidia (BBC + Guardian) ถูกต้อง ส่วนข่าวพระสันตะปาปา (เรียกร้องให้ชดเชย + พบผู้รอดชีวิตในเปรู) เป็นสองเหตุการณ์ในทริปเดียวกัน ถือว่าก้ำกึ่ง
+
+## Errors & problems
+
+| # | Time | Where (file/command/step) | Error | Cause | Resolution |
+|---|---|---|---|---|---|
+| 1 | 12:15 | `news/adapters.ts` `singleLine` (แก้ผ่าน Python heredoc) | regex `/[\r\n]/` กลายเป็นตัว CR/LF จริงในไฟล์ | Python ตีความ `\r\n` ใน string ที่ไม่ใช่ raw (กับดัก encoding ที่ทีมเตือนไว้) | แก้ด้วย Edit tool แล้วตรวจ byte ด้วย `od -c`; หลังจากนั้นใช้ Edit tool กับโค้ดที่มี backslash |
+| 2 | 12:16 | `adapters.test.ts` "sends the stored validators…" | `NewsFetchError: RSS feed has no channel` | `<channel></channel>` ว่าง fast-xml-parser แปลงเป็นค่าว่าง | ใส่ `<title>` ใน channel ของ test |
+| 3 | 12:17 | `ingest --dry-run` จริง → un-news | `parse_error: malformed XML` | server ส่ง body เป็น gzip แม้ขอ `accept-encoding: identity` | SafeFetch คลาย gzip (ดูจาก header หรือ magic bytes) โดยจำกัดขนาดหลังคลายที่ 5 MB (bomb → `too_large`), encoding อื่นถูกปฏิเสธ; test ใหม่ |
+| 4 | 12:17 | `ingest --dry-run` จริง → who-news | 83 items ถูก drop ทั้งหมด | feed ค้าง (ล่าสุด 2026-10-10, ส่วนใหญ่ข่าวปี 2020 ที่เปลี่ยนวันที่) | ปิดใช้งานและรายงาน owner |
+| 5 | 12:17 | `ingest --dry-run` จริง → imf-news | HTTP 404 | URL เดิมไม่มีแล้ว; URL ทางเลือก 2 แบบก็ 404 | ปิดใช้งานและรายงาน owner |
+| 6 | 12:18 | probe script ใน scratchpad | `Top-level await … "cjs"`, แล้ว `ERR_UNSUPPORTED_ESM_URL_SCHEME`, แล้ว `allowedHosts.map is not a function` | ไฟล์ `.ts` ถูก transform เป็น CJS, path Windows ต้องเป็น `file:///`, `allowedHosts` ต้องเป็น array | เปลี่ยนเป็น `.mts`, ใช้ `file:///C:/…`, ส่ง array (ทั้งสามครั้งล้มก่อนส่ง request ใด ๆ) |
+| 7 | 12:20 | `safe-fetch.test.ts` gzip test | กรณี `content-encoding: br` ไม่ throw | ตรวจ magic bytes ก่อนตรวจ header จึงคลาย gzip ทั้งที่ header บอก br | เรียงลำดับใหม่: ปฏิเสธ encoding ที่ไม่รู้จักก่อน แล้วจึงดู magic bytes |
+| 8 | 12:21 | `ingest.test.ts` "fails … when no source is enabled" | ได้ "4 of 4 sources failed" แทน "no enabled sources" | production registry มี source เปิดใช้แล้ว | test ปิดทุก source ใน registry ที่ส่งเข้าไปเอง |
+| 9 | 12:27 | `digest.test.ts` (เขียนด้วย Write tool) | `\u0E00-\u0E7F` กลายเป็นตัวอักษรจริงในไฟล์ | กับดัก encoding ของ Write tool | เปลี่ยนเป็น `/\p{Script=Thai}/u` ด้วย Edit tool; สแกนไฟล์ก่อน commit ทุกครั้ง (0 hits) |
+| 10 | 12:28 | `digest.test.ts` acceptance #9 | `createDraftEvent: all articles are already linked` | helper `addArticle` อ่าน counter หลัง `await` ภายใต้ `Promise.all` ทำให้สอง article ได้ URL เดียวกัน | เก็บค่า counter ไว้ก่อน `await` |
+| 11 | 12:29 | `npm run check` → `digest.test.ts` | `Spread types may only be created from object types` | cast เป็น `never` แล้ว spread | เพิ่ม helper `defaultSummary(): SummaryOutput` |
+| 12 | 12:33 | `briefs.test.ts` ranking 2 ข้อ | reason "ครอบคลุมข่าวจากเอเชีย" โผล่ทั้งที่ไม่มีข่าว US/EU ถูกกัน; test 40% คาดผิดสำหรับ max 5 | quota cap ของ target เล็กกระทบทุก region และ test ตั้งค่าคาดหวังผิด | ใส่ reason เรื่อง region เฉพาะเมื่อมีข่าว americas/europe ถูก defer จริง; test ใช้ 15 candidates / 10 slots |
+| 13 | 12:34 | chain `eslint && … && git commit` | commit ไม่เกิดขึ้น | eslint: import `eq` ไม่ได้ใช้ใน `briefs.test.ts` | ลบ import แล้ว commit ใหม่ |
+| 14 | 12:42 | แก้ ARCHITECTURE ผ่าน bash heredoc | `unexpected EOF while looking for matching '` | bash parse เนื้อหา heredoc ยาวที่มีอักขระพิเศษไม่ผ่าน | เขียน Python script เป็นไฟล์ใน scratchpad แล้วรัน |
+| 15 | 12:44 | `npm run test:e2e` | "category chips filter Today…" ไม่พบ card | e2e เขียนไว้กับข้อมูล demo seed แต่ dev DB ตอนนี้มี brief จริงของวันนี้ (1 event หมวด society) | ไม่ใช่ bug ของโค้ด; รัน e2e กับ `DATABASE_URL=file:./data/e2e.db` ที่ seed ใหม่ → 57/57 ผ่าน; dev DB เก็บข้อมูล smoke ไว้ตามที่สั่ง |
+| 16 | 12:46 | `db/repositories/digest.ts` `saveEventContent` (พบโดย security review ของ admin lane ส่งต่อผ่าน coordinator) | การแก้ไขของ admin ถูกเขียนทับเมื่อ digest re-summary | repository ไม่ตรวจ `content_revisions` ของ admin ก่อนเขียน `*_th` | option (a) ตามหัวข้อ Decisions; tests: admin-edited published event + article ใหม่ → ข้อความ admin อยู่รอด (รวมถึงรอบที่สอง), event ที่ไม่มี admin edit ยัง re-summary ตามเดิม, event ที่ยังไม่ published แต่ admin แก้แล้ว → `pending_review [manual_flag]` |
+
+## Decisions
+
+- **Admin corrections ชนะ pipeline (PRD FR-06 / §9.2) — เลือก option (a)**
+  - ตรวจใน transaction เดียวกับการเขียนใน `saveEventContent`: field ที่ admin เคยแก้คือ key ใน `before_after.after` ของทุก `content_revisions` ของ event ที่ `changed_by` ไม่ใช่ `system` (admin lane เขียน email ของ admin ลงช่องนี้ ส่วน pipeline เขียน `system`)
+  - ใช้ revision ของ admin **ทั้งหมด** ไม่ใช่เฉพาะที่ใหม่กว่า `summarized_at` เพราะหลัง re-summary ครั้งแรก `summarized_at` จะเลยเวลาที่ admin แก้ไปแล้ว ถ้าใช้เงื่อนไข "ใหม่กว่า" การ re-summary ครั้งถัดไปจะเขียนทับข้อความของ admin
+  - field ที่ admin ไม่ได้แตะยังอัปเดตตามหลักฐานใหม่; event ที่ published ยังคง published; `system` revision ระบุว่า "admin-edited fields kept" และ digest log `admin_fields_kept`
+  - event ที่ยังไม่ published แต่ admin แก้แล้วจะไม่ถูก auto-publish: คงเป็น `pending_review` พร้อม `manual_flag` จนกว่า admin จะกด publish เอง
+  - ไม่เลือก (b) เพราะ review queue แสดงเฉพาะ event `pending_review` และห้าม auto-demote event ที่ published แล้ว (§6) จึงไม่มีทางนำ event ที่ published เข้า queue ได้โดยไม่ผิดกฎ
+- เลือก **merge draft เข้า event อีกฝั่งเสมอ** หลัง clustering ตอบ `same_event` (ตัด heuristic ทิศทาง merge ที่เปราะบางออก เพราะ derived fields คำนวณใหม่จาก article อยู่แล้ว)
+- **ข่าวจริงกับ demo ไม่ปนกัน** ทั้งใน grouping, relation candidates และ brief (demo ใช้เมื่อไม่มี event จริงเท่านั้น)
+
+## CONTRACT-CHANGEs
+
+1. `types/domain.ts` — `Source.etag`, `Source.last_modified` (nullable)
+2. `types/news.ts` — `SourceDefinition` omit `etag`/`last_modified`; ใหม่ `FeedValidators`; `FetchContext.conditional?`; `FetchResult.not_modified` + `validators`; `EventMatchCandidate.is_demo`
+3. `types/repositories.ts` — `IngestRepository.recordSourceFetch` ok variant รับ `validators?`; `DigestRepository.mergeDraftEvent(source, target, confidence, now)` ใหม่; `listRelationCandidates` จับคู่ด้วย tag หรือ region ที่ไม่ใช่ `global` (เดิม tag หรือ category) และ `is_demo` เดียวกัน; `BriefRepository.listCandidateEvents` รับ `include_briefs_of?`
+4. ARCHITECTURE §8 เดิมวาง `rankBriefCandidates` ไว้ใน `editorial` แต่ editorial อยู่นอก lane จึงอยู่ที่ `server/jobs/brief-ranking.ts` (pure เหมือนเดิม)
+5. `jobs/registry.ts` เป็น composition root ใน `server/jobs` ที่ import db/config ตรง (ข้อยกเว้นของกฎ §1 "jobs must not import concrete db") — §1 อยู่นอก lane จึงบันทึกใน §8 แทน
+6. CLI: ลบ `--strict`, เพิ่ม `--max-events N`
+7. `DigestRepository.saveEventContent` คืน `{ status, admin_fields_kept }` (เดิม `Promise<void>`) และไม่เขียนทับ field ที่ admin แก้; event ที่ยังไม่ published แต่ admin แก้แล้วจะถูกเก็บเป็น `pending_review` + `manual_flag` แทน `published`
+
+## Open issues / follow-ups for the orchestrator
+
+- **WHO และ IMF ปิดอยู่**: ต้องให้ owner ยืนยัน URL ใหม่ (IMF ไม่มีลิงก์ RSS บน imf.org แล้ว; WHO feed ค้าง)
+- `canonicalizeUrl` ยังไม่ตัด tracking params `traffic_source` (Al Jazeera) และ `at_campaign`/`at_medium` (BBC) — URL เดียวกันจากคนละ feed อาจไม่ dedupe; เสนอเพิ่มใน `TRACKING_PARAMS`
+- คุณภาพ summary: หัวข้ออาจยกถ้อยคำจากพาดหัวมาเป็นข้อเท็จจริง (เช่น "อดีตซีอีโอ") — lane LLM อาจปรับ prompt ให้ attribute ในหัวข้อ; clustering merge คู่ Pope ก้ำกึ่ง (threshold 0.7 อาจต้องจูน)
+- digest ยังไม่สร้าง `event_updates` ตอน re-summary (`new_updates: []`) จึงยังไม่มี timeline
+- ไม่มี circuit breaker เมื่อ LLM ล่ม: event ที่เหลือจะยังเป็น draft จนหมดเวลา 20 นาที (ถูก retry รอบถัดไป)
+- `llm/provider.ts` ยังมี `backoffDelay`/`bangkokDayStartUtc` และ `editorial/text.ts` มี `isHttpUrl` ซ้ำกับ utils (นอก lane, ไม่ได้แก้)
+- ARCHITECTURE §6 ยังไม่มี `llm_request_rejected` (ค้างจาก Wave 1, นอก lane)
+- e2e ผูกกับข้อมูล demo seed: Wave 3 ควรรัน e2e กับ DB ที่ seed แยก หรือทำ test ให้ไม่ขึ้นกับข้อมูล
+- screenshot full-page ที่ 1440 พื้นหลัง sidebar สิ้นสุดที่ความสูง viewport (frontend)
+- Admin lane: เรียก `runJobByType(type, { date, force: true, manual: true, signal })` ได้โดยตรง; ฟังก์ชันไม่ throw และเปิด/ปิด DB connection ของตัวเอง; log เป็น JSON บน stdout
+
+## รอบแก้ตาม review
+
+| Field | Value |
+|---|---|
+| Started | 2026-11-13 13:04:47 (Asia/Bangkok) |
+| Finished | 2026-11-13 13:18:00 (Asia/Bangkok) |
+| Input | `C:\Project\WORLDVIEW\docs\agent-logs\20261113-1250_2_reviewer_digest-and-briefs.md` + probe `scratchpad\probe-digest\probe1.mts` + ข้อความจาก coordinator (findings 1–13 + prompt fix) |
+| Status | done — แก้ครบ 13 ข้อและ prompt fix; ยังไม่ rebase (รอ coordinator แจ้งหลัง `feature/admin` merge) |
+
+### ขั้นตอน (ตามเวลา)
+
+1. 13:04 — อ่าน review และ probe (scenario A: keep_published วนซ้ำ, B: merge throw ทำให้ทั้ง run ล้ม, C: merge ลบ draft ที่ admin แก้)
+2. 13:06 — prompt fix: `llm/tasks/summary.ts` บังคับให้ title/summary ระบุเฉพาะข้อเท็จจริงที่ทุกแหล่งตรงกัน ถ้อยคำของสำนักเดียวหรือที่ขัดกันต้อง attribute ("ตามรายงานของ BBC …") หรือไม่ใส่ในหัวข้อ; bump เป็น `summary@2`; test ใหม่ตรวจ system prompt ที่ส่งจริงผ่าน mock transport (ข้อยกเว้น lane ที่ coordinator อนุมัติ แตะเฉพาะไฟล์นี้)
+3. 13:07 — #9 `LlmCallRepository.usageForJobRun` แล้ว digest ใช้แทน `usageSince(started_at)`; commit `57d690e`, `0dc1c19`
+4. 13:08–13:11 — digest (#1, #2, #3, #6, #7, #8, #13): แยก try/catch ให้ grouping, tagging แต่ละ batch และ merge แต่ละคู่; ตัด published + `manual_flag` ออกจาก `listEventsNeedingContent`; `markContentChecked` ใหม่สำหรับ `keep_published` ที่ไม่ใช่ `[llm_failed]`; `summarized_at` = เวลาที่ list; `mergeDraftEvent` คืน false เมื่อ draft มี admin revision และ throw เมื่อ demo/real ปนกัน; `saveEventContent` คืนแถวที่บันทึกจริงให้ขั้น links; เก็บ tagging error ต่อ article; tie-break ด้วย id
+5. 13:11 — regression tests จาก probe A/B/C + EntityNotFoundError + "already linked" + #6/#7/#8 (digest.test 11 → 22 ข้อ) และ repo tests; รวมทั้งหมด 425 server tests ผ่าน
+6. 13:12 — #10 `syncSources` ล้าง validators เมื่อ `feed_url` เปลี่ยน, #11 ลบ `content-length` หลัง inflate; commit `468aa66`, `66cf76d`
+7. 13:13–13:15 — briefs (#4, #5, #12): registry ปฏิเสธ brief/snapshot ก่อน window ปิดโดยไม่ claim slot (`reason: 'window_open'`); snapshot เก็บ event จาก brief ของวันนั้นครบทุกตัวนอก cap/quota แล้วเติม event จาก window ให้ถึง MAX; recency ใช้ `window_evidence_at`; ต่ำกว่า MIN หรือ 0 item → `partial`; draft ไม่ทับ brief ที่ published; tests ใหม่ 9 ข้อ
+8. 13:16 — ARCHITECTURE §8/§9 + comment ใน `scripts/job.ts`; commit `124fb32`, `2a75139`
+9. 13:16 — `npm run db:reset` (dev DB ใหม่ ข้อมูล smoke เดิมถูกลบตามคำสั่ง "fresh db:reset") แล้วรัน gates ครบ
+
+### ผลต่อ finding
+
+| # | ระดับ | สถานะ | แก้อย่างไร |
+|---|---|---|---|
+| 1 | high | fixed | grouping, tagging batch, merge pair, event, links แยก try/catch → ข้ามหน่วยที่ล้ม บันทึกใน `job_runs.error` และ run เป็น `partial`; tests: probe B (target ถูก hide ระหว่าง list กับ merge), EntityNotFoundError (draft ถูกลบโดย job อื่น), "already linked" จาก grouping |
+| 2 | medium | fixed | published + `manual_flag` ไม่ถูก list (ไม่เรียก LLM เลย); `keep_published` อื่นที่ไม่ใช่ `[llm_failed]` → `markContentChecked` จึงกลับมาเมื่อมีหลักฐานใหม่เท่านั้น; `[llm_failed]` ยัง retry ทุก run; tests: probe A (3 runs ไม่มี LLM call), url-in-text ถูกเช็กครั้งเดียว, timeout ถูก retry |
+| 3 | medium | fixed | `mergeDraftEvent` ตรวจใน transaction: draft ที่มี revision ของ admin → คืน false ไม่เปลี่ยนอะไร; demo/real ปน → throw; test: probe C (title ของ admin อยู่ครบ ไม่มี revision กำพร้า) + repo test |
+| 4 | medium | fixed | `runJobByType` ตรวจ window ก่อน claim: ยังไม่ปิดและไม่มี `--force` → `skipped`, `reason: 'window_open'`, exit 0, ไม่มีแถว `job_runs`; ใช้กับ archive_snapshot ด้วย; tests 3 ข้อ (`--date 2099-01-01`) |
+| 5 | medium | fixed | ตาม decision ของ coordinator: event จาก brief เช้า/เย็นที่ published ของวันนั้นอยู่ใน snapshot ทุกตัว (นอก cap/quota) แล้วจัดอันดับ event จาก window ลงช่องที่เหลือถึง MAX; recency ใช้หลักฐานล่าสุดภายใน window; tests: carried 4 ตัวเกิน MAX 3 ยังอยู่ครบ, forced rerun ไม่ถูก late report ดันลำดับ |
+| 6 | medium | fixed | `saveEventContent` คืน `event` ที่บันทึกจริง ขั้น relations/academy ใช้แถวนั้น; test: admin แก้ category/tags แล้ว academy_linking เห็นค่าของ admin |
+| 7 | low | fixed | `summarized_at` = เวลาที่ list events (ก่อนเรียก LLM); test: article ที่ link ระหว่าง summary ทำให้ event กลับมาใน list |
+| 8 | low | fixed | tagging error เก็บต่อ article; เฉพาะ `invalid_request`/`input_too_large` ส่งให้คน (`llm_request_rejected`) นอกนั้น → `llm_failed`; tests 2 ข้อ |
+| 9 | low | fixed | `usageForJobRun(job_run_id)`; repo test |
+| 10 | low | fixed | upsert ใช้ `CASE WHEN feed_url เดิม = ใหม่ THEN ค่าเดิม ELSE NULL`; repo test |
+| 11 | low | fixed | ลบ `content-length` พร้อม `content-encoding`; test ตรวจ header |
+| 12 | low | fixed | 0 item หรือ < MIN → `partial` (exit 2) พร้อมข้อความ; `saveBrief` ไม่ให้ draft ทับ brief ที่ published; tests 3 ข้อ |
+| 13 | suspicion | done | `listEventsNeedingContent` เรียง `last_updated_at desc, id asc`; repo test |
+| prompt | — | done | `summary@2` (cache เดิมใช้ไม่ได้), test ตรวจข้อความ instruction ที่ส่งจริง; ไม่ได้รัน live smoke ตามคำสั่ง |
+
+### Decisions รอบนี้
+
+- **#3 เลือก "refuse"** แทนการสลับทิศ merge: ถ้าสลับ draft ที่ไม่มี admin edit จะถูกลบแทน แต่ target อาจเป็น event ที่ published แล้วซึ่งลบไม่ได้; refuse ง่ายและปลอดภัยกว่า ทั้งสองยังแยกกันอยู่ให้ admin ตัดสินใจ
+- **#2 marker ใช้ `summarized_at` เดิม** (ไม่เพิ่มคอลัมน์ `content_checked_at`) เพื่อไม่ต้องเพิ่ม migration ก่อน rebase; ความหมายใน §9: "หลักฐานที่ link ถึงเวลานี้ถูกพิจารณาแล้ว"
+- **#7 ใช้เวลาที่ list** ตามตัวเลือกที่ coordinator ให้ เพราะ `ArticleWithSource` ไม่มี `linked_at`
+- **#4 ครอบคลุม archive_snapshot ด้วย** (snapshot ของวัน D ก่อน D+1 00:00 ICT ก็ claim slot ก่อนเวลาได้เหมือนกัน)
+
+### Commands run & results (รอบนี้)
+
+| Time | Command | Result |
+|---|---|---|
+| 13:07 | `npx vitest run …llm-calls.test.ts src/lib/server/llm/tasks` | 5 passed |
+| 13:11 | `npx vitest run src/lib/server/jobs/digest.test.ts` | 22 passed |
+| 13:12 | `npx vitest run src/lib/server` | 425 passed |
+| 13:15 | `npx vitest run src/lib/server/jobs` | 82 passed / 2 failed → แก้ test (ดู Errors) → ผ่าน |
+| 13:16 | `npx vitest run` · `npx eslint src scripts` · `npm run check` | 47 files / 571 passed · exit 0 · 0 errors |
+| 13:16 | `npm run db:reset` แล้ว `check` · `lint` · `test` · `build` · `test:e2e` | 0 errors · exit 0 · 571 passed · exit 0 · 57 passed |
+
+### Errors & problems (รอบนี้)
+
+| # | Time | Where | Error | Cause | Resolution |
+|---|---|---|---|---|---|
+| R1 | 13:14 | `briefs.test.ts`, `registry.test.ts` | 2 tests fail: คาด `succeeded` แต่ได้ `partial` | พฤติกรรมใหม่ของ #12 (0 item → partial) ตามที่ตั้งใจ | อัปเดต expectation ของ test เดิม |
+| R2 | 13:14 | Python edit script ของ `briefs.test.ts` | `AssertionError` หา string ไม่เจอ | Prettier จัดบรรทัด `runBrief(...)` ใหม่ ข้อความจึงไม่ตรง | เปลี่ยน target ให้สั้นลง (`target: { min: 1, … }`) แล้วรันใหม่ |
+| R3 | 13:15 | `registry.test.ts` "refuses brief_evening/archive_snapshot…" | `expected true to be false` | เช็ก `endsWith('2099-01-01')` ไปเจอแถวที่ case ก่อนหน้าสร้างด้วย `--force` | เช็ก key เต็ม `${type}:2099-01-01` |
+
+### หมายเหตุสำหรับ rebase (รอ coordinator)
+
+- ยังไม่ rebase ตามคำสั่ง; เมื่อ `feature/admin` merge แล้ว: ลบ `migrations/0002_source_validators.sql` + snapshot/journal entry ของมัน, rebase บน `main`, แล้ว `npm run db:generate` ให้ได้ `0003`
+- จุดที่น่าจะ conflict: `schema.ts` (sources columns), `types/repositories.ts` (DigestRepository / BriefRepository / LlmCallRepository), `repositories/digest.ts` (`saveEventContent` + admin check ควรใช้ `admin_actions` หรือ `content_revisions` ตามที่ admin lane บันทึกจริง)
+- dev DB ถูก reset แล้ว (ข้อมูล live smoke เดิมหาย); screenshot ใน `docs/screenshots/wave2/` ยังเป็นหลักฐานของ smoke
+
+## Rebase + admin follow-up
+
+| Field | Value |
+|---|---|
+| Started | 2026-11-13 13:19:36 (Asia/Bangkok) |
+| Finished | 2026-11-13 13:29:30 (Asia/Bangkok) |
+| Input | ข้อความจาก coordinator: `feature/admin` merge เข้า `main` แล้ว (`9900760`) |
+| Status | done |
+
+### ขั้นตอน (ตามเวลา)
+
+1. 13:19 — `git rebase main` (16 commits): conflict เฉพาะ commit `feat(ingest): conditional GET…` ที่ `migrations/meta/_journal.json` และ `migrations/meta/0002_snapshot.json` (add/add)
+2. 13:20 — แก้ conflict: ใช้ `_journal.json` และ `0002_snapshot.json` ของ `main`, ลบ `0002_source_validators.sql` ของผม แล้ว `npx drizzle-kit generate --name source_validators` (คำสั่งเดียวกับ `npm run db:generate` แต่ตั้งชื่อ) ได้ `0003_source_validators.sql` ภายใน commit เดิม จึงทุก commit หลังจากนั้นมี migration ตรงกับ schema; `git rebase --continue` ผ่านจนจบโดยไม่มี conflict อื่น (`schema.ts`, `types/*`, `repositories/*` auto-merge ได้ทั้งหมด)
+3. 13:21 — `npm ci`, `npm run check` 0 errors, `npx vitest run` 52 files / 655 passed
+4. 13:22 — ตรวจ contract ของ admin บน `main`: `updateEventIfCurrent` เขียน `content_revisions` (`changed_by` = email ของ admin) ใน transaction เดียวกัน และตั้ง `updated_at = now` เป็น version token → เงื่อนไข `changed_by != 'system'` ของผมถูกต้อง; พบว่า `markContentChecked` ไม่ได้ขยับ `updated_at` → เพิ่มพารามิเตอร์ `now` (commit `c84d932`) ส่วน write อื่นของ digest (`saveEventContent`, `markEventForReview`, `linkArticles`, `mergeDraftEvent`) ตั้ง `updated_at` อยู่แล้ว
+5. 13:23–13:27 — admin follow-up: registry เพิ่ม `onClaimed` และ `allowOpenWindow`; `manual-ingest.server.ts` → `startManualJob(type, { date }, runner)` ผ่าน `runJobByType`; `/admin/jobs` มีฟอร์มของทุก job type (`?/rerun`, ช่อง date สำหรับ brief/archive); `ADMIN_ACTION_TYPES` เพิ่ม `rerun_{job_type}` + migration `0004_admin_rerun_actions` (CHECK constraint); unit tests + admin e2e 1 ข้อ; ARCHITECTURE §3 แถว `/admin/jobs`, ย่อหน้า `admin_actions`, mermaid และ §8
+6. 13:27 — `npm run db:reset` จากศูนย์ แล้วรัน gates ครบ; commit `874a70e`
+
+### ไฟล์ที่ conflict และวิธีแก้
+
+| File | Conflict | Resolution |
+|---|---|---|
+| `migrations/meta/_journal.json` | content | ใช้ของ `main` (0000, 0001, 0002_admin_actions) แล้ว generate 0003 ต่อท้าย |
+| `migrations/meta/0002_snapshot.json` | add/add | ใช้ของ `main`; snapshot ของผมกลายเป็น `0003_snapshot.json` |
+| `migrations/0002_source_validators.sql` | (ชนเลข) | ลบ แทนด้วย `0003_source_validators.sql` (เนื้อหาเหมือนเดิม: ADD COLUMN `etag`, `last_modified`) |
+| `schema.ts`, `types/domain.ts`, `types/repositories.ts`, `repositories/*` | ไม่มี (auto-merge) | ตรวจด้วย `npm run check` และ tests ทั้งหมดหลัง rebase: ผ่าน |
+
+### Migration list (หลัง rebase)
+
+`0000_init` → `0001_fts` → `0002_admin_actions` (admin lane) → `0003_source_validators` → `0004_admin_rerun_actions`; `npm run db:reset` จากศูนย์ผ่าน และ e2e server สร้าง `data/e2e.db` จาก migration ชุดเดียวกันผ่าน
+
+### Decisions
+
+- **admin rerun ไม่ข้าม brief window**: แยก `allowOpenWindow` ออกจาก `force` — CLI `--force` ยังสร้าง brief ก่อนเวลาได้ (ผู้ดูแลระบบตั้งใจ) แต่ปุ่ม admin เป็น `force` เพื่อรันซ้ำ slot ที่จบแล้วเท่านั้น จึงแสดง `window_open` ตามที่ coordinator ต้องการ
+- **cooldown 5 นาทีนับต่อ job type** (เดิมมีแค่ ingest): รัน digest ซ้ำไม่ต้องรอ ingest; ยังกันการกดซ้ำงานเดียวกัน
+- **คงชื่อไฟล์ `manual-ingest.server.ts`** ตามที่ coordinator ระบุ แม้ตอนนี้รองรับทุก job type (บันทึกใน header ของไฟล์)
+
+### Commands run & results (รอบนี้)
+
+| Time | Command | Result |
+|---|---|---|
+| 13:19 | `git rebase main` | conflict 2 ไฟล์ใน commit ที่ 2/16 |
+| 13:20 | `npx drizzle-kit generate --name source_validators` | `0003_source_validators.sql`; journal: 0000, 0001, 0002_admin_actions, 0003 |
+| 13:20 | `git rebase --continue` | สำเร็จ 16/16 |
+| 13:21 | `npm ci` · `npm run check` · `npx vitest run` | ok · 0 errors · 52 files / 655 passed |
+| 13:23 | `npx drizzle-kit generate --name admin_rerun_actions` | `0004_admin_rerun_actions.sql` (rebuild table สำหรับ CHECK ใหม่) |
+| 13:26 | `npx vitest run src/routes/admin src/lib/server/jobs/registry.test.ts` | 42 passed |
+| 13:27 | `npm run db:reset` · `check` · `lint` · `test` · `build` | exit 0 · 0 errors · 1 error → แก้ → exit 0 · 52 files / 660 passed · exit 0 |
+| 13:28 | `npm run test:e2e` (public + admin suite, `data/e2e.db`) | 70 passed |
+
+### Errors & problems (รอบนี้)
+
+| # | Time | Where | Error | Cause | Resolution |
+|---|---|---|---|---|---|
+| B1 | 13:19 | `git rebase main` (commit `feat(ingest): conditional GET…`) | conflict `_journal.json`, `0002_snapshot.json` | ทั้งสอง branch สร้าง migration หมายเลข 0002 | ใช้ของ `main` แล้ว generate เป็น 0003 ตามแผนของ coordinator; หมายเหตุ: ข้อความ commit นั้นยังเขียนว่า "migration 0002" (แก้ข้อความ commit ย้อนหลังไม่ได้เพราะห้าม interactive rebase) |
+| B2 | 13:22 | `repositories/digest.ts` `markContentChecked` | ไม่ขยับ `updated_at` (version token ของ admin editor) | method เพิ่มในรอบ review ก่อนที่ optimistic concurrency ของ admin จะ merge | เพิ่มพารามิเตอร์ `now` และตั้ง `updated_at`; repo test ตรวจค่า |
+| B3 | 13:27 | `npm run lint` → `admin-actions.test.ts` | `'createJobRunRepository' is defined but never used` | test เดิมใช้สร้าง deps ของ ingest แต่ seam ใหม่ใช้ fake runner | ลบ import |

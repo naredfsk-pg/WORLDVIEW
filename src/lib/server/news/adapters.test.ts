@@ -84,6 +84,47 @@ describe('rss adapter', () => {
 		const safeFetch: SafeFetch = async () => new Response(null, { status });
 		const result = await createRssAdapter().fetch(source({ kind: 'rss' }), context(safeFetch));
 		expect(result.items).toEqual([]);
+		expect(result.not_modified).toBe(status === 304);
+	});
+
+	it('sends the stored validators and returns the new ones from a 200', async () => {
+		let sent: Record<string, string> | undefined;
+		const safeFetch: SafeFetch = async (_url, init) => {
+			sent = init?.headers;
+			return new Response('<rss><channel><title>Feed</title></channel></rss>', {
+				status: 200,
+				headers: { etag: '"v2"', 'last-modified': 'Fri, 13 Nov 2026 01:00:00 GMT' }
+			});
+		};
+		const result = await createRssAdapter().fetch(source({ kind: 'rss' }), {
+			...context(safeFetch),
+			conditional: { etag: '"v1"', last_modified: 'Fri, 13 Nov 2026 00:00:00 GMT' }
+		});
+
+		expect(sent).toMatchObject({
+			'if-none-match': '"v1"',
+			'if-modified-since': 'Fri, 13 Nov 2026 00:00:00 GMT'
+		});
+		expect(result).toMatchObject({
+			not_modified: false,
+			validators: { etag: '"v2"', last_modified: 'Fri, 13 Nov 2026 01:00:00 GMT' }
+		});
+	});
+
+	it('keeps the previous validators on a 304 without headers, and never sends a multi-line value', async () => {
+		let sent: Record<string, string> | undefined;
+		const safeFetch: SafeFetch = async (_url, init) => {
+			sent = init?.headers;
+			return new Response(null, { status: 304 });
+		};
+		const result = await createRssAdapter().fetch(source({ kind: 'rss' }), {
+			...context(safeFetch),
+			conditional: { etag: '"v1"', last_modified: 'bad\r\nheader' }
+		});
+
+		expect(sent?.['if-none-match']).toBe('"v1"');
+		expect(sent).not.toHaveProperty('if-modified-since');
+		expect(result.validators).toEqual({ etag: '"v1"', last_modified: 'bad\r\nheader' });
 	});
 });
 

@@ -157,6 +157,18 @@ describe('DigestRepository linking', () => {
 		).rejects.toThrow(/already linked/);
 		expect(await repos.digest.listUnassignedArticles('2026-11-12T00:00:00.000Z', 10)).toEqual([]);
 	});
+
+	it('lists matchable events newest first with the id as a deterministic tie-break', async () => {
+		const sameTime = '2026-11-13T00:00:00.000Z';
+		const ids = [];
+		for (let index = 0; index < 3; index++) {
+			ids.push(await repos.digest.createDraftEvent([await addArticle(sameTime)], 1, sameTime));
+		}
+
+		const listed = await repos.digest.listMatchableEvents('2026-11-12T00:00:00.000Z');
+		expect(listed.map((candidate) => candidate.event_id)).toEqual([...ids].sort());
+		expect(listed.every((candidate) => candidate.is_demo === false)).toBe(true);
+	});
 });
 
 describe('DigestRepository content lifecycle', () => {
@@ -331,5 +343,137 @@ describe('DigestRepository relations and lesson links', () => {
 
 		await repos.digest.replaceLessonLinks(id, []);
 		expect(await repos.read.listPublishedEventsForLesson('w2-d09', 5)).toEqual([]);
+	});
+});
+
+describe('DigestRepository.mergeDraftEvent', () => {
+	it('moves a draft’s articles to the target, deletes the draft and recomputes the target', async () => {
+		const now = '2026-11-13T02:00:00.000Z';
+		const target = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-13T00:00:00.000Z')],
+			1,
+			now
+		);
+		const draft = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-12T20:00:00.000Z', { publisher: 'Other Wire' })],
+			1,
+			now
+		);
+		await repos.digest.saveEventContent(target, content(), now);
+
+		await repos.digest.mergeDraftEvent(draft, target, 0.9, '2026-11-13T03:00:00.000Z');
+
+		expect(db.select().from(events).where(eq(events.id, draft)).get()).toBeUndefined();
+		expect(getEvent(target)).toMatchObject({
+			status: 'published',
+			source_count: 2,
+			first_seen_at: '2026-11-12T20:00:00.000Z'
+		});
+		// The published target now has evidence newer than its summary: digest re-summarizes it.
+		expect((await repos.digest.listEventsNeedingContent(10)).map((e) => e.event.id)).toEqual([
+			target
+		]);
+	});
+
+	it('refuses to merge away a non-draft event, or into a hidden one', async () => {
+		const now = '2026-11-13T02:00:00.000Z';
+		const published = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-13T00:00:00.000Z')],
+			1,
+			now
+		);
+		await repos.digest.saveEventContent(published, content(), now);
+		const draft = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-13T00:10:00.000Z')],
+			1,
+			now
+		);
+
+		await expect(repos.digest.mergeDraftEvent(published, draft, 0.9, now)).rejects.toThrow(
+			/cannot merge a published event/
+		);
+		db.update(events).set({ status: 'hidden' }).where(eq(events.id, published)).run();
+		await expect(repos.digest.mergeDraftEvent(draft, published, 0.9, now)).rejects.toThrow(
+			/into a hidden event/
+		);
+		expect(getEvent(draft).status).toBe('draft');
+	});
+});
+
+describe('review fixes in DigestRepository', () => {
+	const now = '2026-11-13T02:00:00.000Z';
+	const editor = { changed_by: 'editor@example.com', change_reason: 'fix', public_note_th: null };
+
+	it('mergeDraftEvent refuses to merge away a draft an admin edited, and never mixes demo and real', async () => {
+		const target = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-13T00:00:00.000Z')],
+			1,
+			now
+		);
+		const edited = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-13T00:05:00.000Z')],
+			1,
+			now
+		);
+		await repos.admin.updateEvent(edited, { title_th: 'หัวข้อของบรรณาธิการ' }, editor, now);
+		const demo = await repos.digest.createDraftEvent(
+			[
+				await addArticle('2026-11-13T00:10:00.000Z', {
+					source: 'demo-wire',
+					publisher: 'Demo Wire'
+				})
+			],
+			1,
+			now
+		);
+
+		expect(await repos.digest.mergeDraftEvent(edited, target, 0.9, now)).toBe(false);
+		expect(getEvent(edited).title_th).toBe('หัวข้อของบรรณาธิการ');
+		await expect(repos.digest.mergeDraftEvent(demo, target, 0.9, now)).rejects.toThrow(
+			/real and demo/
+		);
+		expect(await repos.digest.mergeDraftEvent(target, edited, 0.9, now)).toBe(true);
+	});
+
+	it('markContentChecked moves summarized_at forward on published events only', async () => {
+		const id = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-13T00:00:00.000Z')],
+			1,
+			now
+		);
+		await repos.digest.markContentChecked(
+			id,
+			'2026-11-13T05:00:00.000Z',
+			'2026-11-13T06:00:00.000Z'
+		);
+		expect(getEvent(id).summarized_at).toBeNull();
+
+		await repos.digest.saveEventContent(id, content(), now);
+		await repos.digest.markContentChecked(
+			id,
+			'2026-11-13T05:00:00.000Z',
+			'2026-11-13T06:00:00.000Z'
+		);
+		await repos.digest.markContentChecked(
+			id,
+			'2026-11-13T04:00:00.000Z',
+			'2026-11-13T07:00:00.000Z'
+		);
+		expect(getEvent(id)).toMatchObject({
+			summarized_at: '2026-11-13T05:00:00.000Z',
+			title_th: content().title_th,
+			// The admin editor's version token moves with the write that changed the row.
+			updated_at: '2026-11-13T06:00:00.000Z'
+		});
+	});
+
+	it('listEventsNeedingContent breaks last_updated_at ties by id', async () => {
+		const sameTime = '2026-11-13T00:00:00.000Z';
+		const ids = [];
+		for (let index = 0; index < 3; index++) {
+			ids.push(await repos.digest.createDraftEvent([await addArticle(sameTime)], 1, sameTime));
+		}
+		const listed = await repos.digest.listEventsNeedingContent(10);
+		expect(listed.map((item) => item.event.id)).toEqual([...ids].sort());
 	});
 });

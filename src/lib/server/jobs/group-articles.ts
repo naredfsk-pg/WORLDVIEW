@@ -1,12 +1,15 @@
 /**
  * Grouping step: links unassigned recent articles to matching recent events, or creates draft
- * events, using the rule-based `planGrouping` (no LLM yet). Runs at the end of every ingest so
- * fresh articles become event candidates; digest (Wave 2) can call it again after tagging.
+ * events, using the rule-based `planGrouping` (no LLM). Runs at the end of every ingest so fresh
+ * articles become event candidates, and again at the start of digest for anything an aborted or
+ * failed ingest left unassigned. Ambiguous matches become new events here; digest asks the LLM
+ * `clustering` task about them afterwards.
+ * Real and demo content never mix: each group is planned only against events of the same kind.
  * Idempotent: only unassigned articles are considered and `article_id` is UNIQUE in event_articles.
  */
 import type { JobContext } from '#lib/types/jobs.js';
 import type { DigestRepository } from '#lib/types/repositories.js';
-import { GROUPING_CONFIG, planGrouping } from '../news/grouping.js';
+import { GROUPING_CONFIG, planGrouping, type GroupingPlan } from '../news/grouping.js';
 
 /** ARCHITECTURE §9 digest step 1: unassigned articles from the last 72 h, at most 200 per run. */
 export const GROUPING_LOOKBACK_MS = GROUPING_CONFIG.timeWindowMs;
@@ -26,7 +29,14 @@ export async function groupUnassignedArticles(
 
 	const events = await digest.listMatchableEvents(since);
 	// Only title and times are used; feed categories are deliberately ignored (see grouping.ts).
-	const plan = planGrouping(articles, events);
+	const plan = mergePlans(
+		[true, false].map((isDemo) =>
+			planGrouping(
+				articles.filter((article) => article.source_is_demo === isDemo),
+				events.filter((event) => event.is_demo === isDemo)
+			)
+		)
+	);
 	const nowIso = now.toISOString();
 	for (const join of plan.joins) {
 		await digest.linkArticles(join.event_id, join.article_ids, join.confidence, nowIso);
@@ -49,5 +59,13 @@ export async function groupUnassignedArticles(
 		articles_grouped: grouped,
 		events_created: plan.new_events.length,
 		events_updated: plan.joins.length
+	};
+}
+
+function mergePlans(plans: GroupingPlan[]): GroupingPlan {
+	return {
+		joins: plans.flatMap((plan) => plan.joins),
+		new_events: plans.flatMap((plan) => plan.new_events),
+		ambiguous_count: plans.reduce((sum, plan) => sum + plan.ambiguous_count, 0)
 	};
 }

@@ -139,6 +139,25 @@ test.describe('with a valid Cloudflare Access token', () => {
 		expect((await page.request.get('/events/demo-evt-01')).status()).toBe(200);
 	});
 
+	test('jobs page offers every job, and a brief before its window closes is refused', async ({
+		page
+	}) => {
+		await page.goto('/admin/jobs');
+		for (const job of ['ingest', 'digest', 'brief_morning', 'brief_evening', 'archive_snapshot']) {
+			await expect(page.getByTestId(`rerun-${job}`)).toBeVisible();
+		}
+		await expect(page.getByTestId('rerun-ingest').locator('input[name="date"]')).toHaveCount(0);
+
+		// A future date: the window is open, so nothing is claimed and the real reason is shown.
+		const form = page.getByTestId('rerun-brief_evening');
+		await form.locator('input[name="date"]').fill('2099-01-01');
+		await form.getByLabel('เหตุผล (จำเป็น)').fill('ทดสอบสร้างล่วงหน้า');
+		await form.getByRole('button', { name: 'รันตอนนี้' }).click();
+
+		await expect(page.getByTestId('action-notice')).toContainText('ยังไม่ปิด');
+		await expect(page.getByTestId('brief_evening-state')).toHaveText('พร้อมสั่งรัน');
+	});
+
 	for (const viewport of [MOBILE, DESKTOP]) {
 		test(`admin pages have no horizontal overflow at ${viewport.width}px`, async ({ page }) => {
 			await page.setViewportSize(viewport);

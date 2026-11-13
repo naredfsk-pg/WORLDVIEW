@@ -14,7 +14,7 @@ import { openTestDb } from '#lib/server/db/test-db.js';
 import type { JobOutcome } from '#lib/types/jobs.js';
 import type { NewsSourceAdapter, SafeFetch, SourceDefinition } from '#lib/types/news.js';
 import type { Repositories } from '#lib/types/repositories.js';
-import { createFixtureAdapter } from '../news/adapters';
+import { createFixtureAdapter, createRssAdapter } from '../news/adapters';
 import { NewsFetchError } from '../news/errors';
 import { parseFeed } from '../news/feed-parser';
 import { FIXTURE_SOURCES, sourceRegistryFor } from '../news/sources';
@@ -87,7 +87,12 @@ function inlineAdapter(feeds: Record<string, string>): NewsSourceAdapter {
 	return {
 		kind: 'fixture',
 		async fetch(source, ctx) {
-			return { items: parseFeed(feeds[source.id] ?? ''), fetched_at: ctx.now.toISOString() };
+			return {
+				items: parseFeed(feeds[source.id] ?? ''),
+				fetched_at: ctx.now.toISOString(),
+				not_modified: false,
+				validators: { etag: null, last_modified: null }
+			};
 		}
 	};
 }
@@ -229,6 +234,71 @@ describe('ingest job on fixture feeds', () => {
 			'Northland parliament opens its winter session': '2026-11-13'
 		});
 	});
+
+	it('a real article never joins a demo event, even with the same headline', async () => {
+		await runIngestJob(); // fixture (demo) sources: the Kessel River story becomes a demo event
+
+		clock = new Date(NOW.getTime() + 60 * 60 * 1000);
+		const realSource: SourceDefinition = {
+			...FIXTURE_SOURCES[0]!,
+			id: 'real-wire',
+			is_demo: false
+		};
+		const sameStory = `<rss><channel><item>
+			<title>Avalor and Meridia sign Kessel River water-sharing accord</title>
+			<link>https://real.example/kessel</link>
+			<pubDate>Fri, 13 Nov 2026 00:30:00 GMT</pubDate></item></channel></rss>`;
+		const next = await runIngestJob({
+			deps: deps({
+				registry: [realSource],
+				adapters: { fixture: inlineAdapter({ 'real-wire': sameStory }) }
+			})
+		});
+
+		expect(next).toMatchObject({ counters: { events_created: 1, events_updated: 0 } });
+		const realEvents = db.select().from(events).where(eq(events.is_demo, false)).all();
+		expect(realEvents).toHaveLength(1);
+		expect(realEvents[0]?.source_count).toBe(1);
+	});
+});
+
+describe('conditional GET', () => {
+	it('stores the validators of a 200 and sends them on the next run; a 304 ingests nothing', async () => {
+		const rssSource: SourceDefinition = {
+			...FIXTURE_SOURCES[0]!,
+			id: 'rss-wire',
+			kind: 'rss',
+			feed_url: 'https://feeds.example/rss.xml'
+		};
+		const sentEtags: (string | undefined)[] = [];
+		const safeFetch: SafeFetch = async (_url, init) => {
+			sentEtags.push(init?.headers?.['if-none-match']);
+			if (init?.headers?.['if-none-match'] === '"v1"') return new Response(null, { status: 304 });
+			return new Response(
+				`<rss><channel><item><title>Port Selene opens a new ferry line</title>
+				<link>https://feeds.example/1</link><pubDate>Thu, 12 Nov 2026 22:00:00 GMT</pubDate></item></channel></rss>`,
+				{ status: 200, headers: { etag: '"v1"' } }
+			);
+		};
+		const conditionalDeps = deps({
+			registry: [rssSource],
+			adapters: { rss: createRssAdapter() },
+			safeFetch
+		});
+
+		const first = await runIngestJob({ deps: conditionalDeps });
+		clock = new Date(NOW.getTime() + 60 * 60 * 1000);
+		const second = await runIngestJob({ deps: conditionalDeps });
+
+		expect(sentEtags).toEqual([undefined, '"v1"']);
+		expect(first).toMatchObject({ status: 'succeeded', counters: { articles_inserted: 1 } });
+		expect(second).toMatchObject({
+			status: 'succeeded',
+			counters: { items_fetched: 0, articles_inserted: 0 }
+		});
+		const [row] = db.select().from(sources).where(eq(sources.id, 'rss-wire')).all();
+		expect(row?.etag).toBe('"v1"');
+	});
 });
 
 describe('ingest job failures', () => {
@@ -310,7 +380,11 @@ describe('ingest job failures', () => {
 		expect(exitCodeFor(failed)).toBe(1);
 
 		clock = new Date(NOW.getTime() + 60 * 60 * 1000);
-		const none = await runIngestJob({ deps: deps({ registry: sourceRegistryFor('production') }) });
+		const allDisabled = sourceRegistryFor('production').map((source) => ({
+			...source,
+			enabled: false
+		}));
+		const none = await runIngestJob({ deps: deps({ registry: allDisabled }) });
 		expect(none).toMatchObject({ status: 'failed' });
 		expect((await repositories.jobs.listRecent(1))[0]!.error).toBe('no enabled sources');
 	});

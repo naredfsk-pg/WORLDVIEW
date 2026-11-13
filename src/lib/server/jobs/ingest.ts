@@ -5,8 +5,9 @@
  * run becomes `partial`. Every write is idempotent, so reruns never duplicate anything.
  */
 import type { SourceKind } from '#lib/types/domain.js';
-import type { JobContext, JobCounters, JobOutcome, Logger } from '#lib/types/jobs.js';
+import type { JobContext, JobCounters, JobOutcome, Logger, RetryPolicy } from '#lib/types/jobs.js';
 import type {
+	FeedValidators,
 	NewsSourceAdapter,
 	NormalizedArticle,
 	SafeFetch,
@@ -15,9 +16,16 @@ import type {
 import type { DigestRepository, IngestRepository } from '#lib/types/repositories.js';
 import { NewsFetchError } from '../news/errors.js';
 import { normalizeFeedItem } from '../news/normalize.js';
+import { withRetry, type RetryOptions } from '#lib/utils/retry.js';
 import { groupUnassignedArticles } from './group-articles.js';
-import { NEWS_FETCH_RETRY_POLICY, withRetry, type RetryOptions } from './retry.js';
 import { sanitizeError } from './runner.js';
+
+/** News fetch backoff (ARCHITECTURE §8): 3 attempts, 1 s base, 10 s cap. */
+export const NEWS_FETCH_RETRY_POLICY: RetryPolicy = {
+	max_attempts: 3,
+	base_delay_ms: 1_000,
+	max_delay_ms: 10_000
+};
 
 /** Sources fetched at the same time. */
 export const SOURCE_CONCURRENCY = 3;
@@ -63,14 +71,21 @@ export async function runIngest(deps: IngestDeps, ctx: JobContext): Promise<JobO
 			return;
 		}
 		try {
-			const fetched = await fetchAndNormalize(source, deps, ctx);
+			const previous = { etag: source.etag, last_modified: source.last_modified };
+			const fetched = await fetchAndNormalize(source, deps, ctx, previous);
 			counters.items_fetched += fetched.items_fetched;
 			counters.items_dropped += fetched.items_dropped;
 			const inserted = await insertArticles(deps.ingest, fetched.articles, counters);
-			await deps.ingest.recordSourceFetch(source.id, { ok: true, at: ctx.now().toISOString() });
+			// Validators are stored only after the inserts, so a crash mid-way refetches in full.
+			await deps.ingest.recordSourceFetch(source.id, {
+				ok: true,
+				at: ctx.now().toISOString(),
+				validators: fetched.validators
+			});
 			counters.sources_ok++;
 			ctx.logger.info('source ingested', {
 				source_id: source.id,
+				not_modified: fetched.not_modified,
 				items_fetched: fetched.items_fetched,
 				items_dropped: fetched.items_dropped,
 				articles_inserted: inserted,
@@ -137,7 +152,7 @@ export async function previewIngest(
 	const sources = deps.registry.filter((source) => source.enabled);
 	await forEachWithConcurrency(sources, deps.concurrency ?? SOURCE_CONCURRENCY, async (source) => {
 		try {
-			const fetched = await fetchAndNormalize(source, deps, ctx);
+			const fetched = await fetchAndNormalize(source, deps, ctx, null);
 			counters.sources_ok++;
 			counters.items_fetched += fetched.items_fetched;
 			counters.items_dropped += fetched.items_dropped;
@@ -180,12 +195,15 @@ function emptyIngestCounters() {
 async function fetchAndNormalize(
 	source: SourceDefinition,
 	deps: Pick<IngestDeps, 'adapters' | 'safeFetch' | 'retry' | 'maxItemAgeHours'>,
-	ctx: { now: () => Date; logger: Logger; signal: AbortSignal }
+	ctx: { now: () => Date; logger: Logger; signal: AbortSignal },
+	conditional: FeedValidators | null
 ): Promise<{
 	articles: NormalizedArticle[];
 	items_fetched: number;
 	items_dropped: number;
 	duration_ms: number;
+	not_modified: boolean;
+	validators: FeedValidators;
 }> {
 	const adapter = deps.adapters[source.kind];
 	if (!adapter) {
@@ -199,7 +217,13 @@ async function fetchAndNormalize(
 
 	const startedMs = ctx.now().getTime();
 	const result = await withRetry(
-		() => adapter.fetch(source, { safeFetch: deps.safeFetch, signal: ctx.signal, now: ctx.now() }),
+		() =>
+			adapter.fetch(source, {
+				safeFetch: deps.safeFetch,
+				signal: ctx.signal,
+				now: ctx.now(),
+				conditional
+			}),
 		NEWS_FETCH_RETRY_POLICY,
 		(error) => error instanceof NewsFetchError && error.retryable,
 		{
@@ -232,7 +256,9 @@ async function fetchAndNormalize(
 		articles,
 		items_fetched: result.items.length,
 		items_dropped: result.items.length - articles.length,
-		duration_ms: ctx.now().getTime() - startedMs
+		duration_ms: ctx.now().getTime() - startedMs,
+		not_modified: result.not_modified,
+		validators: result.validators
 	};
 }
 

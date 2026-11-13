@@ -30,6 +30,7 @@ import type {
 import type {
 	ArticleWithSource,
 	EventMatchCandidate,
+	FeedValidators,
 	InsertArticleResult,
 	NormalizedArticle,
 	SourceDefinition
@@ -95,9 +96,13 @@ export interface IngestRepository {
 	listEnabledSources(): Promise<Source[]>;
 	/** Dedup by canonical_url (UNIQUE) then content_hash. Never updates an existing row. */
 	insertArticleIfNew(article: NormalizedArticle): Promise<InsertArticleResult>;
+	// CONTRACT-CHANGE: the ok variant takes optional `validators` (Wave 2 conditional GET);
+	// when given they replace the stored etag / last_modified.
 	recordSourceFetch(
 		sourceId: string,
-		result: { ok: true; at: IsoUtc } | { ok: false; at: IsoUtc; error: string }
+		result:
+			| { ok: true; at: IsoUtc; validators?: FeedValidators }
+			| { ok: false; at: IsoUtc; error: string }
 	): Promise<void>;
 }
 
@@ -144,13 +149,44 @@ export interface DigestRepository {
 	/**
 	 * Events whose content must be (re)generated:
 	 * status 'draft'; or 'pending_review' with review_reasons exactly ['llm_failed'];
-	 * or 'published' with an article linked after summarized_at.
+	 * or 'published' without `manual_flag` and with an article linked after summarized_at.
+	 * Newest evidence first, id as tie-break.
 	 */
 	listEventsNeedingContent(limit: number): Promise<EventWithArticles[]>;
-	saveEventContent(eventId: string, content: EventContentWrite, now: IsoUtc): Promise<void>;
+	// CONTRACT-CHANGE (Wave 2): content fields an admin ever edited (a `content_revisions` row
+	// for the event whose actor is not "system") are never overwritten. An unpublished event with
+	// admin edits is not auto-published: it stays `pending_review` with `manual_flag`. Resolves to
+	// the status written and the fields kept. Was `Promise<void>`.
+	saveEventContent(
+		eventId: string,
+		content: EventContentWrite,
+		now: IsoUtc
+	): Promise<{
+		status: 'published' | 'pending_review';
+		admin_fields_kept: string[];
+		/** The row as stored (admin-kept fields included), for the steps that follow. */
+		event: NewsEvent;
+	}>;
+	// CONTRACT-CHANGE: added (Wave 2 review). A published event whose re-summary was rejected by
+	// the gates (not a transient LLM failure) keeps its text; `summarized_at` moves to
+	// `checkedAt` so it returns only when newer evidence is linked. No-op for other statuses.
+	markContentChecked(eventId: string, checkedAt: IsoUtc, now: IsoUtc): Promise<void>;
 	/** LLM/gate failure on a non-published event: status → pending_review with these reasons; text unchanged. */
 	markEventForReview(eventId: string, reasons: ReviewReason[], now: IsoUtc): Promise<void>;
-	/** Published events of the last `since` window, excluding `eventId`, for relation suggestions. */
+	// CONTRACT-CHANGE: added (Wave 2). The LLM `clustering` task said a draft event reports the
+	// same happening as `targetEventId`: move its articles there and delete the draft, in one
+	// transaction. Throws unless the source is a `draft`, the target exists and is not hidden, and
+	// both have the same is_demo. Resolves false (nothing changed) when an admin edited the draft.
+	mergeDraftEvent(
+		sourceEventId: string,
+		targetEventId: string,
+		confidence: number,
+		now: IsoUtc
+	): Promise<boolean>;
+	/**
+	 * Published events of the last `since` window, excluding `eventId`, that share a tag or a
+	 * region other than `global` with it (and its is_demo), for relation suggestions.
+	 */
 	listRelationCandidates(
 		eventId: string,
 		since: IsoUtc,
@@ -168,12 +204,26 @@ export interface BriefCandidate extends EventSummary {
 	signals: EditorialSignals | null;
 	/** Has an update or a published relation to an older event (continuity, PRD §4.4). */
 	is_continuing: boolean;
+	// CONTRACT-CHANGE: added (Wave 2 review).
+	/** Newest `published_at ?? ingested_at` of its articles inside the window; null if none. */
+	window_evidence_at: IsoUtc | null;
+	/** An item of a published morning / evening brief of `include_briefs_of`. */
+	in_day_briefs: boolean;
 }
 
 export interface BriefRepository {
 	/** Published events with ≥1 linked article whose (published_at ?? ingested_at) is in [start, end). */
-	listCandidateEvents(window: { start_utc: IsoUtc; end_utc: IsoUtc }): Promise<BriefCandidate[]>;
-	/** Upsert brief by (brief_date, edition) and replace its items, in one transaction. */
+	// CONTRACT-CHANGE: optional `include_briefs_of` (Wave 2): also the published events that are
+	// items of that date's published morning / evening briefs (the daily_snapshot merge, §8).
+	listCandidateEvents(window: {
+		start_utc: IsoUtc;
+		end_utc: IsoUtc;
+		include_briefs_of?: BriefDate;
+	}): Promise<BriefCandidate[]>;
+	/**
+	 * Upsert brief by (brief_date, edition) and replace its items, in one transaction.
+	 * A `draft` (no items) never replaces a `published` brief: the call is then a no-op.
+	 */
 	saveBrief(input: {
 		brief_date: BriefDate;
 		edition: BriefEdition;
@@ -200,6 +250,9 @@ export interface LlmCallRepository {
 	record(call: Omit<LlmCall, 'id'>): Promise<void>;
 	/** Non-cached calls (ok + error) since `since`; tokens = tokens_in + tokens_out. */
 	usageSince(since: IsoUtc): Promise<LlmUsage>;
+	// CONTRACT-CHANGE: added (Wave 2 review). Network calls recorded for one job run, so digest
+	// counters never include another process's calls.
+	usageForJobRun(jobRunId: string): Promise<LlmUsage>;
 }
 
 export interface AcademyCatalogRepository {

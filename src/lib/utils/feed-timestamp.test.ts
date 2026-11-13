@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseFeedTimestamp } from './timestamps';
+import { parseFeedTimestamp } from './date';
 
 const now = new Date('2026-11-13T00:00:00.000Z');
 

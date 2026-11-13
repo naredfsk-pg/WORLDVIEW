@@ -84,9 +84,13 @@ export function toJsonObject(value: object): JsonObject {
 	return JSON.parse(JSON.stringify(value)) as JsonObject;
 }
 
-/** URLs come only from stored articles; refs that do not resolve are dropped. */
+/**
+ * URLs come only from stored articles; refs that do not resolve are dropped, and each URL appears
+ * once (first occurrence wins), so the UI can key links by URL.
+ */
 export function evidenceUrls(refs: EvidenceRef[], urlByArticleId: Map<string, string>): string[] {
-	return refs
+	const urls = refs
 		.map((ref) => urlByArticleId.get(ref.article_id))
 		.filter((url): url is string => url !== undefined);
+	return [...new Set(urls)];
 }

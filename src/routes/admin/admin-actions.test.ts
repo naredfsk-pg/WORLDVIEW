@@ -12,9 +12,10 @@ import {
 } from '#lib/server/db/schema.js';
 import { seedDatabase } from '#lib/server/db/seed.js';
 import { openTestDb } from '#lib/server/db/test-db.js';
-import { createJobRunRepository } from '#lib/server/db/repositories/job-runs.js';
 import { createJsonLogger } from '#lib/server/jobs/logger.js';
-import type { JobContext, JobOutcome } from '#lib/types/jobs.js';
+import type { RunJobByTypeResult, RunJobOptions } from '#lib/server/jobs/registry.js';
+import { runJob } from '#lib/server/jobs/runner.js';
+import type { JobContext, JobOutcome, JobType } from '#lib/types/jobs.js';
 
 let db: Db;
 let repos: ReturnType<typeof createRepositories>;
@@ -24,19 +25,39 @@ vi.mock('#lib/server/db/repositories/index.js', async (importOriginal) => {
 	return { ...original, getRepositories: () => repos };
 });
 
-/** The rerun action gets fake ingest deps: no network, the test controls when the job ends. */
+/**
+ * The rerun action gets a fake `runJobByType`: the real claim (`runJob` on the test database), no
+ * network, and the test controls when the job ends. A date of 2099-01-01 is a window that has
+ * not closed yet.
+ */
 let fakeExecute: (ctx: JobContext) => Promise<JobOutcome>;
+const runnerCalls: { type: JobType; opts: RunJobOptions }[] = [];
+const fakeRunner = async (type: JobType, opts: RunJobOptions): Promise<RunJobByTypeResult> => {
+	runnerCalls.push({ type, opts });
+	if (opts.date === '2099-01-01' && !opts.allowOpenWindow) {
+		return { status: 'skipped', exitCode: 0, counters: {}, reason: 'window_open' };
+	}
+	const result = await runJob(
+		{ jobs: repos.jobs, logger: createJsonLogger(() => {}), now: () => new Date() },
+		{
+			job_type: type,
+			idempotency_key: `${type}:${opts.date ?? 'slot'}`,
+			scheduled_for: new Date().toISOString(),
+			trigger: opts.manual ? 'manual' : 'cron',
+			force: opts.force ?? false
+		},
+		(ctx) => {
+			opts.onClaimed?.(ctx.run);
+			return fakeExecute(ctx);
+		}
+	);
+	return result.status === 'skipped'
+		? { status: 'skipped', exitCode: 0, counters: {}, reason: result.reason }
+		: { status: result.status, exitCode: 0, counters: {}, runId: result.run_id };
+};
 vi.mock('./jobs/manual-ingest.server', async (importOriginal) => {
 	const original = await importOriginal<typeof import('./jobs/manual-ingest.server')>();
-	return {
-		...original,
-		productionIngestDeps: () => ({
-			jobs: repos.jobs,
-			logger: createJsonLogger(() => {}),
-			now: () => new Date(),
-			execute: (ctx: JobContext) => fakeExecute(ctx)
-		})
-	};
+	return { ...original, manualJobRunner: () => fakeRunner };
 });
 
 const { actions: reviewActions } = await import('./review/+page.server');
@@ -44,7 +65,7 @@ const { actions: editActions } = await import('./events/[id]/+page.server');
 const { actions: relationActions } = await import('./relations/+page.server');
 const { actions: briefActions } = await import('./briefs/+page.server');
 const { actions: jobActions } = await import('./jobs/+page.server');
-const { MANUAL_RERUN_MIN_INTERVAL_MS, startManualIngest } =
+const { MANUAL_RERUN_MIN_INTERVAL_MS, startManualJob } =
 	await import('./jobs/manual-ingest.server');
 
 const ADMIN = { email: 'editor@example.com' };
@@ -53,6 +74,7 @@ beforeEach(() => {
 	db = openTestDb();
 	seedDatabase(db, []);
 	repos = createRepositories(db);
+	runnerCalls.length = 0;
 });
 afterEach(() => db.$client.close());
 
@@ -412,40 +434,51 @@ describe('relations and briefs', () => {
 	});
 });
 
-describe('manual ingest rerun', () => {
+describe('manual job reruns (runJobByType)', () => {
 	it('claims the slot with --force --manual and never starts a running slot twice', async () => {
 		let finishFirst!: (outcome: JobOutcome) => void;
-		const execute = vi.fn(() => new Promise<JobOutcome>((resolve) => (finishFirst = resolve)));
-		const deps = {
-			jobs: createJobRunRepository(db),
-			logger: createJsonLogger(() => {}),
-			now: () => new Date('2026-11-13T05:10:00.000Z'),
-			execute
-		};
+		fakeExecute = vi.fn(() => new Promise<JobOutcome>((resolve) => (finishFirst = resolve)));
 
-		expect(await startManualIngest(deps)).toMatchObject({
+		expect(await startManualJob('ingest', {}, fakeRunner)).toMatchObject({
 			status: 'started',
-			run: { idempotency_key: 'ingest:2026-11-13T12', attempts: 1 }
+			run: { idempotency_key: 'ingest:slot', attempts: 1 }
 		});
-		expect(await startManualIngest(deps)).toEqual({ status: 'skipped', reason: 'running' });
-		expect(execute).toHaveBeenCalledOnce();
+		expect(await startManualJob('ingest', {}, fakeRunner)).toEqual({
+			status: 'skipped',
+			reason: 'running'
+		});
+		expect(fakeExecute).toHaveBeenCalledOnce();
+		expect(runnerCalls[0]?.opts).toMatchObject({ force: true, manual: true });
+		expect(runnerCalls[0]?.opts.allowOpenWindow).toBeUndefined();
 
-		const [run] = await deps.jobs.listRecent(1);
+		const [run] = await repos.jobs.listRecent(1);
 		expect(run).toMatchObject({ job_type: 'ingest', trigger: 'manual', status: 'running' });
 
 		finishFirst({ status: 'succeeded', counters: { sources_ok: 1 }, error: null });
 		await vi.waitFor(async () =>
-			expect((await deps.jobs.listRecent(1))[0]?.status).toBe('succeeded')
+			expect((await repos.jobs.listRecent(1))[0]?.status).toBe('succeeded')
 		);
 		// Finished slot + force → a new attempt of the same slot (idempotent rerun).
-		expect(await startManualIngest(deps)).toMatchObject({
+		expect(await startManualJob('ingest', {}, fakeRunner)).toMatchObject({
 			status: 'started',
 			run: { attempts: 2 }
 		});
 		finishFirst({ status: 'succeeded', counters: {}, error: null });
 	});
 
-	describe('?/rerunIngest action', () => {
+	it('reports a refusal before any claim as failed', async () => {
+		const usageError = async (): Promise<RunJobByTypeResult> => ({
+			status: 'usage_error',
+			exitCode: 64,
+			counters: {}
+		});
+		expect(await startManualJob('digest', {}, usageError)).toEqual({
+			status: 'failed',
+			message: 'usage_error'
+		});
+	});
+
+	describe('?/rerun action', () => {
 		let finish: ((outcome: JobOutcome) => void) | null;
 		beforeEach(() => {
 			finish = null;
@@ -453,27 +486,31 @@ describe('manual ingest rerun', () => {
 		});
 		afterEach(() => finish?.({ status: 'succeeded', counters: {}, error: null }));
 
-		const rerun = (fields: Record<string, string>) =>
-			call(jobActions.rerunIngest, actionEvent(fields));
+		const rerun = (fields: Record<string, string>) => call(jobActions.rerun, actionEvent(fields));
 
-		it('requires a change_reason', async () => {
-			expect(await rerun({})).toMatchObject({ status: 400 });
+		it('requires a change_reason and a known job type', async () => {
+			expect(await rerun({ job_type: 'ingest' })).toMatchObject({ status: 400 });
+			expect(await rerun({ job_type: 'scrape', change_reason: 'ลองดู' })).toMatchObject({
+				status: 400
+			});
 			expect(await repos.admin.listRecentAdminActions('rerun_ingest', 5)).toEqual([]);
 		});
 
 		it('starts the run and records the actor and reason, then enforces the interval', async () => {
-			expect(await rerun({ change_reason: 'ฟีดเพิ่งกลับมา' })).toMatchObject({ ok: true });
+			expect(await rerun({ job_type: 'ingest', change_reason: 'ฟีดเพิ่งกลับมา' })).toMatchObject({
+				ok: true
+			});
 
 			const [audit] = await repos.admin.listRecentAdminActions('rerun_ingest', 5);
 			expect(audit).toMatchObject({
 				action: 'rerun_ingest',
 				actor: ADMIN.email,
 				reason: 'ฟีดเพิ่งกลับมา',
-				target: expect.stringMatching(/^ingest:\d{4}-\d{2}-\d{2}T\d{2}#1$/)
+				target: 'ingest:slot#1'
 			});
 
 			finish?.({ status: 'succeeded', counters: {}, error: null });
-			const again = await rerun({ change_reason: 'ลองอีกรอบ' });
+			const again = await rerun({ job_type: 'ingest', change_reason: 'ลองอีกรอบ' });
 			expect(again).toMatchObject({
 				status: 429,
 				data: { message: expect.stringContaining(`${MANUAL_RERUN_MIN_INTERVAL_MS / 60_000} นาที`) }
@@ -481,16 +518,60 @@ describe('manual ingest rerun', () => {
 			expect(await repos.admin.listRecentAdminActions('rerun_ingest', 5)).toHaveLength(1);
 		});
 
+		it('keeps the interval per job type: an ingest rerun does not block digest', async () => {
+			expect(await rerun({ job_type: 'ingest', change_reason: 'ฟีดเพิ่งกลับมา' })).toMatchObject({
+				ok: true
+			});
+			finish?.({ status: 'succeeded', counters: {}, error: null });
+			expect(await rerun({ job_type: 'digest', change_reason: 'สรุปข่าวใหม่' })).toMatchObject({
+				ok: true
+			});
+			expect(await repos.admin.listRecentAdminActions('rerun_digest', 5)).toMatchObject([
+				{ action: 'rerun_digest', target: 'digest:slot#1' }
+			]);
+		});
+
+		it('passes the date of a brief job and audits the dated slot', async () => {
+			const result = await rerun({
+				job_type: 'brief_morning',
+				date: '2026-11-12',
+				change_reason: 'มีข่าวมาช้า'
+			});
+			expect(result).toMatchObject({ ok: true });
+			expect(runnerCalls.at(-1)).toMatchObject({
+				type: 'brief_morning',
+				opts: { date: '2026-11-12', force: true, manual: true }
+			});
+			expect(await repos.admin.listRecentAdminActions('rerun_brief_morning', 5)).toMatchObject([
+				{ target: 'brief_morning:2026-11-12#1' }
+			]);
+		});
+
+		it('rejects a malformed date', async () => {
+			expect(
+				await rerun({ job_type: 'archive_snapshot', date: '12/11/2026', change_reason: 'ลองดู' })
+			).toMatchObject({ status: 400 });
+			expect(runnerCalls).toEqual([]);
+		});
+
+		it('reports window_open for a brief whose window has not closed, and audits nothing', async () => {
+			const result = await rerun({
+				job_type: 'brief_evening',
+				date: '2099-01-01',
+				change_reason: 'ลองสร้างล่วงหน้า'
+			});
+			expect(result).toMatchObject({
+				status: 409,
+				data: { message: expect.stringContaining('ยังไม่ปิด') }
+			});
+			expect(await repos.admin.listRecentAdminActions('rerun_brief_evening', 5)).toEqual([]);
+		});
+
 		it('reports the real skip reason when the slot is already running', async () => {
 			// A cron (or CLI) run holds the claim; no manual start is on record.
-			await startManualIngest({
-				jobs: repos.jobs,
-				logger: createJsonLogger(() => {}),
-				now: () => new Date(),
-				execute: fakeExecute
-			});
+			await startManualJob('ingest', {}, fakeRunner);
 
-			const result = await rerun({ change_reason: 'ลองสั่งรัน' });
+			const result = await rerun({ job_type: 'ingest', change_reason: 'ลองสั่งรัน' });
 			expect(result).toMatchObject({
 				status: 409,
 				data: { message: expect.stringContaining('กำลังทำงานอยู่') }

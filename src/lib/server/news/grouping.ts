@@ -13,8 +13,8 @@
  * Title tokens work for both scripts: Latin words become lightly stemmed word tokens, Thai runs
  * (no spaces between words) become character trigrams, and number-only tokens are dropped.
  *
- * Verdicts: ≥ join → join; ≥ ambiguous → counted as ambiguous (LLM `clustering` in Wave 2; for
- * now a new event); else new event.
+ * Verdicts: ≥ join → join; ≥ ambiguous → a new event for now, which digest later checks with the
+ * LLM `clustering` task (`bestEventMatch` recomputes the score); else new event.
  */
 import type { IsoUtc } from '#lib/types/domain.js';
 import type { EventMatchCandidate } from '#lib/types/news.js';
@@ -66,22 +66,7 @@ export function planGrouping(
 	events: readonly EventMatchCandidate[],
 	config: GroupingConfig = GROUPING_CONFIG
 ): GroupingPlan {
-	const clusters: Cluster[] = events.map((event) => {
-		// Article titles are the evidence; `title` (maybe a Thai summary title) is the fallback.
-		const titles = uniqueTitles(
-			event.article_titles.length > 0 ? event.article_titles : [event.title]
-		);
-		return {
-			event_id: event.event_id,
-			titleTokenSets: titles.map(titleTokens),
-			entities: new Set(titles.flatMap((title) => [...titleEntities(title)])),
-			eventTypes: new Set(titles.flatMap((title) => [...eventTypesOf(title)])),
-			startMs: Date.parse(event.first_seen_at),
-			endMs: Date.parse(event.last_updated_at),
-			article_ids: [],
-			confidence: 1
-		};
-	});
+	const clusters = events.map(clusterFromEvent);
 	let ambiguousCount = 0;
 
 	const ordered = [...articles].sort(
@@ -114,6 +99,27 @@ export function planGrouping(
 	};
 }
 
+/**
+ * The best-scoring event for any of `articles` (e.g. the articles of one draft event), using the
+ * same score and time window as `planGrouping`. Digest uses it to find the ambiguous pairs that
+ * ingest turned into separate events. Null when no event is in the time window.
+ */
+export function bestEventMatch(
+	articles: readonly GroupableArticle[],
+	events: readonly EventMatchCandidate[],
+	config: GroupingConfig = GROUPING_CONFIG
+): { event_id: string; score: number } | null {
+	const clusters = events.map(clusterFromEvent);
+	let best: { event_id: string; score: number } | null = null;
+	for (const article of articles) {
+		const match = bestMatch(articleProfile(article), clusters, config);
+		if (match && (!best || match.score > best.score)) {
+			best = { event_id: match.cluster.event_id!, score: match.score };
+		}
+	}
+	return best;
+}
+
 interface ArticleProfile {
 	id: string;
 	timeMs: number;
@@ -135,6 +141,23 @@ interface Cluster {
 	article_ids: string[];
 	/** Lowest join score among the assigned articles (1 for the article that started it). */
 	confidence: number;
+}
+
+function clusterFromEvent(event: EventMatchCandidate): Cluster {
+	// Article titles are the evidence; `title` (maybe a Thai summary title) is the fallback.
+	const titles = uniqueTitles(
+		event.article_titles.length > 0 ? event.article_titles : [event.title]
+	);
+	return {
+		event_id: event.event_id,
+		titleTokenSets: titles.map(titleTokens),
+		entities: new Set(titles.flatMap((title) => [...titleEntities(title)])),
+		eventTypes: new Set(titles.flatMap((title) => [...eventTypesOf(title)])),
+		startMs: Date.parse(event.first_seen_at),
+		endMs: Date.parse(event.last_updated_at),
+		article_ids: [],
+		confidence: 1
+	};
 }
 
 /** The highest-scoring cluster whose time window contains the article, or null. */

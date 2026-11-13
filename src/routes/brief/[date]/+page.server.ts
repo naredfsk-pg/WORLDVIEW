@@ -1,5 +1,6 @@
 import { error } from '@sveltejs/kit';
-import { isBriefDate, parseEdition } from '#lib/components/format.js';
+import { isBriefDate } from '#lib/utils/date.js';
+import { parseEdition } from '#lib/utils/params.js';
 import { getRepositories } from '#lib/server/db/repositories/index.js';
 import type { BriefPageData } from '#lib/types/views.js';
 import type { PageServerLoad } from './$types';

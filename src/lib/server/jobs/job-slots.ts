@@ -1,14 +1,19 @@
 /**
- * Idempotency keys for the hourly jobs (ARCHITECTURE §8): `{type}:{hourSlot(now)}` with
- * `scheduled_for` = the start of that Asia/Bangkok hour, as UTC. Uses `Intl` (no host timezone).
- * Brief/archive keys (`{type}:{date}`) belong to Wave 2.
+ * Idempotency keys and `scheduled_for` per job (ARCHITECTURE §8). All Bangkok wall-clock math
+ * goes through `#lib/utils/date` (Intl with an explicit zone; never the host timezone).
+ *
+ * | Job                           | Key                       | scheduled_for              |
+ * |-------------------------------|---------------------------|----------------------------|
+ * | ingest, digest                | `{type}:{hourSlot(now)}`  | start of that Bangkok hour |
+ * | brief_morning / brief_evening | `{type}:{date}`           | date 07:00 / 19:00 ICT     |
+ * | archive_snapshot              | `archive_snapshot:{date}` | date + 1, 01:00 ICT        |
  */
-import { DEFAULT_TIMEZONE } from '#lib/utils/date.js';
+import type { BriefDate } from '#lib/types/domain.js';
+import { addDays, bangkokDateTimeToUtc, hourSlot } from '#lib/utils/date.js';
 
-/** Bangkok wall-clock hour of an instant, `YYYY-MM-DDTHH`, e.g. `2026-11-13T06`. */
-export function hourSlot(instant: Date): string {
-	const { year, month, day, hour } = bangkokParts(instant);
-	return `${year}-${month}-${day}T${hour}`;
+export interface JobSlot {
+	idempotency_key: string;
+	scheduled_for: string;
 }
 
 /**
@@ -19,53 +24,26 @@ export function hourlyJobSlot(
 	jobType: 'ingest' | 'digest',
 	now: Date,
 	variant: 'fixtures' | null = null
-): { idempotency_key: string; scheduled_for: string } {
-	const parts = bangkokParts(now);
-	// Wall-clock time read as if it were UTC, minus the real instant = the zone offset.
-	const wallAsUtcMs = Date.UTC(
-		Number(parts.year),
-		Number(parts.month) - 1,
-		Number(parts.day),
-		Number(parts.hour),
-		Number(parts.minute),
-		Number(parts.second)
-	);
-	const offsetMs = wallAsUtcMs - Math.floor(now.getTime() / 1000) * 1000;
-	const hourStartWallMs = Date.UTC(
-		Number(parts.year),
-		Number(parts.month) - 1,
-		Number(parts.day),
-		Number(parts.hour)
-	);
+): JobSlot {
+	const slot = hourSlot(now);
 	return {
-		idempotency_key: variant
-			? `${jobType}:${variant}:${hourSlot(now)}`
-			: `${jobType}:${hourSlot(now)}`,
-		scheduled_for: new Date(hourStartWallMs - offsetMs).toISOString()
+		idempotency_key: variant ? `${jobType}:${variant}:${slot}` : `${jobType}:${slot}`,
+		scheduled_for: bangkokDateTimeToUtc(slot.slice(0, 10), `${slot.slice(11)}:00`)
 	};
 }
 
-function bangkokParts(
-	instant: Date
-): Record<'year' | 'month' | 'day' | 'hour' | 'minute' | 'second', string> {
-	const parts = new Intl.DateTimeFormat('en-US', {
-		timeZone: DEFAULT_TIMEZONE,
-		year: 'numeric',
-		month: '2-digit',
-		day: '2-digit',
-		hour: '2-digit',
-		minute: '2-digit',
-		second: '2-digit',
-		hourCycle: 'h23'
-	}).formatToParts(instant);
-	const part = (type: Intl.DateTimeFormatPartTypes) =>
-		parts.find((entry) => entry.type === type)?.value ?? '00';
+export function briefJobSlot(jobType: 'brief_morning' | 'brief_evening', date: BriefDate): JobSlot {
+	const publishTime = jobType === 'brief_morning' ? '07:00' : '19:00';
 	return {
-		year: part('year'),
-		month: part('month'),
-		day: part('day'),
-		hour: part('hour'),
-		minute: part('minute'),
-		second: part('second')
+		idempotency_key: `${jobType}:${date}`,
+		scheduled_for: bangkokDateTimeToUtc(date, publishTime)
+	};
+}
+
+/** The snapshot of `date` is scheduled for 01:00 ICT on the next Bangkok day. */
+export function archiveJobSlot(date: BriefDate): JobSlot {
+	return {
+		idempotency_key: `archive_snapshot:${date}`,
+		scheduled_for: bangkokDateTimeToUtc(addDays(date, 1), '01:00')
 	};
 }

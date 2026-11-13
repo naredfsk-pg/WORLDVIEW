@@ -1,82 +1,79 @@
 /**
- * Manual `ingest` rerun from `/admin/jobs`, started in-process: the same as
- * `npm run job -- ingest --force --manual` (scripts/job.ts), with the same claim, so a slot that
- * is already `running` (cron or another click) is never started twice.
+ * Manual job reruns from `/admin/jobs`, started in-process through `runJobByType`
+ * (src/lib/server/jobs/registry.ts), the same entry point as `npm run job -- <type> --force
+ * --manual`. The claim keeps a slot that is already `running` (cron or another click) from
+ * starting twice. A forced admin rerun never builds a brief or snapshot before its window closes
+ * (`allowOpenWindow` is not set), so a start can be refused as `running`, `already_done` or
+ * `window_open`.
  *
- * FOLLOW-UP (after the digest lane merges): replace this composition with
- * `runJobByType` from `src/lib/server/jobs/registry.ts` and enable the other job types.
+ * (The file keeps its Wave 2 name; it now starts every job type, not only ingest.)
  */
-import { MAX_ITEM_AGE_HOURS, runIngest } from '#lib/server/jobs/ingest.js';
-import { hourlyJobSlot } from '#lib/server/jobs/job-slots.js';
 import { createJsonLogger } from '#lib/server/jobs/logger.js';
-import { runJob, sanitizeError, type RunJobDeps } from '#lib/server/jobs/runner.js';
-import { createRssAdapter } from '#lib/server/news/adapters.js';
-import { allowedHostsFromRegistry, createSafeFetch } from '#lib/server/news/safe-fetch.js';
-import { sourceRegistryFor } from '#lib/server/news/sources.js';
-import type { JobContext, JobOutcome, JobRun } from '#lib/types/jobs.js';
-import type { Repositories } from '#lib/types/repositories.js';
+import {
+	runJobByType,
+	type RunJobByTypeResult,
+	type RunJobOptions
+} from '#lib/server/jobs/registry.js';
+import { sanitizeError } from '#lib/server/jobs/runner.js';
+import type { JobRun, JobType } from '#lib/types/jobs.js';
 
-/** Minimum time between two manual reruns (any admin), counted from the last start. */
+/** Minimum time between two manual reruns of the same job type (any admin), from the last start. */
 export const MANUAL_RERUN_MIN_INTERVAL_MS = 5 * 60 * 1000;
 
-export type ManualStartResult =
-	| { status: 'started'; run: Pick<JobRun, 'id' | 'idempotency_key' | 'attempts'> }
-	| { status: 'skipped'; reason: 'running' | 'already_done' };
+export const SKIP_REASONS = ['running', 'already_done', 'window_open'] as const;
+export type SkipReason = (typeof SKIP_REASONS)[number];
 
-export interface ManualIngestDeps extends RunJobDeps {
-	execute: (ctx: JobContext) => Promise<JobOutcome>;
+type ClaimedRun = Pick<JobRun, 'id' | 'idempotency_key' | 'attempts'>;
+
+export type ManualStartResult =
+	| { status: 'started'; run: ClaimedRun }
+	| { status: 'skipped'; reason: SkipReason }
+	| { status: 'failed'; message: string };
+
+export type JobRunner = (type: JobType, opts: RunJobOptions) => Promise<RunJobByTypeResult>;
+
+/** The production runner; tests replace this export. */
+export function manualJobRunner(): JobRunner {
+	return runJobByType;
 }
 
 /**
- * Claims the current hourly slot with `force` + `manual` and returns as soon as the claim is
- * decided; the job itself keeps running in the background (20-minute abort from `runJob`).
+ * Claims the slot of `type` with `force` + `manual` and returns as soon as the claim is decided;
+ * the job itself keeps running in the background (20-minute abort from `runJob`).
  */
-export async function startManualIngest(deps: ManualIngestDeps): Promise<ManualStartResult> {
-	let markStarted!: (run: JobRun) => void;
-	const started = new Promise<JobRun>((resolve) => (markStarted = resolve));
+export async function startManualJob(
+	type: JobType,
+	options: { date?: string },
+	runner: JobRunner
+): Promise<ManualStartResult> {
+	let markClaimed!: (run: ClaimedRun) => void;
+	const claimed = new Promise<ClaimedRun>((resolve) => (markClaimed = resolve));
 
-	const run = runJob(
-		deps,
-		{
-			job_type: 'ingest',
-			...hourlyJobSlot('ingest', deps.now()),
-			trigger: 'manual',
-			force: true
-		},
-		(ctx) => {
-			markStarted(ctx.run);
-			return deps.execute(ctx);
-		}
-	);
+	const finished = runner(type, {
+		date: options.date,
+		force: true,
+		manual: true,
+		onClaimed: (run) => markClaimed(run)
+	});
 
-	const first = await Promise.race([started.then((claimed) => ({ claimed })), run]);
-	if ('claimed' in first) {
-		run.catch((error: unknown) =>
-			deps.logger.error('manual ingest crashed', { error: sanitizeError(error) })
+	const first = await Promise.race([claimed.then((run) => ({ run })), finished]);
+	if ('run' in first) {
+		finished.catch((error: unknown) =>
+			createJsonLogger().error('manual job crashed', {
+				job_type: type,
+				error: sanitizeError(error)
+			})
 		);
-		const { id, idempotency_key, attempts } = first.claimed;
+		const { id, idempotency_key, attempts } = first.run;
 		return { status: 'started', run: { id, idempotency_key, attempts } };
 	}
-	if (first.status === 'skipped') return { status: 'skipped', reason: first.reason };
-	// Unreachable: `runJob` only finishes without calling `execute` when it skipped the claim.
-	throw new Error(`manual ingest finished without starting (${first.status})`);
+	if (first.status === 'skipped' && isSkipReason(first.reason)) {
+		return { status: 'skipped', reason: first.reason };
+	}
+	// Refused before any claim: a usage error, or config / database setup failed.
+	return { status: 'failed', message: first.status };
 }
 
-/** The production ingest composition (registry, SafeFetch allowlist, RSS adapter), as in scripts/job.ts. */
-export function productionIngestDeps(repositories: Repositories): ManualIngestDeps {
-	const registry = sourceRegistryFor('production');
-	const ingestDeps = {
-		registry,
-		maxItemAgeHours: MAX_ITEM_AGE_HOURS,
-		safeFetch: createSafeFetch({ allowedHosts: allowedHostsFromRegistry(registry) }),
-		adapters: { rss: createRssAdapter() },
-		ingest: repositories.ingest,
-		digest: repositories.digest
-	};
-	return {
-		jobs: repositories.jobs,
-		logger: createJsonLogger(),
-		now: () => new Date(),
-		execute: (ctx) => runIngest(ingestDeps, ctx)
-	};
+function isSkipReason(value: string | undefined): value is SkipReason {
+	return (SKIP_REASONS as readonly (string | undefined)[]).includes(value);
 }

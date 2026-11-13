@@ -1,6 +1,7 @@
 /**
- * Canonical article URL (ARCHITECTURE §9), used for dedup (UNIQUE `articles.canonical_url`) and display.
- * The contract places this in `utils/url.ts`; it lives here until that lane adds it (no I/O, pure).
+ * URL helpers (ARCHITECTURE §1, §9). Pure and isomorphic (the global `URL` only).
+ * - `canonicalizeUrl`: the canonical article URL, used for dedup (UNIQUE `articles.canonical_url`) and display.
+ * - `isHttpUrl`: the only scheme check for stored and rendered links.
  */
 
 /** Query parameters that only track the click and never identify the article. */
@@ -54,4 +55,18 @@ export function canonicalizeUrl(raw: string): string | null {
 		url.pathname = url.pathname.replace(/\/+$/, '') || '/';
 	}
 	return url.href;
+}
+
+/**
+ * True only for absolute http(s) URLs. Every external `href` built from data goes through this;
+ * anything else (e.g. `javascript:`) is rendered as text, and ingest refuses to store it.
+ */
+export function isHttpUrl(value: string | null | undefined): value is string {
+	if (!value) return false;
+	try {
+		const { protocol } = new URL(value);
+		return protocol === 'http:' || protocol === 'https:';
+	} catch {
+		return false;
+	}
 }

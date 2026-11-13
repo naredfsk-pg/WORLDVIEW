@@ -1,6 +1,6 @@
 /** `BriefRepository`: brief candidates for a window, and idempotent brief saves. */
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, exists, gte, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, exists, gte, lt, or, sql } from 'drizzle-orm';
 import type { BriefStatus } from '../../../types/domain';
 import type { BriefRepository } from '../../../types/repositories';
 import type { Db } from '../client';
@@ -24,10 +24,26 @@ export function createBriefRepository(db: Db): BriefRepository {
 						)
 					)
 			);
-			// Continuity (PRD §4.4): an update, or a published relation to an older public event.
 			// Outer columns are qualified by hand: Drizzle leaves them bare in single-table selects,
-			// which would be ambiguous inside this correlated subquery.
+			// which would be ambiguous inside the correlated subqueries below.
 			const eventId = sql`${sql.identifier('events')}.${sql.identifier('id')}`;
+			// daily_snapshot: the events the day's published morning / evening briefs carried.
+			const inDayBriefs = window.include_briefs_of
+				? sql<number>`EXISTS (
+						SELECT 1 FROM daily_brief_events be JOIN daily_briefs b ON b.id = be.brief_id
+						WHERE be.event_id = ${eventId} AND b.brief_date = ${window.include_briefs_of}
+							AND b.edition IN ('morning', 'evening') AND b.status = 'published'
+					)`
+				: undefined;
+			// Newest evidence inside the window: ranking must not see reports that came later.
+			const windowEvidenceAt = sql<string | null>`(
+				SELECT max(coalesce(a.published_at, a.ingested_at))
+				FROM event_articles ea JOIN articles a ON a.id = ea.article_id
+				WHERE ea.event_id = ${eventId}
+					AND coalesce(a.published_at, a.ingested_at) >= ${window.start_utc}
+					AND coalesce(a.published_at, a.ingested_at) < ${window.end_utc}
+			)`;
+			// Continuity (PRD §4.4): an update, or a published relation to an older public event.
 			const firstSeenAt = sql`${sql.identifier('events')}.${sql.identifier('first_seen_at')}`;
 			const isContinuing = sql<number>`(
 				EXISTS (SELECT 1 FROM event_updates u WHERE u.event_id = ${eventId})
@@ -42,15 +58,22 @@ export function createBriefRepository(db: Db): BriefRepository {
 			)`;
 
 			const rows = db
-				.select({ event: events, is_continuing: isContinuing })
+				.select({
+					event: events,
+					is_continuing: isContinuing,
+					window_evidence_at: windowEvidenceAt,
+					in_day_briefs: inDayBriefs ?? sql<number>`0`
+				})
 				.from(events)
-				.where(and(isPublicEvent(events), hasArticleInWindow))
-				.orderBy(desc(events.last_updated_at))
+				.where(and(isPublicEvent(events), or(hasArticleInWindow, inDayBriefs)))
+				.orderBy(desc(events.last_updated_at), events.id)
 				.all();
 			return rows.map((row) => ({
 				...toEventSummary(row.event),
 				signals: row.event.signals,
-				is_continuing: Boolean(row.is_continuing)
+				is_continuing: Boolean(row.is_continuing),
+				window_evidence_at: row.window_evidence_at,
+				in_day_briefs: Boolean(row.in_day_briefs)
 			}));
 		},
 
@@ -68,6 +91,8 @@ export function createBriefRepository(db: Db): BriefRepository {
 						)
 						.get();
 
+					// A rerun that finds nothing never takes down a brief readers already saw.
+					if (input.status === 'draft' && existing?.status === 'published') return existing.id;
 					// An admin-hidden brief stays hidden on regeneration; its items are still refreshed.
 					const status: BriefStatus = existing?.status === 'hidden' ? 'hidden' : input.status;
 					// First publication time is kept across regenerations; drafts are not published.

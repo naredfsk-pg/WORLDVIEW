@@ -9,7 +9,8 @@ import {
 	unknownRefIssues
 } from './shared';
 
-export const SUMMARY_PROMPT_VERSION = 'summary@1';
+// summary@2 (Wave 2 review): title and summary state only facts every source agrees on.
+export const SUMMARY_PROMPT_VERSION = 'summary@2';
 
 const scoreSchema = z.literal([0, 1, 2, 3]);
 
@@ -36,8 +37,9 @@ export const summaryTask = defineTask({
 	promptVersion: SUMMARY_PROMPT_VERSION,
 	instructions: `Task: write the Thai text for one news event, using only <data>.articles and <data>.extraction.
 All *_th fields are in neutral, plain Thai (proper names may stay in their usual spelling).
-- title_th: a short, factual headline.
-- summary_th: one or two sentences.
+- title_th: a short, factual headline that states only facts all supplied articles agree on.
+- summary_th: one or two sentences; the same rule as title_th.
+- Wording that only one outlet uses, or that sources disagree on (for example a person's role or a label such as "former"), is never stated as fact in title_th or summary_th: attribute it to the outlet ("ตามรายงานของ BBC …") or leave it out of the title.
 - what_happened_th: only what the articles confirm (the extraction facts). No claims, no speculation.
 - why_it_matters_th: impact and context in careful wording; possible effects are marked as possible, never certain.
 - background_th: relevant background that the data supports, or null.

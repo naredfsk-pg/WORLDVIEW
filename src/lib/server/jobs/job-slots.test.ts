@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { hourlyJobSlot, hourSlot } from './job-slots';
+import { hourSlot } from '#lib/utils/date.js';
+import { archiveJobSlot, briefJobSlot, hourlyJobSlot } from './job-slots';
 
 describe('hourSlot / hourlyJobSlot (Asia/Bangkok, ARCHITECTURE §8)', () => {
 	it.each([
@@ -34,6 +35,21 @@ describe('hourSlot / hourlyJobSlot (Asia/Bangkok, ARCHITECTURE §8)', () => {
 		expect(hourlyJobSlot('ingest', now, 'fixtures')).toEqual({
 			idempotency_key: 'ingest:fixtures:2026-11-13T06',
 			scheduled_for: hourlyJobSlot('ingest', now).scheduled_for
+		});
+	});
+
+	it('keys brief and archive jobs by Bangkok date', () => {
+		expect(briefJobSlot('brief_morning', '2026-11-13')).toEqual({
+			idempotency_key: 'brief_morning:2026-11-13',
+			scheduled_for: '2026-11-13T00:00:00.000Z'
+		});
+		expect(briefJobSlot('brief_evening', '2026-11-13')).toEqual({
+			idempotency_key: 'brief_evening:2026-11-13',
+			scheduled_for: '2026-11-13T12:00:00.000Z'
+		});
+		expect(archiveJobSlot('2026-12-31')).toEqual({
+			idempotency_key: 'archive_snapshot:2026-12-31',
+			scheduled_for: '2026-12-31T18:00:00.000Z'
 		});
 	});
 });

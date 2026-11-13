@@ -1,11 +1,12 @@
 /**
  * `NewsSourceAdapter`s (ARCHITECTURE §9): fetch and parse into `RawFeedItem[]` only.
- * - `rss`: RSS 2.0, RSS 1.0 and Atom over `SafeFetch`.
+ * - `rss`: RSS 2.0, RSS 1.0 and Atom over `SafeFetch`, as a conditional GET when the previous
+ *   fetch left an ETag / Last-Modified (an unchanged feed answers 304 with no body).
  * - `fixture`: a local XML file under `tests/fixtures/feeds/` (dev/test only; no network).
  */
 import { readFile, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
-import type { NewsSourceAdapter } from '#lib/types/news.js';
+import type { FeedValidators, NewsSourceAdapter } from '#lib/types/news.js';
 import { NewsFetchError } from './errors.js';
 import { parseFeed } from './feed-parser.js';
 import { NO_BODY_STATUSES, SAFE_FETCH_DEFAULTS } from './safe-fetch.js';
@@ -19,17 +20,37 @@ export function createRssAdapter(): NewsSourceAdapter {
 	return {
 		kind: 'rss',
 		async fetch(source, ctx) {
+			const previous = ctx.conditional ?? null;
 			const response = await ctx.safeFetch(source.feed_url, {
 				signal: ctx.signal,
-				headers: { accept: FEED_ACCEPT }
+				headers: { accept: FEED_ACCEPT, ...conditionalHeaders(previous) }
 			});
 			const fetchedAt = ctx.now.toISOString();
 			// 204/205, or 304 when the caller sent a validator: nothing to parse.
-			if (NO_BODY_STATUSES.has(response.status)) return { items: [], fetched_at: fetchedAt };
+			if (NO_BODY_STATUSES.has(response.status)) {
+				return {
+					items: [],
+					fetched_at: fetchedAt,
+					not_modified: response.status === 304,
+					// A 304 may omit the validators; the previous ones then stay valid.
+					validators: {
+						etag: response.headers.get('etag') ?? previous?.etag ?? null,
+						last_modified: response.headers.get('last-modified') ?? previous?.last_modified ?? null
+					}
+				};
+			}
 
 			const bytes = new Uint8Array(await response.arrayBuffer());
 			const xml = decodeFeedBytes(bytes, response.headers.get('content-type'));
-			return { items: parseFeed(xml), fetched_at: fetchedAt };
+			return {
+				items: parseFeed(xml),
+				fetched_at: fetchedAt,
+				not_modified: false,
+				validators: {
+					etag: response.headers.get('etag'),
+					last_modified: response.headers.get('last-modified')
+				}
+			};
 		}
 	};
 }
@@ -71,9 +92,29 @@ export function createFixtureAdapter(repoRoot: string): NewsSourceAdapter {
 				});
 			}
 			const xml = await readFile(path, 'utf8');
-			return { items: parseFeed(xml), fetched_at: ctx.now.toISOString() };
+			return {
+				items: parseFeed(xml),
+				fetched_at: ctx.now.toISOString(),
+				not_modified: false,
+				validators: { etag: null, last_modified: null }
+			};
 		}
 	};
+}
+
+/** Header values come from our own database, but are length-capped and single-line anyway. */
+function conditionalHeaders(validators: FeedValidators | null): Record<string, string> {
+	const headers: Record<string, string> = {};
+	const etag = singleLine(validators?.etag);
+	const lastModified = singleLine(validators?.last_modified);
+	if (etag) headers['if-none-match'] = etag;
+	if (lastModified) headers['if-modified-since'] = lastModified;
+	return headers;
+}
+
+function singleLine(value: string | null | undefined): string | null {
+	if (!value || value.length > 200 || /[\r\n]/.test(value)) return null;
+	return value;
 }
 
 /**

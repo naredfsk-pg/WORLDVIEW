@@ -102,6 +102,10 @@ export interface Source {
 	last_error_at: IsoUtc | null;
 	/** Short, sanitized message. Never contains secrets or response bodies. */
 	last_error: string | null;
+	// CONTRACT-CHANGE: added (Wave 2). HTTP validators from the last successful fetch, sent back
+	// as If-None-Match / If-Modified-Since so an unchanged feed answers 304 with no body.
+	etag: string | null;
+	last_modified: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -442,7 +446,14 @@ export interface ContentRevision {
 
 // CONTRACT-CHANGE (Wave 2 admin review fix): audit rows for admin operations that are not
 // content edits (no `content_revisions` entity), e.g. a manual job rerun. Append-only.
-export const ADMIN_ACTION_TYPES = ['rerun_ingest'] as const;
+// CONTRACT-CHANGE (Wave 2 digest lane): one `rerun_{job_type}` per job type the admin page runs.
+export const ADMIN_ACTION_TYPES = [
+	'rerun_ingest',
+	'rerun_digest',
+	'rerun_brief_morning',
+	'rerun_brief_evening',
+	'rerun_archive_snapshot'
+] as const;
 export type AdminActionType = (typeof ADMIN_ACTION_TYPES)[number];
 
 export interface AdminAction {

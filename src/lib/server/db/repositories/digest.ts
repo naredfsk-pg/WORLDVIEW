@@ -14,12 +14,16 @@ import {
 	gte,
 	inArray,
 	isNull,
+	lt,
 	max,
 	ne,
+	not,
 	notInArray,
 	or,
-	sql
+	sql,
+	type SQL
 } from 'drizzle-orm';
+import type { SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import type { ReviewReason } from '../../../types/domain';
 import type { ArticleWithSource, EventMatchCandidate } from '../../../types/news';
 import type {
@@ -41,6 +45,9 @@ import {
 	sources
 } from '../schema';
 import { EntityNotFoundError, isPublicEvent, toJsonObject, type Executor } from './shared';
+
+/** `content_revisions.changed_by` of pipeline changes; every other actor is an admin email. */
+export const SYSTEM_ACTOR = 'system';
 
 export function createDigestRepository(db: Db): DigestRepository {
 	return {
@@ -67,7 +74,8 @@ export function createDigestRepository(db: Db): DigestRepository {
 					.select()
 					.from(events)
 					.where(and(ne(events.status, 'hidden'), gte(events.last_updated_at, since)))
-					.orderBy(desc(events.last_updated_at))
+					// id breaks ties, so grouping sees the same order on every run.
+					.orderBy(desc(events.last_updated_at), asc(events.id))
 					.all();
 				const articlesByEvent = loadArticlesByEvent(
 					tx,
@@ -81,7 +89,8 @@ export function createDigestRepository(db: Db): DigestRepository {
 						tags: row.tags,
 						first_seen_at: row.first_seen_at,
 						last_updated_at: row.last_updated_at,
-						article_titles: titles
+						article_titles: titles,
+						is_demo: row.is_demo
 					};
 				});
 			});
@@ -160,6 +169,9 @@ export function createDigestRepository(db: Db): DigestRepository {
 							)
 						)
 				);
+				// An editor's flag on a published event is final for the pipeline (the gate would only
+				// answer keep_published), so it is not even sent to the LLM.
+				const hasManualFlag = sql`EXISTS (SELECT 1 FROM json_each(${events.review_reasons}) WHERE value = 'manual_flag')`;
 				const rows = tx
 					.select()
 					.from(events)
@@ -167,10 +179,10 @@ export function createDigestRepository(db: Db): DigestRepository {
 						or(
 							eq(events.status, 'draft'),
 							and(eq(events.status, 'pending_review'), onlyLlmFailed),
-							and(eq(events.status, 'published'), linkedAfterSummary)
+							and(eq(events.status, 'published'), linkedAfterSummary, not(hasManualFlag))
 						)
 					)
-					.orderBy(desc(events.last_updated_at))
+					.orderBy(desc(events.last_updated_at), asc(events.id))
 					.limit(limit)
 					.all();
 				return withArticles(tx, rows);
@@ -178,7 +190,7 @@ export function createDigestRepository(db: Db): DigestRepository {
 		},
 
 		async saveEventContent(eventId, content, now) {
-			db.transaction(
+			return db.transaction(
 				(tx) => {
 					const before = tx.select().from(events).where(eq(events.id, eventId)).get();
 					if (!before) throw new EntityNotFoundError('event', eventId);
@@ -190,13 +202,26 @@ export function createDigestRepository(db: Db): DigestRepository {
 						throw new Error(`saveEventContent: published event ${eventId} cannot be demoted`);
 					}
 
-					const contentFields = pickContentFields(content);
-					const publishing = content.status === 'published';
+					// Admin corrections win over the pipeline (PRD FR-06, §9.2): fields an admin ever
+					// edited are never rewritten. Checked inside this transaction, so an admin save
+					// cannot slip in between the check and the write.
+					const adminFields = adminEditedContentFields(tx, eventId);
+					const contentFields = Object.fromEntries(
+						Object.entries(pickContentFields(content)).filter(([key]) => !adminFields.has(key))
+					) as Partial<ReturnType<typeof pickContentFields>>;
+					// An admin who edited an unpublished event publishes it themselves.
+					const awaitsAdmin =
+						adminFields.size > 0 && before.status !== 'published' && content.status === 'published';
+					const status = awaitsAdmin ? 'pending_review' : content.status;
+					const publishing = status === 'published';
+					let reviewReasons: ReviewReason[] = [];
+					if (awaitsAdmin) reviewReasons = ['manual_flag'];
+					else if (!publishing) reviewReasons = content.review_reasons;
 					tx.update(events)
 						.set({
 							...contentFields,
-							status: content.status,
-							review_reasons: publishing ? [] : content.review_reasons,
+							status,
+							review_reasons: reviewReasons,
 							summarized_at: content.summarized_at,
 							published_at: publishing ? (before.published_at ?? now) : before.published_at,
 							updated_at: now
@@ -226,8 +251,11 @@ export function createDigestRepository(db: Db): DigestRepository {
 								entity_type: 'event',
 								entity_id: eventId,
 								changed_at: now,
-								changed_by: 'system',
-								change_reason: 'automatic re-summary after new evidence',
+								changed_by: SYSTEM_ACTOR,
+								change_reason:
+									adminFields.size > 0
+										? 'automatic re-summary after new evidence; admin-edited fields kept'
+										: 'automatic re-summary after new evidence',
 								public_note_th: null,
 								before_after: {
 									before: toJsonObject(pickContentFields(before)),
@@ -236,6 +264,8 @@ export function createDigestRepository(db: Db): DigestRepository {
 							})
 							.run();
 					}
+					const stored = tx.select().from(events).where(eq(events.id, eventId)).get()!;
+					return { status, admin_fields_kept: [...adminFields].sort(), event: stored };
 				},
 				{ behavior: 'immediate' }
 			);
@@ -249,21 +279,76 @@ export function createDigestRepository(db: Db): DigestRepository {
 				.run();
 		},
 
+		async markContentChecked(eventId, checkedAt, now) {
+			// Only moves forward, and only for published events (their text stays as it is).
+			db.update(events)
+				// updated_at is the admin editor's version token: every write to an event bumps it.
+				.set({ summarized_at: checkedAt, updated_at: now })
+				.where(
+					and(
+						eq(events.id, eventId),
+						eq(events.status, 'published'),
+						or(isNull(events.summarized_at), lt(events.summarized_at, checkedAt))
+					)
+				)
+				.run();
+		},
+
+		async mergeDraftEvent(sourceEventId, targetEventId, confidence, now) {
+			return db.transaction(
+				(tx) => {
+					const source = tx
+						.select({ status: events.status, is_demo: events.is_demo })
+						.from(events)
+						.where(eq(events.id, sourceEventId))
+						.get();
+					const target = tx
+						.select({ status: events.status, is_demo: events.is_demo })
+						.from(events)
+						.where(eq(events.id, targetEventId))
+						.get();
+					if (!source) throw new EntityNotFoundError('event', sourceEventId);
+					if (!target) throw new EntityNotFoundError('event', targetEventId);
+					if (source.status !== 'draft' || target.status === 'hidden') {
+						throw new Error(
+							`mergeDraftEvent: cannot merge a ${source.status} event into a ${target.status} event`
+						);
+					}
+					if (source.is_demo !== target.is_demo) {
+						throw new Error('mergeDraftEvent: real and demo events are never merged');
+					}
+					// Deleting the draft would delete an editor's work: leave both events as they are.
+					if (hasAdminRevision(tx, sourceEventId)) return false;
+
+					tx.update(eventArticles)
+						.set({ event_id: targetEventId, relation_confidence: confidence, linked_at: now })
+						.where(eq(eventArticles.event_id, sourceEventId))
+						.run();
+					// A draft has no public content; its updates, relations and links cascade away.
+					tx.delete(events).where(eq(events.id, sourceEventId)).run();
+					recomputeDerivedFields(tx, targetEventId, now);
+					return true;
+				},
+				{ behavior: 'immediate' }
+			);
+		},
+
 		async listRelationCandidates(eventId, since, limit) {
 			return db.transaction((tx) => {
 				const source = tx
-					.select({ category: events.category, tags: events.tags })
+					.select({ regions: events.regions, tags: events.tags, is_demo: events.is_demo })
 					.from(events)
 					.where(eq(events.id, eventId))
 					.get();
 				if (!source) return [];
 
-				const sharesCategory = source.category ? eq(events.category, source.category) : undefined;
-				const sharesTag =
-					source.tags.length > 0
-						? sql`EXISTS (SELECT 1 FROM json_each(${events.tags}) WHERE ${inArray(sql`value`, source.tags)})`
-						: undefined;
-				if (!sharesCategory && !sharesTag) return [];
+				const sharesTag = sharesJsonValue(events.tags, source.tags);
+				// `global` is on most stories, so it says nothing about a relation.
+				const sharesRegion = sharesJsonValue(
+					events.regions,
+					source.regions.filter((region) => region !== 'global')
+				);
+				if (!sharesTag && !sharesRegion) return [];
 
 				const rows = tx
 					.select()
@@ -272,11 +357,13 @@ export function createDigestRepository(db: Db): DigestRepository {
 						and(
 							ne(events.id, eventId),
 							isPublicEvent(events),
+							// Real events never relate to fictional demo events (and vice versa).
+							eq(events.is_demo, source.is_demo),
 							gte(events.last_updated_at, since),
-							or(sharesCategory, sharesTag)
+							or(sharesTag, sharesRegion)
 						)
 					)
-					.orderBy(desc(events.last_updated_at))
+					.orderBy(desc(events.last_updated_at), asc(events.id))
 					.limit(limit)
 					.all();
 				return withArticles(tx, rows);
@@ -349,6 +436,12 @@ export function createDigestRepository(db: Db): DigestRepository {
 			return db.select().from(academyLessons).orderBy(asc(academyLessons.day)).all();
 		}
 	};
+}
+
+/** `column` (a JSON array) contains any of `values`; undefined when `values` is empty. */
+function sharesJsonValue(column: SQLiteColumn, values: readonly string[]): SQL | undefined {
+	if (values.length === 0) return undefined;
+	return sql`EXISTS (SELECT 1 FROM json_each(${column}) WHERE ${inArray(sql`value`, [...values])})`;
 }
 
 /** Derived event facts from its evidence. Pure; also used by the demo seed. */
@@ -434,10 +527,68 @@ function insertEventArticles(
 	return linked;
 }
 
+/**
+ * Content fields an admin ever changed on this event: the `after` keys of every event revision
+ * whose actor is not the pipeline. All of them, not only those newer than `summarized_at`: once
+ * a re-summary kept an admin field, `summarized_at` moves past the edit, and the next re-summary
+ * must still keep it.
+ */
+function adminEditedContentFields(tx: Executor, eventId: string): Set<string> {
+	const rows = tx
+		.select({ before_after: contentRevisions.before_after })
+		.from(contentRevisions)
+		.where(
+			and(
+				eq(contentRevisions.entity_type, 'event'),
+				eq(contentRevisions.entity_id, eventId),
+				ne(contentRevisions.changed_by, SYSTEM_ACTOR)
+			)
+		)
+		.all();
+	const fields = new Set<string>();
+	for (const row of rows) {
+		for (const key of Object.keys(row.before_after.after ?? {})) {
+			if (CONTENT_FIELD_KEYS.has(key)) fields.add(key);
+		}
+	}
+	return fields;
+}
+
+function hasAdminRevision(tx: Executor, eventId: string): boolean {
+	const row = tx
+		.select({ id: contentRevisions.id })
+		.from(contentRevisions)
+		.where(
+			and(
+				eq(contentRevisions.entity_type, 'event'),
+				eq(contentRevisions.entity_id, eventId),
+				ne(contentRevisions.changed_by, SYSTEM_ACTOR)
+			)
+		)
+		.get();
+	return row !== undefined;
+}
+
 function assertEventExists(tx: Executor, eventId: string): void {
 	const row = tx.select({ id: events.id }).from(events).where(eq(events.id, eventId)).get();
 	if (!row) throw new EntityNotFoundError('event', eventId);
 }
+
+const CONTENT_FIELD_KEYS: ReadonlySet<string> = new Set([
+	'title_th',
+	'summary_th',
+	'what_happened_th',
+	'why_it_matters_th',
+	'background_th',
+	'uncertain_th',
+	'claims',
+	'category',
+	'regions',
+	'countries',
+	'tags',
+	'signals',
+	'occurred_at'
+]);
 
 function pickContentFields(source: EventContentWrite | typeof events.$inferSelect) {
 	return {

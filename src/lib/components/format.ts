@@ -1,17 +1,12 @@
 /**
- * Pure display helpers for the UI: Thai labels, Bangkok-time formatting, URL-param parsing and the
- * archive month grid. Gregorian year with Thai month names (ARCHITECTURE §7, §18 #11).
+ * Pure display helpers for the UI: Thai labels, Bangkok-time formatting and the archive month
+ * grid. Gregorian year with Thai month names (ARCHITECTURE §7, §18 #11).
  *
- * CONTRACT-GAP: ARCHITECTURE §7 lists `isBriefDate`, `isYearMonth`, `monthOf`, `formatThaiDate` and
- * `formatThaiTime` for `#lib/utils/date.ts` (backend #1). They are not there yet and `utils/` is
- * outside the frontend's scope, so the UI keeps its own copies here. Swap to the utils versions
- * once they land.
+ * The date and URL-param helpers live in `#lib/utils` and are re-exported here so components keep
+ * one import path. Route loads import them from `#lib/utils` directly.
  */
-// TODO(wave2): move the date helpers to #lib/utils/date.ts (review finding 14).
 import {
-	BRIEF_EDITIONS,
 	CATEGORY_LABEL_TH,
-	CATEGORY_SLUGS,
 	REGION_LABEL_TH,
 	type BriefDate,
 	type BriefEdition,
@@ -21,12 +16,11 @@ import {
 	type RelationType,
 	type YearMonth
 } from '../types/domain';
+import { DEFAULT_TIMEZONE, formatThaiDate, formatThaiTime } from '../utils/date';
 
-const TIME_ZONE = 'Asia/Bangkok';
-const BRIEF_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
-const YEAR_MONTH_PATTERN = /^(\d{4})-(\d{2})$/;
-/** `Date.UTC` maps years 0–99 to 1900+, and nothing in WORLDVIEW predates the Unix epoch. */
-const MIN_YEAR = 1970;
+export { formatThaiDate, formatThaiTime, isBriefDate, isYearMonth, monthOf } from '../utils/date';
+export { parseCategory, parseEdition, parsePageNumber } from '../utils/params';
+export { isHttpUrl } from '../utils/url';
 
 export const TIMEZONE_LABEL = 'เวลาไทย (GMT+7)';
 export const UNKNOWN_OCCURRED_AT = 'ไม่ทราบเวลาเกิดเหตุ';
@@ -58,92 +52,10 @@ export function regionsLabel(regions: readonly RegionSlug[]): string {
 	return regions.map((region) => REGION_LABEL_TH[region]).join(' · ');
 }
 
-export function parseCategory(value: string | null | undefined): CategorySlug | null {
-	return CATEGORY_SLUGS.find((slug) => slug === value) ?? null;
-}
-
-export function parseEdition(value: string | null | undefined): BriefEdition | null {
-	return BRIEF_EDITIONS.find((edition) => edition === value) ?? null;
-}
-
-/** `YYYY-MM-DD` that is also a real calendar day. */
-export function isBriefDate(value: string | null | undefined): value is BriefDate {
-	const match = BRIEF_DATE_PATTERN.exec(value ?? '');
-	if (!match) return false;
-	const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
-	if (year < MIN_YEAR) return false;
-	const date = new Date(Date.UTC(year, month - 1, day));
-	return (
-		date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
-	);
-}
-
-export function isYearMonth(value: string | null | undefined): value is YearMonth {
-	const match = YEAR_MONTH_PATTERN.exec(value ?? '');
-	return (
-		match !== null &&
-		Number(match[1]) >= MIN_YEAR &&
-		Number(match[2]) >= 1 &&
-		Number(match[2]) <= 12
-	);
-}
-
-/**
- * Page number from a URL param: a safe integer in [1, max]; anything else is 1, and values past
- * `max` are clamped, so the SQL OFFSET can never overflow.
- */
-export function parsePageNumber(value: string | null | undefined, max: number): number {
-	const page = Number(value ?? '1');
-	if (!Number.isSafeInteger(page) || page < 1) return 1;
-	return Math.min(page, max);
-}
-
-/**
- * True only for absolute http(s) URLs. Every external `href` built from data goes through this;
- * anything else (e.g. `javascript:`) is rendered as text.
- */
-export function isHttpUrl(value: string | null | undefined): value is string {
-	if (!value) return false;
-	try {
-		const { protocol } = new URL(value);
-		return protocol === 'http:' || protocol === 'https:';
-	} catch {
-		return false;
-	}
-}
-
-export function monthOf(date: BriefDate): YearMonth {
-	return date.slice(0, 7);
-}
-
 export function addMonths(month: YearMonth, delta: number): YearMonth {
 	const [year, monthNumber] = month.split('-').map(Number) as [number, number];
 	const date = new Date(Date.UTC(year, monthNumber - 1 + delta, 1));
 	return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
-}
-
-/** "13 พ.ย. 2026" (short) or "13 พฤศจิกายน 2026" (long). A BriefDate is read as Bangkok noon. */
-export function formatThaiDate(
-	value: IsoUtc | BriefDate,
-	style: 'short' | 'long' = 'short'
-): string {
-	return new Intl.DateTimeFormat('th-TH-u-ca-gregory', {
-		timeZone: TIME_ZONE,
-		day: 'numeric',
-		month: style,
-		year: 'numeric'
-	}).format(toInstant(value));
-}
-
-/** "07:05 น." in Bangkok time. */
-export function formatThaiTime(value: IsoUtc): string {
-	const time = new Intl.DateTimeFormat('en-GB', {
-		timeZone: TIME_ZONE,
-		hour: '2-digit',
-		minute: '2-digit',
-		hourCycle: 'h23'
-	}).format(toInstant(value));
-	return `${time} น.`;
 }
 
 /** "13 พ.ย. 2026 · 07:05 น." */
@@ -154,20 +66,21 @@ export function formatThaiDateTimeShort(value: IsoUtc): string {
 /** "พฤศจิกายน 2026" */
 export function formatThaiMonth(month: YearMonth): string {
 	return new Intl.DateTimeFormat('th-TH-u-ca-gregory', {
-		timeZone: TIME_ZONE,
+		timeZone: DEFAULT_TIMEZONE,
 		month: 'long',
 		year: 'numeric'
-	}).format(toInstant(`${month}-15`));
+	}).format(bangkokNoon(`${month}-15`));
 }
 
 /** English eyebrow, as in the prototype: "FRIDAY · 13 NOVEMBER 2026". */
 export function formatEyebrowDate(date: BriefDate): string {
-	const instant = toInstant(date);
-	const weekday = new Intl.DateTimeFormat('en-GB', { timeZone: TIME_ZONE, weekday: 'long' }).format(
-		instant
-	);
+	const instant = bangkokNoon(date);
+	const weekday = new Intl.DateTimeFormat('en-GB', {
+		timeZone: DEFAULT_TIMEZONE,
+		weekday: 'long'
+	}).format(instant);
 	const day = new Intl.DateTimeFormat('en-GB', {
-		timeZone: TIME_ZONE,
+		timeZone: DEFAULT_TIMEZONE,
 		day: 'numeric',
 		month: 'long',
 		year: 'numeric'
@@ -197,8 +110,9 @@ export function monthGrid(month: YearMonth): (CalendarDay | null)[][] {
 	return weeks;
 }
 
-function toInstant(value: IsoUtc | BriefDate): Date {
-	return new Date(BRIEF_DATE_PATTERN.test(value) ? `${value}T12:00:00+07:00` : value);
+/** A BriefDate is formatted as Bangkok noon, so it never shifts by a day. */
+function bangkokNoon(date: BriefDate): Date {
+	return new Date(`${date}T12:00:00+07:00`);
 }
 
 /** "month=2026-11&date=2026-11-12" from the non-empty values, for `resolve('/archive?…')`. */
