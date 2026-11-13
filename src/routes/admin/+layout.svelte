@@ -16,7 +16,7 @@
 		data-testid="dev-bypass-banner"
 		class="mb-4 rounded-xl border-2 border-dashed border-gold bg-gold-bg px-4 py-3 text-[13px] font-bold text-gold"
 	>
-		โหมดพัฒนา (vite dev): ข้ามการยืนยันตัวตน Cloudflare Access เพราะยังไม่ได้ตั้ง CF_ACCESS_AUD · ใช้ไม่ได้ใน
+		โหมดพัฒนา (vite dev): ข้ามการยืนยันตัวตน Cloudflare Access เพราะยังไม่ได้ตั้งค่า Access · ใช้ไม่ได้ใน
 		production build
 	</div>
 {/if}

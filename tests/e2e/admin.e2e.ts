@@ -75,6 +75,13 @@ test.describe('access control', () => {
 		const leaking = files.filter((file) => readFileSync(file, 'utf8').includes('dev@localhost'));
 		expect(leaking).toEqual([]);
 	});
+
+	test('the client bundle never mentions the admin auth variables', () => {
+		const files = listFiles('build/client');
+		expect(files.length).toBeGreaterThan(0);
+		const pattern = /CF_ACCESS_|ADMIN_ALLOWED_EMAILS/;
+		expect(files.filter((file) => pattern.test(readFileSync(file, 'utf8')))).toEqual([]);
+	});
 });
 
 test.describe('with a valid Cloudflare Access token', () => {
