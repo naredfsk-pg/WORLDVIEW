@@ -57,7 +57,7 @@ export function getLessonDetail(week: number, day: number): LessonDetail | null 
 	const cached = cachedDetails.get(lesson.id);
 	if (cached) return cached;
 
-	const { html, toc } = renderLessonMarkdown(lesson.content_markdown);
+	const { html, toc, folded } = renderLessonMarkdown(lesson.content_markdown);
 	const detail: LessonDetail = {
 		...toLessonSummary(lesson),
 		learning_objectives: lesson.learning_objectives,
@@ -69,7 +69,8 @@ export function getLessonDetail(week: number, day: number): LessonDetail | null 
 		takeaways: lesson.takeaways,
 		infographics: lesson.infographics,
 		html,
-		toc
+		toc,
+		has_folded_sections: folded
 	};
 	cachedDetails.set(lesson.id, detail);
 	return detail;

@@ -16,8 +16,6 @@
 	let { lesson, week, children }: Props = $props();
 
 	const dayLabel = $derived(String(lesson.day).padStart(2, '0'));
-	/** Long section remainders are folded into `<details class="lesson-more">` by the renderer. */
-	const hasFoldedSections = $derived(lesson.html.includes('class="lesson-more"'));
 
 	let root: HTMLElement | undefined = $state();
 	let allOpen = $state(false);
@@ -36,14 +34,15 @@
 			const link = event.target instanceof Element ? event.target.closest('a[href^="#"]') : null;
 			if (link) openSectionOf(link.getAttribute('href') ?? '');
 		};
-		const onHashChange = () => openSectionOf(location.hash);
+		const onHashChange = () => {
+			if (openSectionOf(location.hash)) scrollToHashTarget();
+		};
 		const onToggle = () => {
 			const sections = foldedSections();
 			allOpen = sections.length > 0 && sections.every((section) => section.open);
 		};
 
-		if (openSectionOf(location.hash))
-			document.getElementById(location.hash.slice(1))?.scrollIntoView();
+		if (openSectionOf(location.hash)) scrollToHashTarget();
 		container.addEventListener('click', onClick);
 		container.addEventListener('toggle', onToggle, true);
 		window.addEventListener('hashchange', onHashChange);
@@ -56,6 +55,11 @@
 
 	function foldedSections(): HTMLDetailsElement[] {
 		return [...(root?.querySelectorAll<HTMLDetailsElement>('details.lesson-more') ?? [])];
+	}
+
+	/** The browser scrolled before the section opened (a hidden target has no box): scroll again. */
+	function scrollToHashTarget() {
+		document.getElementById(location.hash.slice(1))?.scrollIntoView();
 	}
 
 	/** Opens the folded section holding `#id`; true when it had to be opened. */
@@ -121,7 +125,7 @@
 			</details>
 		{/if}
 
-		{#if hasFoldedSections}
+		{#if lesson.has_folded_sections}
 			<div
 				class="mb-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-[13px] bg-surface-2 px-4 py-2.5"
 			>
@@ -132,6 +136,7 @@
 					variant="outline"
 					class="min-h-11 rounded-[11px] text-xs font-bold"
 					data-testid="toggle-all-sections"
+					aria-expanded={allOpen}
 					onclick={toggleAllSections}
 				>
 					{allOpen ? 'ย่อทุกหัวข้อ' : 'เปิดอ่านทุกหัวข้อ'}

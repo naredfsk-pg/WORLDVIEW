@@ -161,7 +161,12 @@ export function markdownToSearchText(markdown: string): string {
  *   and in-page search (and `LessonArticle`'s anchor handler) can still reach the hidden text.
  * The result is the only HTML the app renders with `{@html}`.
  */
-export function renderLessonMarkdown(markdown: string): { html: string; toc: TocItem[] } {
+export function renderLessonMarkdown(markdown: string): {
+	html: string;
+	toc: TocItem[];
+	/** True when at least one section remainder is folded into `<details>`. */
+	folded: boolean;
+} {
 	const tokens = lessonMarkdown.parse(markdown, {});
 	const toc: TocItem[] = [];
 
@@ -184,7 +189,7 @@ export function renderLessonMarkdown(markdown: string): { html: string; toc: Toc
 		}
 	});
 
-	return { html: renderWithCollapsedSections(tokens), toc };
+	return { ...renderWithCollapsedSections(tokens), toc };
 }
 
 /** A section's remainder is collapsed only when it holds at least this much text. */
@@ -202,7 +207,7 @@ interface Block {
  * visible; a long remainder goes inside `<details>`. Works on whole top-level blocks, so lists,
  * tables and quotes are never split.
  */
-function renderWithCollapsedSections(tokens: Tokens): string {
+function renderWithCollapsedSections(tokens: Tokens): { html: string; folded: boolean } {
 	const render = (blocks: Block[]) =>
 		blocks.length === 0
 			? ''
@@ -212,7 +217,8 @@ function renderWithCollapsedSections(tokens: Tokens): string {
 					{}
 				);
 
-	return groupSections(tokens, topLevelBlocks(tokens))
+	let folded = false;
+	const html = groupSections(tokens, topLevelBlocks(tokens))
 		.map((section) => {
 			const leadCount = leadBlockCount(tokens, section);
 			const lead = section.slice(0, leadCount);
@@ -221,6 +227,7 @@ function renderWithCollapsedSections(tokens: Tokens): string {
 			if (!isH2Section || blocksText(tokens, rest).length < COLLAPSE_MIN_CHARS) {
 				return render(section);
 			}
+			folded = true;
 			const heading = lessonMarkdown.utils.escapeHtml(headingText(tokens, section[0]!.start));
 			return (
 				render(lead) +
@@ -233,6 +240,7 @@ function renderWithCollapsedSections(tokens: Tokens): string {
 			);
 		})
 		.join('');
+	return { html, folded };
 }
 
 function topLevelBlocks(tokens: Tokens): Block[] {

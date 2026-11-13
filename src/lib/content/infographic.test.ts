@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { VALID_SPECS } from './infographic.fixtures';
+import { INFOGRAPHIC_TYPES, VALID_SPECS } from './infographic.fixtures';
 import {
-	INFOGRAPHIC_TYPES,
 	infographicSchema,
 	infographicsSchema,
 	infographicText,

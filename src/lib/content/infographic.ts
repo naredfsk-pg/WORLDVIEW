@@ -9,16 +9,6 @@
 import { z } from 'zod';
 import type { Infographic, InfographicNode } from '../types/domain';
 
-export const INFOGRAPHIC_TYPES = [
-	'flow',
-	'cycle',
-	'timeline',
-	'compare',
-	'hub',
-	'stats',
-	'layers'
-] as const;
-
 const text = (max: number) => z.string().trim().min(1).max(max);
 const label = text(60);
 const detail = text(160).optional();
@@ -72,7 +62,7 @@ const hubSchema = z.strictObject({
 const statsSchema = z.strictObject({
 	...base,
 	type: z.literal('stats'),
-	// Numbers need a source with a year, so `source` is required here.
+	// Numbers always name their source (and the period, when the lesson gives one).
 	source: text(160),
 	items: z
 		.array(z.strictObject({ value: text(16), unit: text(24).optional(), label, detail }))
@@ -98,6 +88,17 @@ export const infographicSchema = z.discriminatedUnion('type', [
 	statsSchema,
 	layersSchema
 ]);
+
+/**
+ * The hand-written `Infographic` type (types/domain.ts) must describe exactly what the schema
+ * outputs; this fails `npm run check` when the two drift apart.
+ */
+type SchemaOutput = z.output<typeof infographicSchema>;
+export const SCHEMA_MATCHES_TYPE: [SchemaOutput] extends [Infographic]
+	? [Infographic] extends [SchemaOutput]
+		? true
+		: false
+	: false = true;
 
 /** "สรุปใน 30 วินาที": 3–5 one-line takeaways. */
 export const takeawaysSchema = z.array(text(140)).min(3).max(5);

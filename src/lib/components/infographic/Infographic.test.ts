@@ -1,8 +1,8 @@
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 import { getLessonDetail, listLessonSummaries } from '#lib/content/academy.server.js';
-import { VALID_SPECS } from '#lib/content/infographic.fixtures.js';
-import { INFOGRAPHIC_TYPES, infographicText } from '#lib/content/infographic.js';
+import { INFOGRAPHIC_TYPES, VALID_SPECS } from '#lib/content/infographic.fixtures.js';
+import { infographicText } from '#lib/content/infographic.js';
 import type { Infographic as InfographicSpec } from '#lib/types/domain.js';
 import LessonTakeaways from '../LessonTakeaways.svelte';
 import Infographic from './Infographic.svelte';
@@ -58,6 +58,36 @@ describe('Infographic', () => {
 			'--inset: 0.5',
 			'--inset: 0'
 		]);
+	});
+
+	it('renders hub spokes as one list, whatever the layout', () => {
+		const body = renderSpec({
+			...VALID_SPECS.hub,
+			spokes: VALID_SPECS.flow.steps.concat(VALID_SPECS.flow.steps)
+		});
+		expect(body.match(/<ul/g)).toHaveLength(1);
+		expect(body.match(/<li/g)).toHaveLength(6);
+	});
+
+	it('spells out "~", "<" and ">" in stats values for screen readers', () => {
+		const body = renderSpec({
+			...VALID_SPECS.stats,
+			items: [
+				{ value: '~2.1', label: 'ก' },
+				{ value: '<1.5', label: 'ข' },
+				{ value: '>20', unit: '%', label: 'ค' },
+				{ value: '193', label: 'ง' }
+			]
+		});
+		expect(body).toContain('<span class="sr-only">ประมาณ 2.1</span>');
+		expect(body).toContain('<span class="sr-only">น้อยกว่า 1.5</span>');
+		expect(body).toContain('<span class="sr-only">มากกว่า 20</span>');
+		expect(body.match(/class="sr-only"/g)).toHaveLength(3);
+	});
+
+	it('numbers stacked layers but not pyramid layers', () => {
+		expect(renderSpec(VALID_SPECS.layers)).toContain('size-7');
+		expect(renderSpec({ ...VALID_SPECS.layers, variant: 'pyramid' })).not.toContain('size-7');
 	});
 
 	it('states the loop of a cycle in text, not only with the shape', () => {

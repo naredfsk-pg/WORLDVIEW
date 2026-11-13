@@ -56,7 +56,7 @@ describe('renderLessonMarkdown reading path', () => {
 	const long = 'ข้อความยาว '.repeat(40);
 
 	it('keeps a section heading and first paragraph visible and folds a long remainder', () => {
-		const { html } = renderLessonMarkdown(
+		const { html, folded: hasFolded } = renderLessonMarkdown(
 			`บทนำก่อนหัวข้อ
 
 ## ภาพรวม **หลัก**
@@ -74,6 +74,7 @@ ${long}
 - ข้อหนึ่ง
 - ข้อสอง`
 		);
+		expect(hasFolded).toBe(true);
 		expect(html.startsWith('<p>บทนำก่อนหัวข้อ</p>')).toBe(true);
 		expect(html.match(/<details class="lesson-more">/g)).toHaveLength(1);
 		const [visible, folded] = html.split('<details class="lesson-more">');
@@ -88,13 +89,13 @@ ${long}
 	});
 
 	it('does not fold a short remainder, and escapes the heading in the summary', () => {
-		expect(
-			renderLessonMarkdown(`## หัวข้อ
+		const short = renderLessonMarkdown(`## หัวข้อ
 
 แรก
 
-สั้น ๆ`).html
-		).not.toContain('<details');
+สั้น ๆ`);
+		expect(short.html).not.toContain('<details');
+		expect(short.folded).toBe(false);
 		const { html } = renderLessonMarkdown(`## <b>x</b>
 
 แรก

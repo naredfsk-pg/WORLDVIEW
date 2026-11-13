@@ -1,6 +1,5 @@
 /** Minimal valid infographic specs, one per type (tests only). */
 import type { Infographic } from '../types/domain';
-import type { INFOGRAPHIC_TYPES } from './infographic';
 
 const base = { title: 'หัวข้อภาพ', summary: 'ภาพนี้อธิบายอะไร' };
 const nodes = (count: number) =>
@@ -37,4 +36,7 @@ export const VALID_SPECS = {
 		]
 	},
 	layers: { ...base, type: 'layers', variant: 'stack', layers: nodes(3) }
-} satisfies Record<(typeof INFOGRAPHIC_TYPES)[number], Infographic>;
+} satisfies { [Type in Infographic['type']]: Extract<Infographic, { type: Type }> };
+
+/** Every infographic type, from the fixtures (which must cover all of them). */
+export const INFOGRAPHIC_TYPES = Object.keys(VALID_SPECS) as Infographic['type'][];

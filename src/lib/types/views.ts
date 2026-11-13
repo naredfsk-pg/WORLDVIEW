@@ -164,6 +164,8 @@ export interface LessonDetail extends LessonSummary {
 	/** Sanitized HTML rendered server-side by `#lib/content`. The only `{@html}` allowed in the app. */
 	html: string;
 	toc: TocItem[];
+	/** `html` folds some long section remainders into `<details class="lesson-more">`. */
+	has_folded_sections: boolean;
 }
 
 export interface AcademyWeekMeta {
