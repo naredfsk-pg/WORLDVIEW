@@ -7,6 +7,7 @@
 	import SourceList from '#lib/components/SourceList.svelte';
 	import {
 		categoryLabel,
+		CREDIBILITY_LABEL_TH,
 		EDITION_LABEL_TH,
 		formatThaiDate,
 		formatThaiDateTimeShort,
@@ -37,7 +38,39 @@
 			{event.title_th}
 		</h1>
 		<p class="mb-3 text-[15px] leading-[1.9] text-muted-foreground">{event.summary_th}</p>
-		<EventLabels isDemo={event.is_demo} sourceCount={event.source_count} />
+		<EventLabels
+			isDemo={event.is_demo}
+			sourceCount={event.source_count}
+			credibilityLevel={event.credibility_level}
+		/>
+		{#if event.credibility_level !== 'none'}
+			<div
+				class="mt-3 rounded-2xl border border-gold/30 bg-gold-bg px-4 py-3 text-[13px] leading-[1.8]"
+				data-testid="credibility-note"
+			>
+				{#if event.credibility_reason_th}
+					<p class="m-0" data-testid="credibility-reason">
+						<span class="font-bold text-gold">{CREDIBILITY_LABEL_TH[event.credibility_level]}:</span
+						>
+						{event.credibility_reason_th}
+					</p>
+				{/if}
+				<!-- Native disclosure: works without JS and needs no inline script (CSP). -->
+				<details data-testid="credibility-explainer">
+					<summary class="min-h-11 cursor-pointer py-2.5 font-semibold">ป้ายนี้หมายถึงอะไร</summary>
+					<p class="mt-0 mb-1">
+						ป้ายนี้บอกสถานะของข้อมูลและคำกล่าวอ้างในเรื่องนี้ ไม่ใช่การประเมินสำนักข่าวที่รายงาน “ยังไม่ได้รับการยืนยัน”
+						หมายถึงข้อมูลยังมาจากแหล่งเดียวในประเด็นอ่อนไหวหรือเป็นที่ถกเถียง มาจากฝ่ายเดียว
+						หรือสำนักข่าวระบุเองว่ายังตรวจสอบไม่ได้ “ข้อมูลขัดแย้งกัน”
+						หมายถึงแหล่งข่าวที่อ้างอิงรายงานข้อเท็จจริงหรือตัวเลขไม่ตรงกัน และ “อาจเป็นข้อมูลเท็จ”
+						ใช้เฉพาะเมื่อมีสัญญาณชัดเจน เช่น แหล่งข่าวอื่นที่อ้างอิงรายงานขัดกับคำกล่าวอ้างนั้น
+						มีรายงานว่าคำกล่าวอ้างถูกหักล้างแล้ว หรือเป็นเนื้อหาที่แพร่กระจายโดยยังไม่มีการยืนยัน ป้ายประเมินโดย AI
+						จากบทความที่อ้างอิง (ประเด็นอ่อนไหวที่มีแหล่งข่าวอิสระน้อยกว่า 2 แหล่งจะได้ป้าย “ยังไม่ได้รับการยืนยัน”
+						เป็นอย่างน้อย) และบรรณาธิการอาจแก้ไขได้
+					</p>
+				</details>
+			</div>
+		{/if}
 
 		<!-- The note sits after the <dl>, inside the same box: a <dl> may only hold dt/dd groups
 		     (BUG-QA-004). -->

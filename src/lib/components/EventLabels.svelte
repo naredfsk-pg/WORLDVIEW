@@ -1,11 +1,19 @@
 <script lang="ts">
+	import CredibilityLabel from '#lib/components/CredibilityLabel.svelte';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { DEMO_LABEL, SINGLE_SOURCE_LABEL } from '#lib/components/format.js';
+	import type { CredibilityLevel } from '#lib/types/domain.js';
 
-	let { isDemo, sourceCount }: { isDemo: boolean; sourceCount: number } = $props();
+	interface Props {
+		isDemo: boolean;
+		sourceCount: number;
+		credibilityLevel: CredibilityLevel;
+	}
+
+	let { isDemo, sourceCount, credibilityLevel }: Props = $props();
 </script>
 
-{#if isDemo || sourceCount === 1}
+{#if isDemo || sourceCount === 1 || credibilityLevel !== 'none'}
 	<span class="flex flex-wrap gap-1.5">
 		{#if isDemo}
 			<Badge
@@ -14,6 +22,7 @@
 				{DEMO_LABEL}
 			</Badge>
 		{/if}
+		<CredibilityLabel level={credibilityLevel} />
 		{#if sourceCount === 1}
 			<Badge
 				variant="outline"

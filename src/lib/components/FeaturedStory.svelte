@@ -34,7 +34,11 @@
 			{event.summary_th}
 		</p>
 		<span class="mb-3 block"
-			><EventLabels isDemo={event.is_demo} sourceCount={event.source_count} /></span
+			><EventLabels
+				isDemo={event.is_demo}
+				sourceCount={event.source_count}
+				credibilityLevel={event.credibility_level}
+			/></span
 		>
 		<span class="mt-auto flex flex-wrap items-center gap-[9px] text-meta text-muted-foreground">
 			<span>

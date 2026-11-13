@@ -60,6 +60,10 @@
 				? `เกิดเหตุ ${formatThaiDateTimeShort(event.occurred_at)}`
 				: UNKNOWN_OCCURRED_AT} · อัปเดต {formatThaiTime(event.last_updated_at)} · อ่านสรุปเพิ่มเติม ↗
 		</span>
-		<EventLabels isDemo={event.is_demo} sourceCount={event.source_count} />
+		<EventLabels
+			isDemo={event.is_demo}
+			sourceCount={event.source_count}
+			credibilityLevel={event.credibility_level}
+		/>
 	</div>
 </a>
