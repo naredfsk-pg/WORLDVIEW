@@ -3,7 +3,7 @@
  * row in the same transaction (audit trail, PRD §9.2). Callers run the admin publish gate first.
  */
 import { randomUUID } from 'node:crypto';
-import { and, asc, count, desc, eq, gte, ne, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, ne, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import type {
 	EventStatus,
@@ -59,11 +59,7 @@ export function createAdminRepository(db: Db): AdminRepository {
 
 		async countReviewQueue() {
 			return db.transaction((tx) => {
-				const eventCount = tx
-					.select({ n: count() })
-					.from(events)
-					.where(eq(events.status, 'pending_review'))
-					.get();
+				const eventCount = tx.select({ n: count() }).from(events).where(inReviewQueue()).get();
 				const relationCount = tx
 					.select({ n: count() })
 					.from(eventRelations)
@@ -193,7 +189,12 @@ export function createAdminRepository(db: Db): AdminRepository {
 			return db.transaction((tx): AdminTransitionResult => {
 				const before = tx.select().from(events).where(eq(events.id, id)).get();
 				if (!before) return { ok: false, error: 'not_found' };
-				if (!PUBLISHABLE_FROM.includes(before.status)) return { ok: false, error: 'invalid_state' };
+				// A published event with new evidence: "publish" confirms the text it already has.
+				const confirmsPublished =
+					before.status === 'published' && before.review_reasons.includes('new_evidence_pending');
+				if (!PUBLISHABLE_FROM.includes(before.status) && !confirmsPublished) {
+					return { ok: false, error: 'invalid_state' };
+				}
 
 				const reasons = gate({ event: before, articles: selectLinkedArticles(tx, id) });
 				if (reasons.length > 0) return { ok: false, error: 'gate_failed', reasons };
@@ -404,15 +405,29 @@ function selectAdminEventSources(tx: Executor, eventId: string): AdminSourceRef[
 		.all();
 }
 
+/**
+ * The review queue: `pending_review` events, plus published events flagged
+ * `new_evidence_pending` (they stay public; the admin confirms or edits their text).
+ */
+function inReviewQueue(): SQL {
+	return or(
+		eq(events.status, 'pending_review'),
+		and(
+			eq(events.status, 'published'),
+			sql`EXISTS (SELECT 1 FROM json_each(${events.review_reasons}) WHERE value = 'new_evidence_pending')`
+		)
+	) as SQL;
+}
+
 function selectReviewEvents(
 	tx: Executor,
-	status: EventStatus = 'pending_review',
+	status: EventStatus | null = null,
 	limit = -1
 ): AdminEventRow[] {
 	const rows = tx
 		.select()
 		.from(events)
-		.where(eq(events.status, status))
+		.where(status === null ? inReviewQueue() : eq(events.status, status))
 		.orderBy(desc(events.last_updated_at))
 		.limit(limit)
 		.all();
