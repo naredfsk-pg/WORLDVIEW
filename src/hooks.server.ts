@@ -10,11 +10,11 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { Handle, HandleServerError } from '@sveltejs/kit/hooks';
-import { DrizzleError, DrizzleQueryError } from 'drizzle-orm/errors';
 import { createAdminGuard, isAdminRequest } from '#lib/server/auth/admin-guard.js';
 import { ADMIN_ACTION_RATE_LIMIT, createTokenBucketLimiter } from '#lib/server/auth/rate-limit.js';
 import { isHttpsRequest, withSecurityHeaders } from '#lib/server/auth/security-headers.js';
 import { getConfig } from '#lib/server/config.js';
+import { sanitizeErrorMessage } from '#lib/server/errors.js';
 
 const MAX_LOGGED_MESSAGE_LENGTH = 200;
 
@@ -50,7 +50,7 @@ export const handleError: HandleServerError = ({ kind, error, event }) => {
 		JSON.stringify({
 			error_id: errorId,
 			path: event.url.pathname,
-			message: sanitizeErrorMessage(error)
+			message: sanitizeErrorMessage(error, MAX_LOGGED_MESSAGE_LENGTH)
 		})
 	);
 	return {
@@ -58,29 +58,3 @@ export const handleError: HandleServerError = ({ kind, error, event }) => {
 		error_id: errorId
 	};
 };
-
-/**
- * One line: error name and message, file paths redacted, capped. Never the stack. Query errors
- * (Drizzle wraps the driver error and puts the SQL text, and for `DrizzleQueryError` the
- * params, in the message) log only the error name plus the cause's name/code, so no SQL or
- * bound value reaches the log.
- */
-function sanitizeErrorMessage(error: unknown): string {
-	if (!(error instanceof Error)) return 'unknown error';
-	const isQueryError = error instanceof DrizzleQueryError || error instanceof DrizzleError;
-	if (isQueryError || SQL_LIKE.test(error.message)) {
-		// `DrizzleQueryError` does not set `name` (it stays "Error").
-		const name = error instanceof DrizzleQueryError ? 'DrizzleQueryError' : error.name;
-		const cause = error.cause instanceof Error ? error.cause : null;
-		const code = cause && 'code' in cause && typeof cause.code === 'string' ? cause.code : null;
-		return [name, cause?.name, code].filter(Boolean).join(': ') + ' [query redacted]';
-	}
-	return `${error.name}: ${error.message}`
-		.replace(/(?:[A-Za-z]:)?(?:[\\/][\w.-]+){2,}/g, '[path]')
-		.replace(/\s+/g, ' ')
-		.slice(0, MAX_LOGGED_MESSAGE_LENGTH);
-}
-
-/** A statement keyword followed by its clause, or a bound-parameter dump. */
-const SQL_LIKE =
-	/\b(?:select|insert|update|delete|replace|pragma|create|drop|alter)\b[\s\S]*\b(?:from|into|set|table|where|values)\b|\bparams:/i;
