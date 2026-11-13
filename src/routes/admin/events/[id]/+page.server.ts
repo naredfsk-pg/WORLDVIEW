@@ -79,21 +79,28 @@ export const actions: Actions = {
 			return saveFailure(400, params.id, 'บันทึกไม่ได้ กรุณาแก้ไขช่องที่แจ้งไว้', fieldErrors, values);
 		}
 
-		const { change_reason, public_note_th, ...fields } = parsed.data;
+		const { change_reason, public_note_th, credibility_level, ...fields } = parsed.data;
+		// "อัตโนมัติ" ends an override: the label is the pipeline's again from the next re-summary.
+		const releaseCredibility = credibility_level === CREDIBILITY_AUTO;
+		const submitted = { ...fields, credibility_level };
 		const patch: AdminEventPatch = {};
 		for (const field of EDITABLE_FIELDS) {
+			if (releaseCredibility && field.startsWith('credibility_')) continue;
 			const loadedValue = loaded.data[`original_${field}`];
-			if (fields[field] !== loadedValue) Object.assign(patch, { [field]: fields[field] });
+			if (submitted[field] !== loadedValue) Object.assign(patch, { [field]: submitted[field] });
 		}
-		if (Object.keys(patch).length === 0) {
+		if (Object.keys(patch).length === 0 && !releaseCredibility) {
 			return saveFailure(400, params.id, 'ไม่มีข้อมูลที่เปลี่ยนแปลง', {}, values);
 		}
 		// The label and its reason are one override: both are written (and so both kept from later
 		// re-summaries), and a removed label keeps no reason.
-		if ('credibility_level' in patch || 'credibility_reason_th' in patch) {
-			patch.credibility_level = fields.credibility_level;
+		if (
+			credibility_level !== CREDIBILITY_AUTO &&
+			('credibility_level' in patch || 'credibility_reason_th' in patch)
+		) {
+			patch.credibility_level = credibility_level;
 			patch.credibility_reason_th =
-				fields.credibility_level === 'none' ? null : fields.credibility_reason_th;
+				credibility_level === 'none' ? null : fields.credibility_reason_th;
 		}
 
 		const result = await getRepositories().admin.updateEventIfCurrent(
@@ -101,7 +108,8 @@ export const actions: Actions = {
 			loaded.data.loaded_updated_at,
 			patch,
 			{ changed_by: admin.email, change_reason, public_note_th },
-			new Date().toISOString()
+			new Date().toISOString(),
+			{ releaseCredibility }
 		);
 		if (!result.ok && result.error === 'conflict') {
 			return saveFailure(409, params.id, CONFLICT_MESSAGE, {}, values);
@@ -117,6 +125,9 @@ export const actions: Actions = {
 		} satisfies SaveActionData;
 	}
 };
+
+/** The select option that hands the label back to the pipeline (model assessment + floor). */
+const CREDIBILITY_AUTO = 'auto';
 
 const CONFLICT_MESSAGE =
 	'มีการแก้ไขจากระบบหรือผู้อื่นหลังจากคุณเปิดหน้านี้ — โหลดใหม่ (ข้อความที่คุณพิมพ์ยังอยู่ในฟอร์ม คัดลอกไว้ก่อนโหลดใหม่)';
@@ -194,7 +205,9 @@ const saveForm = z.object({
 	background_th: optionalText('ภูมิหลัง', 3000),
 	uncertain_th: optionalText('สิ่งที่ยังไม่ชัดเจน', 1500),
 	category: z.enum(CATEGORY_SLUGS, { error: 'กรุณาเลือกหมวดหมู่' }),
-	credibility_level: z.enum(CREDIBILITY_LEVELS, { error: 'กรุณาเลือกระดับป้าย' }),
+	credibility_level: z.enum([...CREDIBILITY_LEVELS, CREDIBILITY_AUTO], {
+		error: 'กรุณาเลือกระดับป้าย'
+	}),
 	// Public text next to the label: G3 like every other field, and Thai when given.
 	credibility_reason_th: optionalText('เหตุผลของป้าย', 300).refine(
 		(value) => value === null || isThaiText(value),

@@ -205,7 +205,14 @@
 									>{CREDIBILITY_OPTION_LABEL_TH[level]}</option
 								>
 							{/each}
+							<!-- Ends a manual override: the next re-summary sets the label again. -->
+							<option value="auto" selected={valueOf('credibility_level') === 'auto'}
+								>อัตโนมัติ (ให้ระบบประเมิน)</option
+							>
 						</select>
+						<span class="text-[12px] font-normal text-muted-foreground">
+							ระดับที่เลือกเองจะคงอยู่แม้ระบบสรุปข่าวใหม่ เลือก “อัตโนมัติ” เพื่อให้ระบบประเมินป้ายอีกครั้งในการสรุปครั้งถัดไป
+						</span>
 						{#if fieldErrors.credibility_level}
 							<span class="text-[12px] font-normal text-gold" role="alert"
 								>{fieldErrors.credibility_level}</span

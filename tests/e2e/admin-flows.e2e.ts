@@ -80,7 +80,8 @@ test('the edit form shows the current credibility label and offers every level',
 		'ไม่มีป้าย',
 		'ยังไม่ได้รับการยืนยัน',
 		'ข้อมูลขัดแย้งกัน',
-		'อาจเป็นข้อมูลเท็จ'
+		'อาจเป็นข้อมูลเท็จ',
+		'อัตโนมัติ (ให้ระบบประเมิน)'
 	]);
 	await expect(form.getByLabel('เหตุผลของป้าย')).toHaveAttribute('maxlength', '300');
 	// Optimistic concurrency: the loaded values travel with the form.

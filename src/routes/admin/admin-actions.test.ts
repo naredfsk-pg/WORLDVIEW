@@ -421,6 +421,36 @@ describe('event edit (save)', () => {
 			]);
 		});
 
+		it('"อัตโนมัติ" ends the override with a release revision and keeps the stored label', async () => {
+			await save({
+				...unchanged(),
+				credibility_level: 'disputed',
+				credibility_reason_th: reason,
+				change_reason: 'ตั้งป้าย'
+			});
+			const result = await save(
+				{ ...unchanged(), credibility_level: 'auto', change_reason: 'ให้ระบบประเมินเอง' },
+				loadedFields()
+			);
+
+			expect(result).toMatchObject({ ok: true });
+			expect(eventRow('demo-evt-13')).toMatchObject({
+				credibility_level: 'disputed',
+				credibility_reason_th: reason
+			});
+			const release = revisionsFor('demo-evt-13').find(
+				(row) => row.before_after.after?.credibility_release === true
+			);
+			expect(release).toMatchObject({
+				changed_by: ADMIN.email,
+				change_reason: 'ให้ระบบประเมินเอง',
+				before_after: {
+					before: { credibility_level: 'disputed', credibility_reason_th: reason },
+					after: { credibility_release: true }
+				}
+			});
+		});
+
 		it.each([
 			[
 				'a URL in the reason',

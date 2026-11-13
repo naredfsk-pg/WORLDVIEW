@@ -5,6 +5,7 @@ import { articles, contentRevisions, eventRelations, events } from '../schema';
 import { seedDatabase } from '../seed';
 import { openTestDb } from '../test-db';
 import { filterAllegationTags } from '../../editorial/tag-filter';
+import { adminEditedContentFields } from './digest';
 import { createRepositories } from './index';
 
 let db: Db;
@@ -240,6 +241,99 @@ describe('AdminRepository state-checked transitions (Wave 2 admin)', () => {
 			error: 'invalid_state'
 		});
 		expect(revisionsFor('demo-rel-06')[0]?.entity_type).toBe('event_relation');
+	});
+
+	it('rejecting a relation also rejects the unreviewed relations of that pair, both directions', async () => {
+		// demo-rel-01 (evt-12 → evt-07) is auto-published (reviewed_at null). Add two siblings: one
+		// reverse and unreviewed, one an admin approved earlier.
+		const base = db
+			.select()
+			.from(eventRelations)
+			.where(eq(eventRelations.id, 'demo-rel-01'))
+			.get()!;
+		db.insert(eventRelations)
+			.values([
+				{
+					...base,
+					id: 'sibling-reverse',
+					from_event_id: base.to_event_id,
+					to_event_id: base.from_event_id,
+					relation_type: 'follow_up',
+					status: 'pending_review'
+				},
+				{
+					...base,
+					id: 'sibling-approved',
+					relation_type: 'same_topic',
+					reviewed_at: '2026-11-13T00:00:00.000Z',
+					reviewed_by: 'other-admin@example.com'
+				}
+			])
+			.run();
+
+		expect(await repos.admin.reviewRelation('demo-rel-01', 'rejected', meta, now)).toEqual({
+			ok: true
+		});
+
+		const status = (id: string) =>
+			db.select().from(eventRelations).where(eq(eventRelations.id, id)).get()!;
+		expect(status('sibling-reverse')).toMatchObject({
+			status: 'rejected',
+			reviewed_at: now,
+			reviewed_by: meta.changed_by
+		});
+		expect(status('sibling-approved')).toMatchObject({ status: 'published' });
+		expect(revisionsFor('sibling-reverse')[0]).toMatchObject({
+			changed_by: meta.changed_by,
+			change_reason: 'review (same pair as rejected relation demo-rel-01)'
+		});
+		expect(revisionsFor('sibling-approved')).toEqual([]);
+		// The other pairs are untouched.
+		expect(status('demo-rel-02').status).toBe('published');
+	});
+
+	it('releasing a credibility override hands the label back to the pipeline', async () => {
+		const row = () => db.select().from(events).where(eq(events.id, 'demo-evt-04')).get()!;
+		await repos.admin.updateEventIfCurrent(
+			'demo-evt-04',
+			row().updated_at,
+			{ credibility_level: 'unverified', credibility_reason_th: 'ยังไม่มีการยืนยัน' },
+			meta,
+			'2026-11-13T05:00:00.000Z'
+		);
+		expect(adminEditedContentFields(db, 'demo-evt-04')).toEqual(
+			new Set(['credibility_level', 'credibility_reason_th'])
+		);
+
+		const result = await repos.admin.updateEventIfCurrent(
+			'demo-evt-04',
+			row().updated_at,
+			{},
+			meta,
+			'2026-11-13T06:00:00.000Z',
+			{ releaseCredibility: true }
+		);
+
+		expect(result).toEqual({ ok: true });
+		// The stored label stays until the next re-summary; nothing is admin-owned any more.
+		expect(row()).toMatchObject({
+			credibility_level: 'unverified',
+			updated_at: '2026-11-13T06:00:00.000Z'
+		});
+		expect(adminEditedContentFields(db, 'demo-evt-04')).toEqual(new Set());
+		expect(revisionsFor('demo-evt-04').at(-1)!.before_after).toEqual({
+			before: { credibility_level: 'unverified', credibility_reason_th: 'ยังไม่มีการยืนยัน' },
+			after: { credibility_release: true }
+		});
+		// A later override locks the label again.
+		await repos.admin.updateEventIfCurrent(
+			'demo-evt-04',
+			row().updated_at,
+			{ credibility_level: 'disputed', credibility_reason_th: null },
+			meta,
+			'2026-11-13T07:00:00.000Z'
+		);
+		expect(adminEditedContentFields(db, 'demo-evt-04').has('credibility_level')).toBe(true);
 	});
 
 	it('lists briefs and toggles published ↔ hidden with a revision', async () => {
