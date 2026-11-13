@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalizeUrl } from './canonical-url';
+import { canonicalizeUrl } from './url';
 
 describe('canonicalizeUrl', () => {
 	it.each([

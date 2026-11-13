@@ -1,5 +1,6 @@
 import { redirect } from '@sveltejs/kit';
-import { isBriefDate, parseCategory, parsePageNumber } from '#lib/components/format.js';
+import { isBriefDate } from '#lib/utils/date.js';
+import { parseCategory, parsePageNumber } from '#lib/utils/params.js';
 import { getRepositories } from '#lib/server/db/repositories/index.js';
 import { REGION_SLUGS } from '#lib/types/domain.js';
 import { SEARCH_SCOPES, type SearchPageData, type SearchQuery } from '#lib/types/views.js';

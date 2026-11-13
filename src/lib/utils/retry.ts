@@ -1,18 +1,11 @@
 /**
- * Exponential backoff with jitter (ARCHITECTURE §8). The contract places `withRetry` in
- * `utils/retry.ts`; it lives here until that lane adds it. Clock, randomness and sleep are injectable.
+ * Exponential backoff with jitter (ARCHITECTURE §8). Pure apart from the default timer;
+ * randomness and sleep are injectable.
  *
  * Delay after failed attempt n = min(max, base · 2^(n-1)) · rand(0.5..1);
  * a `Retry-After` hint replaces it, capped at `max`.
  */
-import type { RetryPolicy } from '#lib/types/jobs.js';
-
-/** News fetch: 3 attempts, 1 s base, 10 s cap. */
-export const NEWS_FETCH_RETRY_POLICY: RetryPolicy = {
-	max_attempts: 3,
-	base_delay_ms: 1_000,
-	max_delay_ms: 10_000
-};
+import type { RetryPolicy } from '../types/jobs';
 
 export interface RetryOptions {
 	random?: () => number;

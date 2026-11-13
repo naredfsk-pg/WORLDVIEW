@@ -1,4 +1,4 @@
-import { parseCategory } from '#lib/components/format.js';
+import { parseCategory } from '#lib/utils/params.js';
 import { getRepositories } from '#lib/server/db/repositories/index.js';
 import type { ConnectionsPageData } from '#lib/types/views.js';
 import type { PageServerLoad } from './$types';

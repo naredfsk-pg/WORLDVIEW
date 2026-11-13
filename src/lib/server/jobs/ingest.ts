@@ -5,7 +5,7 @@
  * run becomes `partial`. Every write is idempotent, so reruns never duplicate anything.
  */
 import type { SourceKind } from '#lib/types/domain.js';
-import type { JobContext, JobCounters, JobOutcome, Logger } from '#lib/types/jobs.js';
+import type { JobContext, JobCounters, JobOutcome, Logger, RetryPolicy } from '#lib/types/jobs.js';
 import type {
 	NewsSourceAdapter,
 	NormalizedArticle,
@@ -16,8 +16,15 @@ import type { DigestRepository, IngestRepository } from '#lib/types/repositories
 import { NewsFetchError } from '../news/errors.js';
 import { normalizeFeedItem } from '../news/normalize.js';
 import { groupUnassignedArticles } from './group-articles.js';
-import { NEWS_FETCH_RETRY_POLICY, withRetry, type RetryOptions } from './retry.js';
+import { withRetry, type RetryOptions } from '#lib/utils/retry.js';
 import { sanitizeError } from './runner.js';
+
+/** News fetch backoff (ARCHITECTURE §8): 3 attempts, 1 s base, 10 s cap. */
+export const NEWS_FETCH_RETRY_POLICY: RetryPolicy = {
+	max_attempts: 3,
+	base_delay_ms: 1_000,
+	max_delay_ms: 10_000
+};
 
 /** Sources fetched at the same time. */
 export const SOURCE_CONCURRENCY = 3;

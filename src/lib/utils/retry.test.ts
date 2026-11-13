@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { backoffDelayMs, NEWS_FETCH_RETRY_POLICY, withRetry } from './retry';
+import type { RetryPolicy } from '../types/jobs';
+import { backoffDelayMs, withRetry } from './retry';
 
-const policy = NEWS_FETCH_RETRY_POLICY;
+const policy: RetryPolicy = { max_attempts: 3, base_delay_ms: 1_000, max_delay_ms: 10_000 };
 
 describe('backoffDelayMs', () => {
 	it('doubles from the base and applies jitter in [0.5, 1)', () => {
