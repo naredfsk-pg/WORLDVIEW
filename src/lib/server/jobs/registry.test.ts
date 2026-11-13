@@ -106,10 +106,20 @@ describe('runJobByType', () => {
 			db.$client.close();
 			expect(runs.some((run) => run.idempotency_key === `${type}:2099-01-01`)).toBe(false);
 
-			// --force builds it anyway (an explicit, manual decision).
+			// A forced rerun alone (the admin page) still respects the window.
 			expect(await runJobByType(type, { date: '2099-01-01', force: true })).toMatchObject({
-				status: 'partial'
+				reason: 'window_open'
 			});
+			// The CLI's --force also sets allowOpenWindow: an explicit operator decision.
+			let claimedKey: string | null = null;
+			const forced = await runJobByType(type, {
+				date: '2099-01-01',
+				force: true,
+				allowOpenWindow: true,
+				onClaimed: (run) => (claimedKey = run.idempotency_key)
+			});
+			expect(forced).toMatchObject({ status: 'partial' });
+			expect(claimedKey).toBe(`${type}:2099-01-01`);
 		}
 	);
 });

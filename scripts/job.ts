@@ -41,6 +41,8 @@ const { options } = parsed;
 const result = await runJobByType(options.job_type, {
 	date: options.date ?? undefined,
 	force: options.force,
+	// On the CLI, --force also builds a brief before its window closes (explicit operator choice).
+	allowOpenWindow: options.force,
 	manual: options.trigger === 'manual',
 	dryRun: options.dry_run,
 	fixtures: options.fixtures,

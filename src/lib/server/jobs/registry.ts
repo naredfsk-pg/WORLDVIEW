@@ -11,7 +11,7 @@ import { getConfig } from '#lib/server/config.js';
 import { openDb } from '#lib/server/db/client.js';
 import { createRepositories } from '#lib/server/db/repositories/index.js';
 import type { BriefEdition } from '#lib/types/domain.js';
-import type { JobContext, JobOutcome, JobType } from '#lib/types/jobs.js';
+import type { JobContext, JobOutcome, JobRun, JobType } from '#lib/types/jobs.js';
 import type { Repositories } from '#lib/types/repositories.js';
 import { addDays, isBriefDate, todayBriefDate } from '#lib/utils/date.js';
 import { createLlmProviderFromConfig } from '../llm/index.js';
@@ -40,6 +40,16 @@ export interface RunJobOptions {
 	/** digest only: content for at most N events. */
 	maxEvents?: number;
 	signal?: AbortSignal;
+	/**
+	 * brief_* / archive_snapshot: build even before the window closes. The CLI sets it with
+	 * `--force`; the admin page never does (a forced admin rerun still respects the window).
+	 */
+	allowOpenWindow?: boolean;
+	/**
+	 * Called once the slot is claimed, before the job body runs, so a caller (the admin page)
+	 * can answer right away and let the job finish in the background.
+	 */
+	onClaimed?: (run: Pick<JobRun, 'id' | 'idempotency_key' | 'attempts'>) => void;
 }
 
 export interface RunJobByTypeResult {
@@ -50,7 +60,7 @@ export interface RunJobByTypeResult {
 	runId?: string;
 	/**
 	 * Why a run was skipped: `already_done` / `running` (slot taken), or `window_open` (a brief or
-	 * snapshot asked for before its window closed, without `force`; the slot is not claimed).
+	 * snapshot asked for before its window closed, without `allowOpenWindow`; nothing is claimed).
 	 */
 	reason?: string;
 }
@@ -102,7 +112,10 @@ export async function runJobByType(
 					trigger: opts.manual ? 'manual' : 'cron',
 					force: opts.force ?? false
 				},
-				plan.execute
+				(ctx) => {
+					opts.onClaimed?.(ctx.run);
+					return plan.execute(ctx);
+				}
 			);
 			return {
 				status: result.status,
@@ -200,13 +213,13 @@ function briefDateFor(
 	return opts.date ?? (type === 'archive_snapshot' ? addDays(today, -1) : today);
 }
 
-/** The window of a brief / snapshot job that has not closed yet (and no `force`), else null. */
+/** The window of a brief / snapshot job that has not closed yet (and no `allowOpenWindow`), else null. */
 function openBriefWindow(
 	type: JobType,
 	opts: RunJobOptions,
 	now: Date
 ): { date: string; window_end_utc: string } | null {
-	if (opts.force || !(type in BRIEF_EDITION_BY_JOB)) return null;
+	if (opts.allowOpenWindow || !(type in BRIEF_EDITION_BY_JOB)) return null;
 	const briefType = type as keyof typeof BRIEF_EDITION_BY_JOB;
 	const date = briefDateFor(briefType, opts, now);
 	const window = briefWindow(date, BRIEF_EDITION_BY_JOB[briefType]);
