@@ -94,7 +94,9 @@ test.describe('archive calendar month boundaries', () => {
 	});
 
 	test('BUG-QA-007: a future date is not offered as "news of that day"', async ({ page }) => {
-		await page.goto('/archive?date=2099-01-01');
+		const response = await page.goto('/archive?date=2099-01-01');
+		// Header-only clients decode Thai correctly too (they fell back to ISO-8859-1 before).
+		expect(response?.headers()['content-type']).toBe('text/html; charset=utf-8');
 		const headline = page.getByTestId('archive-headline');
 		await expect(headline).not.toContainText('2099');
 		// Out of range is treated like an invalid date: the latest brief, with a clean Thai headline.
