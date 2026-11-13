@@ -128,3 +128,8 @@ Orchestrator verifies Wave 0 (`npm run dev`, `npm test`, `db:migrate`, `db:seed`
   - Orchestrator pushes the branch and opens the PR with `gh pr create` (summary, changes, test evidence, link to the agent log). **The owner reviews and merges on GitHub.**
   - After merge: delete the branch, pull `main`, rebase any still-open branches onto `main`.
 - Branch/PR/merge events are recorded in `docs/AGENT_LOG.md`.
+
+### Wave 3.5 / pre-deploy decisions (2026-11-13)
+- **Auto-publish policy (owner):** `EDITORIAL_AUTO_PUBLISH=multi_source` in production. An event auto-publishes only with ≥2 distinct registry sources. Single-source events go to `/admin/review`. Re-summaries never overwrite published text automatically; new evidence is flagged for the admin. The code default is `off` (safest).
+- **Relations (orchestrator):** in the MVP every relation is stored `pending_review` and approved by an admin. An admin rejection blocks the pair for every relation type.
+- **Production never seeds demo data:** startup runs migrations then `academy:sync`. `db:seed`, `db:reset` and `--fixtures` run only when `NODE_ENV` is explicitly `development` or `test`.
