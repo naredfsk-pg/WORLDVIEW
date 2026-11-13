@@ -308,6 +308,9 @@ export interface SourceHealthView {
 export interface LlmUsageView {
 	requests_today: number;
 	tokens_today: number;
+	// CONTRACT-CHANGE (Wave 2 admin, additive): FR-06 also asks for failures and cache hits.
+	failures_today: number;
+	cache_hits_today: number;
 	max_requests: number;
 	max_tokens: number;
 }

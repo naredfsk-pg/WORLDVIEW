@@ -3,13 +3,29 @@
  * row in the same transaction (audit trail, PRD §9.2). Callers run the admin publish gate first.
  */
 import { randomUUID } from 'node:crypto';
-import { and, asc, count, desc, eq, isNotNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, isNotNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
-import type { JsonObject, RevisionEntityType } from '../../../types/domain';
-import type { AdminEventPatch, AdminRepository, RevisionMeta } from '../../../types/repositories';
+import type { EventStatus, JsonObject, RevisionEntityType } from '../../../types/domain';
+import type { ArticleWithSource } from '../../../types/news';
+import type {
+	AdminEventPatch,
+	AdminRepository,
+	AdminTransitionResult,
+	RevisionMeta
+} from '../../../types/repositories';
 import type { AdminEventRow, AdminRelationRow } from '../../../types/views';
 import type { Db } from '../client';
-import { contentRevisions, eventRelations, events, sources } from '../schema';
+import {
+	articles,
+	contentRevisions,
+	dailyBriefs,
+	eventArticles,
+	eventRelations,
+	events,
+	jobRuns,
+	llmCalls,
+	sources
+} from '../schema';
 import { selectEventSources } from './public-read';
 import {
 	EntityNotFoundError,
@@ -133,16 +149,178 @@ export function createAdminRepository(db: Db): AdminRepository {
 				.from(sources)
 				.orderBy(asc(sources.name))
 				.all();
+		},
+
+		async listHiddenEvents(limit) {
+			return db.transaction((tx) => selectReviewEvents(tx, 'hidden', limit));
+		},
+
+		async publishEvent(id, gate, meta, now) {
+			return db.transaction((tx): AdminTransitionResult => {
+				const before = tx.select().from(events).where(eq(events.id, id)).get();
+				if (!before) return { ok: false, error: 'not_found' };
+				if (!PUBLISHABLE_FROM.includes(before.status)) return { ok: false, error: 'invalid_state' };
+
+				const reasons = gate({ event: before, articles: selectLinkedArticles(tx, id) });
+				if (reasons.length > 0) return { ok: false, error: 'gate_failed', reasons };
+
+				tx.update(events)
+					.set({
+						status: 'published',
+						review_reasons: [],
+						published_at: before.published_at ?? now,
+						updated_at: now
+					})
+					.where(eq(events.id, id))
+					.run();
+				appendRevision(
+					tx,
+					'event',
+					id,
+					meta,
+					now,
+					{ status: before.status, review_reasons: before.review_reasons },
+					{ status: 'published', review_reasons: [] }
+				);
+				return { ok: true };
+			});
+		},
+
+		async hideEvent(id, meta, now) {
+			return db.transaction((tx): AdminTransitionResult => {
+				const before = tx.select().from(events).where(eq(events.id, id)).get();
+				if (!before) return { ok: false, error: 'not_found' };
+				if (before.status === 'hidden') return { ok: false, error: 'invalid_state' };
+
+				tx.update(events).set({ status: 'hidden', updated_at: now }).where(eq(events.id, id)).run();
+				appendRevision(tx, 'event', id, meta, now, { status: before.status }, { status: 'hidden' });
+				return { ok: true };
+			});
+		},
+
+		async flagEvent(id, meta, now) {
+			return db.transaction((tx): AdminTransitionResult => {
+				const before = tx.select().from(events).where(eq(events.id, id)).get();
+				if (!before) return { ok: false, error: 'not_found' };
+				if (!FLAGGABLE_FROM.includes(before.status)) return { ok: false, error: 'invalid_state' };
+
+				const reasons = before.review_reasons.includes('manual_flag')
+					? before.review_reasons
+					: [...before.review_reasons, 'manual_flag' as const];
+				tx.update(events)
+					.set({ status: 'pending_review', review_reasons: reasons, updated_at: now })
+					.where(eq(events.id, id))
+					.run();
+				appendRevision(
+					tx,
+					'event',
+					id,
+					meta,
+					now,
+					{ status: before.status, review_reasons: before.review_reasons },
+					{ status: 'pending_review', review_reasons: reasons }
+				);
+				return { ok: true };
+			});
+		},
+
+		async reviewRelation(id, status, meta, now) {
+			return db.transaction((tx): AdminTransitionResult => {
+				const before = tx.select().from(eventRelations).where(eq(eventRelations.id, id)).get();
+				if (!before) return { ok: false, error: 'not_found' };
+				if (before.status !== 'pending_review') return { ok: false, error: 'invalid_state' };
+
+				tx.update(eventRelations)
+					.set({ status, reviewed_at: now, reviewed_by: meta.changed_by })
+					.where(eq(eventRelations.id, id))
+					.run();
+				appendRevision(tx, 'event_relation', id, meta, now, { status: before.status }, { status });
+				return { ok: true };
+			});
+		},
+
+		async listRecentBriefs(limit) {
+			return db
+				.select()
+				.from(dailyBriefs)
+				.orderBy(desc(dailyBriefs.brief_date), desc(dailyBriefs.generated_at))
+				.limit(limit)
+				.all();
+		},
+
+		async setBriefVisibility(id, status, meta, now) {
+			return db.transaction((tx): AdminTransitionResult => {
+				const before = tx.select().from(dailyBriefs).where(eq(dailyBriefs.id, id)).get();
+				if (!before) return { ok: false, error: 'not_found' };
+				const from = status === 'hidden' ? 'published' : 'hidden';
+				if (before.status !== from) return { ok: false, error: 'invalid_state' };
+
+				tx.update(dailyBriefs).set({ status }).where(eq(dailyBriefs.id, id)).run();
+				appendRevision(tx, 'daily_brief', id, meta, now, { status: before.status }, { status });
+				return { ok: true };
+			});
+		},
+
+		async llmUsageSince(since) {
+			return db.transaction((tx) => {
+				const calls = tx
+					.select({
+						requests: count(),
+						tokens: sql<number>`coalesce(sum(${llmCalls.tokens_in} + ${llmCalls.tokens_out}), 0)`,
+						failures: sql<number>`coalesce(sum(${llmCalls.status} = 'error'), 0)`
+					})
+					.from(llmCalls)
+					.where(gte(llmCalls.created_at, since))
+					.get();
+				const jobs = tx
+					.select({
+						cache_hits: sql<number>`coalesce(sum(json_extract(${jobRuns.counters}, '$.llm_cache_hits')), 0)`
+					})
+					.from(jobRuns)
+					.where(gte(jobRuns.started_at, since))
+					.get();
+				return {
+					requests: calls?.requests ?? 0,
+					tokens: Number(calls?.tokens ?? 0),
+					failures: Number(calls?.failures ?? 0),
+					cache_hits: Number(jobs?.cache_hits ?? 0)
+				};
+			});
 		}
 	};
 }
 
-function selectReviewEvents(tx: Executor): AdminEventRow[] {
+const PUBLISHABLE_FROM: readonly EventStatus[] = ['draft', 'pending_review', 'hidden'];
+const FLAGGABLE_FROM: readonly EventStatus[] = ['draft', 'pending_review'];
+
+/** Linked stored articles with their source, oldest evidence first (input to the admin gate). */
+function selectLinkedArticles(tx: Executor, eventId: string): ArticleWithSource[] {
+	return tx
+		.select({ article: articles, source_name: sources.name, source_is_demo: sources.is_demo })
+		.from(eventArticles)
+		.innerJoin(articles, eq(articles.id, eventArticles.article_id))
+		.innerJoin(sources, eq(sources.id, articles.source_id))
+		.where(eq(eventArticles.event_id, eventId))
+		.orderBy(asc(articles.ingested_at), asc(articles.id))
+		.all()
+		.map(({ article, source_name, source_is_demo }) => ({
+			...article,
+			source_name,
+			source_is_demo
+		}));
+}
+
+function selectReviewEvents(
+	tx: Executor,
+	status: EventStatus = 'pending_review',
+	limit = -1
+): AdminEventRow[] {
 	const rows = tx
 		.select()
 		.from(events)
-		.where(eq(events.status, 'pending_review'))
+		.where(eq(events.status, status))
 		.orderBy(desc(events.last_updated_at))
+		.limit(limit)
 		.all();
 	return rows.map((row) => ({
 		id: row.id,
