@@ -172,7 +172,7 @@ Storage: ids are TEXT (`crypto.randomUUID()`; slugs for sources and lessons). Ti
 | Enum | Values | Source |
 |---|---|---|
 | `EventStatus` | `draft` · `pending_review` · `published` · `hidden` | `EVENT_STATUSES` |
-| `ReviewReason` | `no_source` · `llm_failed` · `invalid_llm_output` · `unsupported_claim` · `url_in_generated_text` · `sensitive_single_source` · `missing_thai_fields` · `manual_flag` | `REVIEW_REASONS` |
+| `ReviewReason` | `no_source` · `llm_failed` · `invalid_llm_output` · `llm_request_rejected` · `unsupported_claim` · `url_in_generated_text` · `sensitive_single_source` · `missing_thai_fields` · `manual_flag` | `REVIEW_REASONS` |
 | `RelationType` | `same_topic` · `follow_up` · `response_to` · `background_of` · `potential_impact` (no `causes` in MVP) | `RELATION_TYPES`; causal = `response_to`, `potential_impact` |
 | `RelationStatus` | `pending_review` · `published` · `rejected` | `RELATION_STATUSES` |
 | `BriefEdition` / `BriefStatus` | `morning` · `evening` · `daily_snapshot` / `draft` · `published` · `hidden` | `BRIEF_EDITIONS`, `BRIEF_STATUSES` |
@@ -405,13 +405,14 @@ interface LLMProvider {
 | G1 | At least 1 linked **stored** article with an http(s) `canonical_url`. Citations come only from the `articles` table, never from LLM output. | auto + admin | `no_source` |
 | G2 | `title_th`, `summary_th`, `what_happened_th` and `why_it_matters_th` are non-empty and contain Thai script; `category` is non-null | auto + admin | `missing_thai_fields` |
 | G3 | No URL (`https?://` or `www.`) in any generated or edited text field | auto + admin | `url_in_generated_text` |
-| G4 | Extraction and summary are present and schema-valid | auto | `llm_failed` / `invalid_llm_output` |
+| G4 | Extraction and summary are present and schema-valid | auto | `llm_failed` (transient, auto-retried) / `invalid_llm_output` / `llm_request_rejected` (deterministic: auth, 400, empty or too-large input — needs a human) |
 | G5 | Every fact and claim has evidence; all refs resolve to supplied articles; `cited_refs` is non-empty | auto | `unsupported_claim` / `invalid_llm_output` |
 | G6 | `signals.sensitive` and `source_count < 2` → needs human review (PRD §4.3 #6) | auto | `sensitive_single_source` |
 
 Outcomes:
 - All gates pass → `published`.
 - Any gate fails → `pending_review` with all failing reasons, or `keep_published` when the event was already published.
+- In `auto` mode an event that is `hidden` returns `keep_hidden` (write nothing), and an existing `manual_flag` reason is carried forward so auto-publish never overrides an editor (Wave 1 review fix).
 - Admin publish runs only G1–G3. The admin's judgement replaces the rest.
 
 **Relation gate** (`evaluateRelation(input: RelationGateInput): RelationGateDecision`):
