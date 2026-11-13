@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AUTO_PUBLISH_POLICIES } from '../types/editorial';
 
 /**
  * Server-only application config, parsed from environment variables with Zod.
@@ -107,10 +108,11 @@ const databaseUrl = z
 const envSchema = z.object({
 	NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
-	// LLM endpoint: LLM_* wins, OMNI_* is the fallback alias.
-	OMNI_API_URL: z.url().optional(),
+	// LLM endpoint: LLM_* wins, OMNI_* is the fallback alias. The API key and the prompts travel
+	// in the request, so plain http is only for local or private hosts (ARCHITECTURE §14).
+	OMNI_API_URL: llmEndpointUrl().optional(),
 	OMNI_API_KEY: z.string().optional(),
-	LLM_BASE_URL: z.url().optional(),
+	LLM_BASE_URL: llmEndpointUrl().optional(),
 	LLM_API_KEY: z.string().optional(),
 	LLM_API_COMPATIBILITY: z.enum(['openai_compatible', 'custom']).default('openai_compatible'),
 
@@ -133,6 +135,16 @@ const envSchema = z.object({
 	LLM_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.1),
 	LLM_DAILY_MAX_REQUESTS: positiveInt(300),
 	LLM_DAILY_MAX_TOKENS: positiveInt(600000),
+	// One job run may send at most this many LLM requests, so one run cannot use most of the
+	// daily cap (ARCHITECTURE §10).
+	LLM_MAX_REQUESTS_PER_RUN: positiveInt(80),
+
+	// Auto-publish policy of the digest (ARCHITECTURE §11). `off` (the default) sends every event
+	// to an admin; `multi_source` auto-publishes only events reported by ≥ 2 registry sources;
+	// `all` auto-publishes whatever passes the gates. Admin publish is never affected.
+	EDITORIAL_AUTO_PUBLISH: z.enum(AUTO_PUBLISH_POLICIES).default('off'),
+	// New articles one source may add per ingest run (ARCHITECTURE §9).
+	INGEST_MAX_NEW_ITEMS_PER_SOURCE: positiveInt(40),
 
 	// Brief dates and schedules assume Bangkok (ARCHITECTURE §7); any other value is rejected.
 	APP_TIMEZONE: z.literal('Asia/Bangkok').default('Asia/Bangkok'),
@@ -167,6 +179,44 @@ const envSchema = z.object({
 		z.array(z.email().regex(/^[!-?A-~]+@[!-?A-~]+$/, 'must be a plain ASCII email address'))
 	)
 });
+
+// A function declaration, so the schema above can use it before this point in the file.
+function llmEndpointUrl() {
+	return z.url().refine(
+		(value) => {
+			// An unparseable value is already reported by `z.url()`.
+			if (!URL.canParse(value)) return true;
+			const url = new URL(value);
+			return url.protocol === 'https:' || (url.protocol === 'http:' && isLocalHost(url.hostname));
+		},
+		// The issue path names the variable; the value is never echoed.
+		{ message: 'must use https (http only for localhost, private or single-label hosts)' }
+	);
+}
+
+/**
+ * Loopback, private ranges (10/8, 172.16/12, 192.168/16, fc00::/7), single-label names (docker
+ * services such as `omniroute`) and `*.localhost` / `*.internal` / `*.local`. `URL` has already
+ * lower-cased the name and normalised IPv4 (`0x7f.1` → `127.0.0.1`) and IPv6 (`[::1]`).
+ */
+function isLocalHost(hostname: string): boolean {
+	if (hostname.startsWith('[')) {
+		const ipv6 = hostname.slice(1, -1);
+		return ipv6 === '::1' || /^f[cd][0-9a-f]{2}:/.test(ipv6);
+	}
+	const ipv4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(hostname);
+	if (ipv4) {
+		const [first, second] = [Number(ipv4[1]), Number(ipv4[2])];
+		return (
+			first === 10 ||
+			first === 127 ||
+			(first === 172 && second >= 16 && second <= 31) ||
+			(first === 192 && second === 168)
+		);
+	}
+	if (!hostname.includes('.')) return true;
+	return ['localhost', 'internal', 'local'].some((suffix) => hostname.endsWith(`.${suffix}`));
+}
 
 function toAppConfig(env: z.infer<typeof envSchema>, rawNodeEnv: string | undefined) {
 	if (env.DAILY_EVENT_TARGET_MIN > env.DAILY_EVENT_TARGET_MAX) {
@@ -222,7 +272,14 @@ function toAppConfig(env: z.infer<typeof envSchema>, rawNodeEnv: string | undefi
 			maxOutputTokens: env.LLM_MAX_OUTPUT_TOKENS,
 			temperature: env.LLM_TEMPERATURE,
 			dailyMaxRequests: env.LLM_DAILY_MAX_REQUESTS,
-			dailyMaxTokens: env.LLM_DAILY_MAX_TOKENS
+			dailyMaxTokens: env.LLM_DAILY_MAX_TOKENS,
+			maxRequestsPerRun: env.LLM_MAX_REQUESTS_PER_RUN
+		},
+		editorial: {
+			autoPublish: env.EDITORIAL_AUTO_PUBLISH
+		},
+		ingest: {
+			maxNewItemsPerSource: env.INGEST_MAX_NEW_ITEMS_PER_SOURCE
 		},
 		cloudflare: {
 			accessTeamDomain: env.CF_ACCESS_TEAM_DOMAIN,
