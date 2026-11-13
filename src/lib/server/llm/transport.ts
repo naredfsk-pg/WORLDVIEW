@@ -2,7 +2,8 @@
  * OpenAI-compatible `ChatTransport` (ARCHITECTURE §10): one HTTP attempt per `complete` call.
  * Retries, caps, caching and logging live in the provider; this module only maps the wire format
  * and HTTP failures to typed `LlmTransportError`s. It never logs, and it never puts the API key,
- * headers, prompt or response body into an error message.
+ * headers, prompt or response body into an error message. It never follows a redirect (the
+ * prompt would be re-sent to wherever it points) and reads at most MAX_RESPONSE_BYTES of a body.
  */
 import { z } from 'zod';
 import type { ChatRequest, ChatResponse, ChatTransport, LlmErrorKind } from '../../types/llm';
@@ -24,6 +25,10 @@ export type TransportErrorClass =
 	| 'invalid_json'
 	| 'network'
 	| 'aborted'
+	/** A 3xx: redirects are never followed, so the prompt is never re-sent to another URL. */
+	| 'redirect'
+	/** The response body passed MAX_RESPONSE_BYTES; reading stopped there. */
+	| 'response_too_large'
 	/** A non-transport throwable (a bug); never retried. */
 	| 'internal';
 
@@ -36,8 +41,13 @@ const ERROR_KIND_BY_CLASS: Record<TransportErrorClass, LlmErrorKind> = {
 	invalid_json: 'http_error',
 	network: 'http_error',
 	aborted: 'aborted',
+	redirect: 'http_error',
+	response_too_large: 'http_error',
 	internal: 'http_error'
 };
+
+/** A chat completion is a few KB; anything this big is a misbehaving endpoint. */
+export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 const RETRYABLE_CLASSES: ReadonlySet<TransportErrorClass> = new Set([
 	'rate_limit',
@@ -86,14 +96,18 @@ export function createOpenAiCompatibleTransport(options: OpenAiTransportOptions)
 						'content-type': 'application/json'
 					},
 					body: JSON.stringify(toRequestBody(request)),
+					// `manual` hands back the 3xx itself (mapped to `redirect` below). `error` would
+					// refuse it too, but as the same TypeError as a network failure, which is retried.
+					redirect: 'manual',
 					signal: AbortSignal.any([request.signal, timeout.signal])
 				});
-				// Read the body inside the timeout window: a stalled body is a timeout too.
-				const text = await response.text();
 				if (!response.ok) {
+					// The error body is never used; cancelling it frees the connection.
+					response.body?.cancel().catch(() => {});
 					throw errorForStatus(response.status, response.headers.get('retry-after'));
 				}
-				return parseCompletion(text);
+				// Read the body inside the timeout window: a stalled body is a timeout too.
+				return parseCompletion(await readBodyUpToCap(response));
 			} catch (error) {
 				if (error instanceof LlmTransportError) throw error;
 				if (timedOut) throw new LlmTransportError('timeout', null);
@@ -125,6 +139,7 @@ function toRequestBody(request: ChatRequest) {
 }
 
 function errorForStatus(status: number, retryAfter: string | null): LlmTransportError {
+	if (status >= 300 && status < 400) return new LlmTransportError('redirect', status);
 	if (status === 401 || status === 403) return new LlmTransportError('auth', status);
 	if (status === 408) return new LlmTransportError('timeout', status);
 	if (status === 429) {
@@ -143,6 +158,28 @@ export function parseRetryAfter(value: string | null, now: Date = new Date()): n
 	const date = Date.parse(trimmed);
 	if (Number.isNaN(date)) return null;
 	return Math.max(0, date - now.getTime());
+}
+
+/**
+ * Streams the body and stops (cancelling the rest) once it passes MAX_RESPONSE_BYTES, so an
+ * oversized body is never buffered whole.
+ */
+async function readBodyUpToCap(response: Response): Promise<string> {
+	if (!response.body) return '';
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let text = '';
+	let bytes = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) return text + decoder.decode();
+		bytes += value.byteLength;
+		if (bytes > MAX_RESPONSE_BYTES) {
+			reader.cancel().catch(() => {});
+			throw new LlmTransportError('response_too_large', response.status);
+		}
+		text += decoder.decode(value, { stream: true });
+	}
 }
 
 const completionSchema = z.object({

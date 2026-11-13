@@ -4,6 +4,7 @@ import {
 	chatCompletionsUrl,
 	createOpenAiCompatibleTransport,
 	LlmTransportError,
+	MAX_RESPONSE_BYTES,
 	parseRetryAfter
 } from './transport';
 
@@ -200,6 +201,75 @@ describe('createOpenAiCompatibleTransport', () => {
 			errorClass: 'aborted',
 			kind: 'aborted',
 			retryable: false
+		});
+	});
+
+	it.each([301, 302, 307, 308])(
+		'refuses to follow HTTP %i (non-retryable redirect)',
+		async (status) => {
+			const fetchMock = vi.fn<typeof fetch>(
+				async () =>
+					new Response(null, { status, headers: { location: 'https://elsewhere.test/collect' } })
+			);
+			const error = await captureError(transportWith(fetchMock).complete(request()));
+
+			expect(fetchMock.mock.calls[0]![1]?.redirect).toBe('manual');
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(error).toMatchObject({ errorClass: 'redirect', retryable: false, status });
+			expect(error.message).not.toContain('elsewhere');
+		}
+	);
+
+	it('refuses a body over MAX_RESPONSE_BYTES while streaming, without reading the rest', async () => {
+		const chunk = new Uint8Array(256 * 1024).fill(0x20);
+		let pulled = 0;
+		let cancelled = false;
+		const fetchMock = vi.fn<typeof fetch>(
+			async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						// Endless body: only the cap can end the read.
+						pull(controller) {
+							pulled += 1;
+							controller.enqueue(chunk);
+						},
+						cancel() {
+							cancelled = true;
+						}
+					}),
+					{ status: 200 }
+				)
+		);
+		const error = await captureError(transportWith(fetchMock).complete(request()));
+
+		expect(error).toMatchObject({ errorClass: 'response_too_large', retryable: false });
+		expect(error.message).toBe('response_too_large (HTTP 200)');
+		expect(cancelled).toBe(true);
+		// 2 MB / 256 KB = 8 chunks fit; the 9th passes the cap (the stream may pull one ahead).
+		expect(pulled).toBeLessThanOrEqual(MAX_RESPONSE_BYTES / chunk.byteLength + 2);
+	});
+
+	it('parses a body that arrives in chunks, split inside a multi-byte character', async () => {
+		const bytes = new TextEncoder().encode(
+			JSON.stringify({ choices: [{ message: { content: 'ข่าวสาร' } }] })
+		);
+		const fetchMock = vi.fn<typeof fetch>(
+			async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							// Thai characters are 3 bytes in UTF-8; split every 2 bytes.
+							for (let i = 0; i < bytes.length; i += 2) controller.enqueue(bytes.slice(i, i + 2));
+							controller.close();
+						}
+					}),
+					{ status: 200 }
+				)
+		);
+		expect(await transportWith(fetchMock).complete(request())).toEqual({
+			content: 'ข่าวสาร',
+			tokens_in: null,
+			tokens_out: null
 		});
 	});
 
