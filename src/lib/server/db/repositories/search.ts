@@ -11,7 +11,7 @@ import { and, asc, count, desc, eq, gte, lte, or, sql, type SQL } from 'drizzle-
 import { real, sqliteTable, text, type SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import type { EventSummary, LessonSummary, SearchQuery } from '../../../types/views';
 import { academyLessons, events } from '../schema';
-import { isPublicEvent, toEventSummary, toLessonSummary, type Executor } from './shared';
+import { isReadableEvent, toEventSummary, toLessonSummary, type Executor } from './shared';
 
 /** Minimum term length (in code points) the trigram tokenizer can match. */
 export const MIN_FTS_TERM_LENGTH = 3;
@@ -43,7 +43,7 @@ export function searchEvents(
 	if (terms.length === 0) return { items: [], total: 0 };
 
 	const filters = and(
-		isPublicEvent(events),
+		isReadableEvent(events),
 		query.category ? eq(events.category, query.category) : undefined,
 		query.region
 			? sql`EXISTS (SELECT 1 FROM json_each(${events.regions}) WHERE value = ${query.region})`

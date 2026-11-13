@@ -1,7 +1,8 @@
 /**
  * `PublicReadRepository`: everything public pages read. Only published content leaves this file:
- * events must pass `isPublicEvent`, briefs must be `published`, relations must be `published`
- * with both endpoints public.
+ * events must pass `isReadableEvent` (published, categorized, with a stored source), briefs must
+ * be `published`, relations must be `published` with both endpoints readable and with resolvable
+ * evidence.
  */
 import { and, asc, desc, eq, gt, gte, inArray, lt, lte, max, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
@@ -32,7 +33,7 @@ import type { Db } from '../client';
 import { searchEvents, searchLessons } from './search';
 import {
 	evidenceUrls,
-	isPublicEvent,
+	isReadableEvent,
 	loadEvidenceUrls,
 	toEventSummary,
 	toLessonSummary,
@@ -70,7 +71,7 @@ export function createPublicReadRepository(db: Db): PublicReadRepository {
 			const row = db
 				.select({ id: events.id })
 				.from(events)
-				.where(and(isPublicEvent(events), eq(events.is_demo, true)))
+				.where(and(isReadableEvent(events), eq(events.is_demo, true)))
 				.limit(1)
 				.get();
 			return row !== undefined;
@@ -147,7 +148,7 @@ export function createPublicReadRepository(db: Db): PublicReadRepository {
 				.select({ event: events })
 				.from(eventLessonLinks)
 				.innerJoin(events, eq(events.id, eventLessonLinks.event_id))
-				.where(and(eq(eventLessonLinks.lesson_id, lessonId), isPublicEvent(events)))
+				.where(and(eq(eventLessonLinks.lesson_id, lessonId), isReadableEvent(events)))
 				.orderBy(desc(events.last_updated_at))
 				.limit(limit)
 				.all();
@@ -203,7 +204,7 @@ function readPublishedBrief(
 		})
 		.from(dailyBriefEvents)
 		.innerJoin(events, eq(events.id, dailyBriefEvents.event_id))
-		.where(and(eq(dailyBriefEvents.brief_id, brief.id), isPublicEvent(events)))
+		.where(and(eq(dailyBriefEvents.brief_id, brief.id), isReadableEvent(events)))
 		.orderBy(asc(dailyBriefEvents.rank))
 		.all();
 
@@ -225,7 +226,7 @@ function readPublishedEventDetail(tx: Executor, id: string): EventDetail | null 
 	const event = tx
 		.select()
 		.from(events)
-		.where(and(eq(events.id, id), isPublicEvent(events)))
+		.where(and(eq(events.id, id), isReadableEvent(events)))
 		.get();
 	if (!event || event.published_at === null) return null;
 
@@ -322,7 +323,11 @@ export function selectEventSources(tx: Executor, eventId: string): SourceRef[] {
 		.all();
 }
 
-/** Published relations whose endpoints are both public, newest first. */
+/**
+ * Published relations whose endpoints are both public and with at least one evidence ref that
+ * resolves to a stored article (PRD §11 #8 "no link without evidence", BUG-QA-005), newest first.
+ * The evidence check is in SQL so that `limit` counts only relations that can be shown.
+ */
 function selectPublishedRelations(
 	tx: Executor,
 	where: SQL,
@@ -334,6 +339,7 @@ function selectPublishedRelations(
 	const categoryFilter = category
 		? or(eq(fromEvent.category, category), eq(toEvent.category, category))
 		: undefined;
+	const hasResolvableEvidence = sql`EXISTS (SELECT 1 FROM json_each(${eventRelations.evidence_refs}) AS ref INNER JOIN ${articles} ON ${articles.id} = json_extract(ref.value, '$.article_id'))`;
 
 	const rows = tx
 		.select({ relation: eventRelations, from: fromEvent, to: toEvent })
@@ -344,8 +350,9 @@ function selectPublishedRelations(
 			and(
 				where,
 				eq(eventRelations.status, 'published'),
-				isPublicEvent(fromEvent),
-				isPublicEvent(toEvent),
+				isReadableEvent(fromEvent),
+				isReadableEvent(toEvent),
+				hasResolvableEvidence,
 				categoryFilter
 			)
 		)

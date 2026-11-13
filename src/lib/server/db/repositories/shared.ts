@@ -3,12 +3,12 @@
  * mappers, the "publicly visible event" predicate, and evidence-URL resolution.
  */
 import type { RunResult } from 'better-sqlite3';
-import { and, eq, inArray, isNotNull, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, sql, type SQL } from 'drizzle-orm';
 import type { BaseSQLiteDatabase, SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import type { EvidenceRef, JsonObject } from '../../../types/domain';
 import type { EventSummary, LessonSummary } from '../../../types/views';
 import * as schema from '../schema';
-import { academyLessons, articles, events } from '../schema';
+import { academyLessons, articles, eventArticles, events } from '../schema';
 
 /** The database or an open transaction (both are synchronous better-sqlite3 executors). */
 export type Executor = BaseSQLiteDatabase<'sync', RunResult, typeof schema>;
@@ -29,6 +29,21 @@ export class EntityNotFoundError extends Error {
  */
 export function isPublicEvent(table: { status: SQLiteColumn; category: SQLiteColumn }): SQL {
 	return and(eq(table.status, 'published'), isNotNull(table.category)) as SQL;
+}
+
+/**
+ * What public pages may show: `isPublicEvent` plus at least one linked, stored article (PRD §1.4
+ * "every published event has a verifiable source"). The publish gates already require a source;
+ * this is the read layer's own check for rows that bypassed them (BUG-QA-006). The write side
+ * (brief candidates, digest) keeps `isPublicEvent`. Works on aliased tables too.
+ */
+export function isReadableEvent(table: {
+	id: SQLiteColumn;
+	status: SQLiteColumn;
+	category: SQLiteColumn;
+}): SQL {
+	const hasStoredSource = sql`EXISTS (SELECT 1 FROM ${eventArticles} INNER JOIN ${articles} ON ${articles.id} = ${eventArticles.article_id} WHERE ${eventArticles.event_id} = ${table.id})`;
+	return and(isPublicEvent(table), hasStoredSource) as SQL;
 }
 
 export function toEventSummary(row: EventRow): EventSummary {
