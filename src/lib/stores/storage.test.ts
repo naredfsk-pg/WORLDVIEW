@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+	KNOWN_LESSON_IDS,
 	PROGRESS_KEY,
 	readProgress,
 	readStorage,
@@ -66,5 +67,17 @@ describe('storage helpers', () => {
 		expect(readProgress()).toEqual([]);
 		vi.stubGlobal('localStorage', memoryStorage({ [PROGRESS_KEY]: '["w1-d01",1,"w1-d01"]' }));
 		expect(readProgress()).toEqual(['w1-d01']);
+	});
+
+	it('keeps only the 30 known lesson ids, so progress never exceeds 30', () => {
+		expect(KNOWN_LESSON_IDS.size).toBe(30);
+		expect(KNOWN_LESSON_IDS.has('w1-d07')).toBe(true);
+		expect(KNOWN_LESSON_IDS.has('w2-d08')).toBe(true);
+		expect(KNOWN_LESSON_IDS.has('w4-d30')).toBe(true);
+		expect(KNOWN_LESSON_IDS.has('w1-d08')).toBe(false);
+
+		const stored = [...KNOWN_LESSON_IDS, 'w5-d31', 'old-lesson', 'w1-d1'];
+		vi.stubGlobal('localStorage', memoryStorage({ [PROGRESS_KEY]: JSON.stringify(stored) }));
+		expect(readProgress()).toHaveLength(30);
 	});
 });

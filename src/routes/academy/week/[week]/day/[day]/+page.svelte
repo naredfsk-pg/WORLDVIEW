@@ -58,6 +58,11 @@
 				ทำเครื่องหมายว่าอ่านแล้ว
 			{/if}
 		</Button>
+		{#if academyProgress.saveFailed}
+			<p role="alert" class="mt-3 mb-0 text-xs text-gold" data-testid="progress-save-failed">
+				บันทึกความคืบหน้าไม่ได้ — เบราว์เซอร์นี้ไม่อนุญาตให้เก็บข้อมูล (เช่น โหมดส่วนตัว)
+			</p>
+		{/if}
 	</div>
 
 	<nav aria-label="บทเรียนก่อนหน้าและถัดไป" class="mt-8 grid gap-2.5 sm:grid-cols-2">

@@ -8,6 +8,8 @@ import { readProgress, writeProgress } from './storage';
 class AcademyProgress {
 	completed = $state<string[]>([]);
 	loaded = $state(false);
+	/** True when the last toggle could not be saved (storage blocked or full). */
+	saveFailed = $state(false);
 
 	get count(): number {
 		return this.completed.length;
@@ -22,11 +24,14 @@ class AcademyProgress {
 		return this.completed.includes(lessonId);
 	}
 
+	/** Keeps the old state when saving fails, so the UI never looks saved when it is not. */
 	toggle(lessonId: string): void {
-		this.completed = this.has(lessonId)
+		const next = this.has(lessonId)
 			? this.completed.filter((id) => id !== lessonId)
 			: [...this.completed, lessonId];
-		writeProgress(this.completed);
+		this.saveFailed = !writeProgress(next);
+		if (this.saveFailed) return;
+		this.completed = next;
 	}
 }
 
