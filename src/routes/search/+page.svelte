@@ -96,6 +96,8 @@
 
 	{#if results.events_total === 0 && results.lessons_total === 0}
 		<EmptyState message="ไม่พบผลลัพธ์ ลองใช้คำอื่นหรือคำที่สั้นลง" />
+	{:else if results.events.length === 0 && results.lessons.length === 0}
+		<EmptyState message="ไม่มีผลลัพธ์ในหน้านี้ ลองย้อนกลับไปหน้าก่อน" />
 	{/if}
 
 	{#if results.events.length > 0}

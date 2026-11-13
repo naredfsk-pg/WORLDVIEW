@@ -7,6 +7,7 @@
  * outside the frontend's scope, so the UI keeps its own copies here. Swap to the utils versions
  * once they land.
  */
+// TODO(wave2): move the date helpers to #lib/utils/date.ts (review finding 14).
 import {
 	BRIEF_EDITIONS,
 	CATEGORY_LABEL_TH,
@@ -24,6 +25,8 @@ import {
 const TIME_ZONE = 'Asia/Bangkok';
 const BRIEF_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const YEAR_MONTH_PATTERN = /^(\d{4})-(\d{2})$/;
+/** `Date.UTC` maps years 0–99 to 1900+, and nothing in WORLDVIEW predates the Unix epoch. */
+const MIN_YEAR = 1970;
 
 export const TIMEZONE_LABEL = 'เวลาไทย (GMT+7)';
 export const UNKNOWN_OCCURRED_AT = 'ไม่ทราบเวลาเกิดเหตุ';
@@ -68,6 +71,7 @@ export function isBriefDate(value: string | null | undefined): value is BriefDat
 	const match = BRIEF_DATE_PATTERN.exec(value ?? '');
 	if (!match) return false;
 	const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+	if (year < MIN_YEAR) return false;
 	const date = new Date(Date.UTC(year, month - 1, day));
 	return (
 		date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
@@ -76,7 +80,36 @@ export function isBriefDate(value: string | null | undefined): value is BriefDat
 
 export function isYearMonth(value: string | null | undefined): value is YearMonth {
 	const match = YEAR_MONTH_PATTERN.exec(value ?? '');
-	return match !== null && Number(match[2]) >= 1 && Number(match[2]) <= 12;
+	return (
+		match !== null &&
+		Number(match[1]) >= MIN_YEAR &&
+		Number(match[2]) >= 1 &&
+		Number(match[2]) <= 12
+	);
+}
+
+/**
+ * Page number from a URL param: a safe integer in [1, max]; anything else is 1, and values past
+ * `max` are clamped, so the SQL OFFSET can never overflow.
+ */
+export function parsePageNumber(value: string | null | undefined, max: number): number {
+	const page = Number(value ?? '1');
+	if (!Number.isSafeInteger(page) || page < 1) return 1;
+	return Math.min(page, max);
+}
+
+/**
+ * True only for absolute http(s) URLs. Every external `href` built from data goes through this;
+ * anything else (e.g. `javascript:`) is rendered as text.
+ */
+export function isHttpUrl(value: string | null | undefined): value is string {
+	if (!value) return false;
+	try {
+		const { protocol } = new URL(value);
+		return protocol === 'http:' || protocol === 'https:';
+	} catch {
+		return false;
+	}
 }
 
 export function monthOf(date: BriefDate): YearMonth {

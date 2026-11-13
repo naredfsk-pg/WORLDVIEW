@@ -8,10 +8,12 @@ import {
 	formatThaiMonth,
 	formatThaiTime,
 	isBriefDate,
+	isHttpUrl,
 	isYearMonth,
 	monthGrid,
 	parseCategory,
 	parseEdition,
+	parsePageNumber,
 	regionsLabel,
 	RELATION_LABEL_TH
 } from './format';
@@ -45,6 +47,14 @@ describe('date helpers (Asia/Bangkok, Gregorian year)', () => {
 		expect(isYearMonth('2026-13')).toBe(false);
 	});
 
+	it('rejects years before 1970 (Date.UTC maps 0–99 to 1900+)', () => {
+		expect(isBriefDate('0050-01-01')).toBe(false);
+		expect(isBriefDate('1969-12-31')).toBe(false);
+		expect(isBriefDate('1970-01-01')).toBe(true);
+		expect(isYearMonth('0050-01')).toBe(false);
+		expect(isYearMonth('1970-01')).toBe(true);
+	});
+
 	it('moves across year boundaries', () => {
 		expect(addMonths('2026-12', 1)).toBe('2027-01');
 		expect(addMonths('2026-01', -1)).toBe('2025-12');
@@ -64,6 +74,33 @@ describe('date helpers (Asia/Bangkok, Gregorian year)', () => {
 			null,
 			{ date: '2026-10-01', day: 1 }
 		]);
+	});
+});
+
+describe('URL param and link helpers', () => {
+	it('clamps the page number to a safe integer in [1, max]', () => {
+		expect(parsePageNumber(null, 50)).toBe(1);
+		expect(parsePageNumber('3', 50)).toBe(3);
+		expect(parsePageNumber('0', 50)).toBe(1);
+		expect(parsePageNumber('-4', 50)).toBe(1);
+		expect(parsePageNumber('2.5', 50)).toBe(1);
+		expect(parsePageNumber('abc', 50)).toBe(1);
+		expect(parsePageNumber('1000000000000000000', 50)).toBe(1);
+		expect(parsePageNumber('9'.repeat(400), 50)).toBe(1);
+		expect(parsePageNumber('51', 50)).toBe(50);
+	});
+
+	it('accepts only absolute http(s) URLs', () => {
+		expect(isHttpUrl('https://example.com/a')).toBe(true);
+		expect(isHttpUrl('HTTP://example.com')).toBe(true);
+		expect(isHttpUrl('javascript:alert(1)')).toBe(false);
+		expect(isHttpUrl(' javascript:alert(1)')).toBe(false);
+		expect(isHttpUrl('JaVaScRiPt:alert(1)')).toBe(false);
+		expect(isHttpUrl('data:text/html,x')).toBe(false);
+		expect(isHttpUrl('//evil.example')).toBe(false);
+		expect(isHttpUrl('/relative')).toBe(false);
+		expect(isHttpUrl('')).toBe(false);
+		expect(isHttpUrl(null)).toBe(false);
 	});
 });
 
