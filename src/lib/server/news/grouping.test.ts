@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { EventMatchCandidate } from '#lib/types/news.js';
 import {
+	bestEventMatch,
 	eventTypesOf,
 	GROUPING_CONFIG,
 	planGrouping,
@@ -185,6 +186,28 @@ describe('planGrouping', () => {
 		);
 		expect(plan.new_events).toHaveLength(2);
 		expect(plan.ambiguous_count).toBe(1);
+	});
+
+	it('bestEventMatch recomputes the ambiguous score of a draft against existing events', () => {
+		const accord = event({
+			event_id: 'kessel',
+			article_titles: ['Avalor and Meridia sign Kessel River water-sharing accord'],
+			first_seen_at: '2026-11-12T10:00:00Z',
+			last_updated_at: '2026-11-12T10:00:00Z'
+		});
+		const farAway = event({
+			event_id: 'old',
+			article_titles: ['Avalor and Meridia sign trade accord'],
+			first_seen_at: '2026-10-01T10:00:00Z',
+			last_updated_at: '2026-10-01T10:00:00Z'
+		});
+		const draft = [article('x2', 'Avalor and Meridia sign trade accord', '2026-11-12T11:00:00Z')];
+
+		const match = bestEventMatch(draft, [accord, farAway]);
+		expect(match?.event_id).toBe('kessel');
+		expect(match!.score).toBeGreaterThanOrEqual(GROUPING_CONFIG.ambiguousThreshold);
+		expect(match!.score).toBeLessThan(GROUPING_CONFIG.joinThreshold);
+		expect(bestEventMatch(draft, [farAway])).toBeNull();
 	});
 
 	it('is deterministic regardless of input order', () => {

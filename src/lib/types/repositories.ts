@@ -155,7 +155,19 @@ export interface DigestRepository {
 	saveEventContent(eventId: string, content: EventContentWrite, now: IsoUtc): Promise<void>;
 	/** LLM/gate failure on a non-published event: status → pending_review with these reasons; text unchanged. */
 	markEventForReview(eventId: string, reasons: ReviewReason[], now: IsoUtc): Promise<void>;
-	/** Published events of the last `since` window, excluding `eventId`, for relation suggestions. */
+	// CONTRACT-CHANGE: added (Wave 2). The LLM `clustering` task said a draft event reports the
+	// same happening as `targetEventId`: move its articles there and delete the draft, in one
+	// transaction. Throws unless the source is a `draft` and the target exists and is not hidden.
+	mergeDraftEvent(
+		sourceEventId: string,
+		targetEventId: string,
+		confidence: number,
+		now: IsoUtc
+	): Promise<void>;
+	/**
+	 * Published events of the last `since` window, excluding `eventId`, that share a tag or a
+	 * region other than `global` with it (and its is_demo), for relation suggestions.
+	 */
 	listRelationCandidates(
 		eventId: string,
 		since: IsoUtc,

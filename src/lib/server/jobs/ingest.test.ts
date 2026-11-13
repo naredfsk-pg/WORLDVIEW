@@ -380,7 +380,10 @@ describe('ingest job failures', () => {
 		expect(exitCodeFor(failed)).toBe(1);
 
 		clock = new Date(NOW.getTime() + 60 * 60 * 1000);
-		const allDisabled = sourceRegistryFor('production').map((source) => ({ ...source, enabled: false }));
+		const allDisabled = sourceRegistryFor('production').map((source) => ({
+			...source,
+			enabled: false
+		}));
 		const none = await runIngestJob({ deps: deps({ registry: allDisabled }) });
 		expect(none).toMatchObject({ status: 'failed' });
 		expect((await repositories.jobs.listRecent(1))[0]!.error).toBe('no enabled sources');

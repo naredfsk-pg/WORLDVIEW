@@ -18,8 +18,10 @@ import {
 	ne,
 	notInArray,
 	or,
-	sql
+	sql,
+	type SQL
 } from 'drizzle-orm';
+import type { SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import type { ReviewReason } from '../../../types/domain';
 import type { ArticleWithSource, EventMatchCandidate } from '../../../types/news';
 import type {
@@ -251,21 +253,55 @@ export function createDigestRepository(db: Db): DigestRepository {
 				.run();
 		},
 
+		async mergeDraftEvent(sourceEventId, targetEventId, confidence, now) {
+			db.transaction(
+				(tx) => {
+					const source = tx
+						.select({ status: events.status })
+						.from(events)
+						.where(eq(events.id, sourceEventId))
+						.get();
+					const target = tx
+						.select({ status: events.status })
+						.from(events)
+						.where(eq(events.id, targetEventId))
+						.get();
+					if (!source) throw new EntityNotFoundError('event', sourceEventId);
+					if (!target) throw new EntityNotFoundError('event', targetEventId);
+					if (source.status !== 'draft' || target.status === 'hidden') {
+						throw new Error(
+							`mergeDraftEvent: cannot merge a ${source.status} event into a ${target.status} event`
+						);
+					}
+
+					tx.update(eventArticles)
+						.set({ event_id: targetEventId, relation_confidence: confidence, linked_at: now })
+						.where(eq(eventArticles.event_id, sourceEventId))
+						.run();
+					// A draft has no public content; its updates, relations and links cascade away.
+					tx.delete(events).where(eq(events.id, sourceEventId)).run();
+					recomputeDerivedFields(tx, targetEventId, now);
+				},
+				{ behavior: 'immediate' }
+			);
+		},
+
 		async listRelationCandidates(eventId, since, limit) {
 			return db.transaction((tx) => {
 				const source = tx
-					.select({ category: events.category, tags: events.tags, is_demo: events.is_demo })
+					.select({ regions: events.regions, tags: events.tags, is_demo: events.is_demo })
 					.from(events)
 					.where(eq(events.id, eventId))
 					.get();
 				if (!source) return [];
 
-				const sharesCategory = source.category ? eq(events.category, source.category) : undefined;
-				const sharesTag =
-					source.tags.length > 0
-						? sql`EXISTS (SELECT 1 FROM json_each(${events.tags}) WHERE ${inArray(sql`value`, source.tags)})`
-						: undefined;
-				if (!sharesCategory && !sharesTag) return [];
+				const sharesTag = sharesJsonValue(events.tags, source.tags);
+				// `global` is on most stories, so it says nothing about a relation.
+				const sharesRegion = sharesJsonValue(
+					events.regions,
+					source.regions.filter((region) => region !== 'global')
+				);
+				if (!sharesTag && !sharesRegion) return [];
 
 				const rows = tx
 					.select()
@@ -277,10 +313,10 @@ export function createDigestRepository(db: Db): DigestRepository {
 							// Real events never relate to fictional demo events (and vice versa).
 							eq(events.is_demo, source.is_demo),
 							gte(events.last_updated_at, since),
-							or(sharesCategory, sharesTag)
+							or(sharesTag, sharesRegion)
 						)
 					)
-					.orderBy(desc(events.last_updated_at))
+					.orderBy(desc(events.last_updated_at), asc(events.id))
 					.limit(limit)
 					.all();
 				return withArticles(tx, rows);
@@ -353,6 +389,12 @@ export function createDigestRepository(db: Db): DigestRepository {
 			return db.select().from(academyLessons).orderBy(asc(academyLessons.day)).all();
 		}
 	};
+}
+
+/** `column` (a JSON array) contains any of `values`; undefined when `values` is empty. */
+function sharesJsonValue(column: SQLiteColumn, values: readonly string[]): SQL | undefined {
+	if (values.length === 0) return undefined;
+	return sql`EXISTS (SELECT 1 FROM json_each(${column}) WHERE ${inArray(sql`value`, [...values])})`;
 }
 
 /** Derived event facts from its evidence. Pure; also used by the demo seed. */

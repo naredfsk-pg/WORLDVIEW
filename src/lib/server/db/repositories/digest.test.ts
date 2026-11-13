@@ -345,3 +345,57 @@ describe('DigestRepository relations and lesson links', () => {
 		expect(await repos.read.listPublishedEventsForLesson('w2-d09', 5)).toEqual([]);
 	});
 });
+
+describe('DigestRepository.mergeDraftEvent', () => {
+	it('moves a draft’s articles to the target, deletes the draft and recomputes the target', async () => {
+		const now = '2026-11-13T02:00:00.000Z';
+		const target = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-13T00:00:00.000Z')],
+			1,
+			now
+		);
+		const draft = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-12T20:00:00.000Z', { publisher: 'Other Wire' })],
+			1,
+			now
+		);
+		await repos.digest.saveEventContent(target, content(), now);
+
+		await repos.digest.mergeDraftEvent(draft, target, 0.9, '2026-11-13T03:00:00.000Z');
+
+		expect(db.select().from(events).where(eq(events.id, draft)).get()).toBeUndefined();
+		expect(getEvent(target)).toMatchObject({
+			status: 'published',
+			source_count: 2,
+			first_seen_at: '2026-11-12T20:00:00.000Z'
+		});
+		// The published target now has evidence newer than its summary: digest re-summarizes it.
+		expect((await repos.digest.listEventsNeedingContent(10)).map((e) => e.event.id)).toEqual([
+			target
+		]);
+	});
+
+	it('refuses to merge away a non-draft event, or into a hidden one', async () => {
+		const now = '2026-11-13T02:00:00.000Z';
+		const published = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-13T00:00:00.000Z')],
+			1,
+			now
+		);
+		await repos.digest.saveEventContent(published, content(), now);
+		const draft = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-13T00:10:00.000Z')],
+			1,
+			now
+		);
+
+		await expect(repos.digest.mergeDraftEvent(published, draft, 0.9, now)).rejects.toThrow(
+			/cannot merge a published event/
+		);
+		db.update(events).set({ status: 'hidden' }).where(eq(events.id, published)).run();
+		await expect(repos.digest.mergeDraftEvent(draft, published, 0.9, now)).rejects.toThrow(
+			/into a hidden event/
+		);
+		expect(getEvent(draft).status).toBe('draft');
+	});
+});
