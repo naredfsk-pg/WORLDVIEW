@@ -20,9 +20,25 @@ export const E2E_KID = 'e2e-key';
 /** Set by the global setup (process env reaches the test workers). */
 export const PRIVATE_JWK_ENV = 'E2E_ACCESS_PRIVATE_JWK';
 
+/**
+ * A fake LLM key planted in the build and preview environments (PRD §11 #10): it must never
+ * reach the client bundle or any response. The LLM URL points at a closed loopback port (the
+ * discard port), so the whole suite runs with the LLM down (PRD §11 #9).
+ */
+export const E2E_LLM_KEY_SENTINEL = 'sk-e2e-sentinel-must-not-leak-7f3a';
+export const E2E_LLM_DOWN_URL = 'http://127.0.0.1:9/v1';
+export function llmSentinelEnv(): Record<string, string> {
+	return {
+		LLM_BASE_URL: E2E_LLM_DOWN_URL,
+		LLM_API_KEY: E2E_LLM_KEY_SENTINEL,
+		OMNI_API_KEY: E2E_LLM_KEY_SENTINEL
+	};
+}
+
 /** Environment for `vite preview` of the production build. */
 export function previewEnv(): Record<string, string> {
 	return {
+		...llmSentinelEnv(),
 		NODE_ENV: 'test',
 		ORIGIN: E2E_BASE_URL,
 		DATABASE_URL: E2E_DATABASE_URL,
