@@ -189,7 +189,13 @@ export interface BriefCandidate extends EventSummary {
 
 export interface BriefRepository {
 	/** Published events with ≥1 linked article whose (published_at ?? ingested_at) is in [start, end). */
-	listCandidateEvents(window: { start_utc: IsoUtc; end_utc: IsoUtc }): Promise<BriefCandidate[]>;
+	// CONTRACT-CHANGE: optional `include_briefs_of` (Wave 2): also the published events that are
+	// items of that date's published morning / evening briefs (the daily_snapshot merge, §8).
+	listCandidateEvents(window: {
+		start_utc: IsoUtc;
+		end_utc: IsoUtc;
+		include_briefs_of?: BriefDate;
+	}): Promise<BriefCandidate[]>;
 	/** Upsert brief by (brief_date, edition) and replace its items, in one transaction. */
 	saveBrief(input: {
 		brief_date: BriefDate;

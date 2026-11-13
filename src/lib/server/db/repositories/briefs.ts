@@ -1,6 +1,6 @@
 /** `BriefRepository`: brief candidates for a window, and idempotent brief saves. */
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, exists, gte, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, exists, gte, inArray, lt, or, sql } from 'drizzle-orm';
 import type { BriefStatus } from '../../../types/domain';
 import type { BriefRepository } from '../../../types/repositories';
 import type { Db } from '../client';
@@ -24,6 +24,23 @@ export function createBriefRepository(db: Db): BriefRepository {
 						)
 					)
 			);
+			// daily_snapshot: the events the day's morning / evening briefs already carried.
+			const inBriefsOfDate = window.include_briefs_of
+				? exists(
+						db
+							.select({ one: sql`1` })
+							.from(dailyBriefEvents)
+							.innerJoin(dailyBriefs, eq(dailyBriefs.id, dailyBriefEvents.brief_id))
+							.where(
+								and(
+									eq(dailyBriefEvents.event_id, events.id),
+									eq(dailyBriefs.brief_date, window.include_briefs_of),
+									inArray(dailyBriefs.edition, ['morning', 'evening']),
+									eq(dailyBriefs.status, 'published')
+								)
+							)
+					)
+				: undefined;
 			// Continuity (PRD §4.4): an update, or a published relation to an older public event.
 			// Outer columns are qualified by hand: Drizzle leaves them bare in single-table selects,
 			// which would be ambiguous inside this correlated subquery.
@@ -44,8 +61,8 @@ export function createBriefRepository(db: Db): BriefRepository {
 			const rows = db
 				.select({ event: events, is_continuing: isContinuing })
 				.from(events)
-				.where(and(isPublicEvent(events), hasArticleInWindow))
-				.orderBy(desc(events.last_updated_at))
+				.where(and(isPublicEvent(events), or(hasArticleInWindow, inBriefsOfDate)))
+				.orderBy(desc(events.last_updated_at), events.id)
 				.all();
 			return rows.map((row) => ({
 				...toEventSummary(row.event),
