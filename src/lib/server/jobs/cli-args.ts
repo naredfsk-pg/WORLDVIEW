@@ -1,6 +1,7 @@
 /**
  * Parses `npm run job -- <type> [--date YYYY-MM-DD] [--force] [--manual] [--dry-run] [--fixtures]
- * [--max-events N]` (ARCHITECTURE §8). Usage errors map to exit code 64.
+ * [--max-events N]` (ARCHITECTURE §8). `--dry-run` applies to ingest and reevaluate_pending.
+ * Usage errors map to exit code 64.
  */
 import { parseArgs } from 'node:util';
 import { JOB_TYPES, type JobCliArgs, type JobType } from '#lib/types/jobs.js';
@@ -9,11 +10,12 @@ import { isBriefDate } from '#lib/utils/date.js';
 export const USAGE = `usage: npm run job -- <${JOB_TYPES.join('|')}> [--force] [--manual]
        npm run job -- <brief_morning|brief_evening|archive_snapshot> [--date YYYY-MM-DD]
        npm run job -- ingest [--fixtures] [--dry-run]
-       npm run job -- digest [--max-events N]`;
+       npm run job -- digest [--max-events N]
+       npm run job -- reevaluate_pending [--dry-run]`;
 export const EXIT_USAGE = 64;
 
 export interface JobCliOptions extends JobCliArgs {
-	/** ingest only: fetch + normalize, no database access at all. */
+	/** ingest: fetch + normalize, no database access at all; reevaluate_pending: plan, no writes. */
 	dry_run: boolean;
 	/** ingest only: use the fixture sources under tests/fixtures/feeds (no network). */
 	fixtures: boolean;
@@ -57,8 +59,11 @@ export function parseJobCliArgs(argv: string[]): ParsedJobCli {
 	if (date !== null && !isBriefDate(date)) {
 		return { ok: false, error: `--date must be a real YYYY-MM-DD date, got "${date}"` };
 	}
-	if ((values['dry-run'] || values.fixtures) && jobType !== 'ingest') {
-		return { ok: false, error: '--dry-run and --fixtures apply only to ingest' };
+	if (values.fixtures && jobType !== 'ingest') {
+		return { ok: false, error: '--fixtures applies only to ingest' };
+	}
+	if (values['dry-run'] && jobType !== 'ingest' && jobType !== 'reevaluate_pending') {
+		return { ok: false, error: '--dry-run applies only to ingest and reevaluate_pending' };
 	}
 
 	const rawMaxEvents = values['max-events'];

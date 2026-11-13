@@ -45,6 +45,8 @@ describe('runJobByType', () => {
 		['a date on an hourly job', 'ingest', { date: '2026-11-13' }],
 		['an impossible date', 'brief_morning', { date: '2026-02-30' }],
 		['fixtures outside ingest', 'digest', { fixtures: true }],
+		['fixtures on reevaluate_pending', 'reevaluate_pending', { fixtures: true }],
+		['dryRun on digest', 'digest', { dryRun: true }],
 		['maxEvents outside digest', 'brief_evening', { maxEvents: 3 }],
 		['maxEvents 0', 'digest', { maxEvents: 0 }]
 	] as const)('rejects %s with exit code 64', async (_name, type, opts) => {
@@ -89,6 +91,27 @@ describe('runJobByType', () => {
 		expect(await runJobByType('archive_snapshot', { date: '2026-11-12' })).toMatchObject({
 			status: 'partial',
 			exitCode: 2
+		});
+	});
+
+	it('reevaluate_pending: a dry run claims nothing; the real run claims its hourly slot', async () => {
+		const countRuns = () => {
+			const db = openDb(databaseUrl);
+			const runs = db.select().from(jobRuns).all();
+			db.$client.close();
+			return runs.filter((run) => run.job_type === 'reevaluate_pending');
+		};
+		const dry = await runJobByType('reevaluate_pending', { dryRun: true });
+		expect(dry).toMatchObject({ status: 'succeeded', exitCode: 0 });
+		expect(dry.counters).toMatchObject({ events_published: 0, events_skipped: 0 });
+		expect(countRuns()).toEqual([]);
+
+		const real = await runJobByType('reevaluate_pending', { manual: true });
+		expect(real).toMatchObject({ status: 'succeeded', exitCode: 0, runId: expect.any(String) });
+		expect(countRuns()).toHaveLength(1);
+		expect(await runJobByType('reevaluate_pending')).toMatchObject({
+			status: 'skipped',
+			reason: 'already_done'
 		});
 	});
 

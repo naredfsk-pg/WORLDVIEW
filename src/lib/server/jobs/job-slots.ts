@@ -4,7 +4,7 @@
  *
  * | Job                           | Key                       | scheduled_for              |
  * |-------------------------------|---------------------------|----------------------------|
- * | ingest, digest                | `{type}:{hourSlot(now)}`  | start of that Bangkok hour |
+ * | ingest, digest, reevaluate_pending | `{type}:{hourSlot(now)}` | start of that Bangkok hour |
  * | brief_morning / brief_evening | `{type}:{date}`           | date 07:00 / 19:00 ICT     |
  * | archive_snapshot              | `archive_snapshot:{date}` | date + 1, 01:00 ICT        |
  */
@@ -21,7 +21,7 @@ export interface JobSlot {
  * never consume the real `ingest:{hour}` slot.
  */
 export function hourlyJobSlot(
-	jobType: 'ingest' | 'digest',
+	jobType: 'ingest' | 'digest' | 'reevaluate_pending',
 	now: Date,
 	variant: 'fixtures' | null = null
 ): JobSlot {
