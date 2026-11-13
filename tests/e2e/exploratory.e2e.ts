@@ -128,12 +128,14 @@ test.describe('empty, stale and demo states (seeded database, no ingest yet)', (
 test.describe('Thai text at 360 px', () => {
 	test.use({ viewport: { width: 360, height: 780 } });
 
-	// Text blocks only: link cards clip decorative artwork on purpose (overflow: hidden).
+	// Text blocks only: link cards clip decorative artwork on purpose (overflow: hidden), and
+	// visually hidden headings (`.sr-only`, e.g. the brief's h2) are a 1px clipped box by design.
 	test('no heading or paragraph is clipped by its own box on the main routes', async ({ page }) => {
 		for (const route of PUBLIC_ROUTES) {
 			await page.goto(route);
 			const clipped = await page.locator('main').evaluate((main) =>
 				[...main.querySelectorAll('h1, h2, h3, h4, p')]
+					.filter((node) => !node.closest('.sr-only'))
 					.filter((node) => node.scrollWidth > node.clientWidth + 1 && node.clientWidth > 0)
 					.filter((node) => getComputedStyle(node).overflowX !== 'visible')
 					.map((node) => node.textContent?.trim().slice(0, 40))
