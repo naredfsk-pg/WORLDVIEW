@@ -69,6 +69,13 @@ Orchestrator verifies Wave 0 (`npm run dev`, `npm test`, `db:migrate`, `db:seed`
 
 ### Wave 2 — Integration
 
+**Decisions carried from Wave 1 (orchestrator, 2026-11-13):**
+- Grouping vs tagging: **option (a)**. Ingest keeps the rule-based grouping (acceptance #3/#4 stay where they are). Digest tags articles `WHERE taxonomy IS NULL` whether they are grouped or not, and the LLM clustering task is used only for *ambiguous* matches (score 0.3–0.6). ARCHITECTURE §9 is updated to match.
+- Shared helpers are moved into `#lib/utils/`. Wave 1 put temporary copies in lanes, so these move: `canonicalizeUrl`, `parseFeedTimestamp`, `withRetry`/`backoffDelayMs`, `hourSlot`. The missing §7 date helpers are added (`isBriefDate`, `isYearMonth`, `monthOf`, `addDays`, `bangkokDateTimeToUtc`, `formatThaiDate`, `formatThaiTime`), and the copies in `components/format.ts` are replaced.
+- `listMatchableEvents` gets an `asc(events.id)` tie-break so grouping is deterministic.
+- `sources` gets ETag/Last-Modified columns so conditional GET can be used.
+- Production ingest fails until the owner approves at least one real source (PRD §12). The 6 candidate feeds are `enabled: false`.
+
 | Agent | Work |
 |---|---|
 | `backend` | Brief jobs (morning/evening), archive snapshot, ranking + `selection_reason` + region quota, related events / lesson links with evidence, FTS search, admin API + Cloudflare Access JWT check, `content_revisions` (owns `+page.server.ts` / `+server.ts`) |
@@ -110,7 +117,7 @@ Orchestrator verifies Wave 0 (`npm run dev`, `npm test`, `db:migrate`, `db:seed`
 - **After Wave 0**: every feature on its own branch, merged to `main` only through a Pull Request.
   - Branch names: `feature/<area>-<short-desc>`, `fix/…`, `chore/…`, `docs/…` (e.g. `feature/ui-app-shell`, `feature/news-ingestion`, `feature/llm-provider`).
   - Commits: Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `test:`, `refactor:`).
-  - Parallel agents each work in their own **git worktree** (`isolation: "worktree"`) on their own branch, so they never share a working tree.
+  - Parallel agents each work in their own **git worktree** on their own branch, created manually with `git worktree add -b feature/<name> C:\Project\WORLDVIEW-worktrees\<name> main` (the built-in `isolation: "worktree"` fails on this machine because of `c:` vs `C:` drive-letter case). Agents get the explicit path and must not edit other checkouts.
   - Before opening a PR: `npm run check && npm run lint && npm test && npm run build` pass, plus an independent `reviewer` pass; staged files scanned for secrets.
   - Orchestrator pushes the branch and opens the PR with `gh pr create` (summary, changes, test evidence, link to the agent log). **The owner reviews and merges on GitHub.**
   - After merge: delete the branch, pull `main`, rebase any still-open branches onto `main`.
