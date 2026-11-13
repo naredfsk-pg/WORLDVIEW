@@ -144,6 +144,9 @@ const envSchema = z.object({
 	// TUNNEL_TOKEN is deliberately not parsed: only the cloudflared container needs it.
 	CF_ACCESS_TEAM_DOMAIN: z.string().optional(),
 	CF_ACCESS_AUD: z.string().optional(),
+	// Test-only JWKS URL for e2e against a production build. `server/auth` ignores it unless
+	// NODE_ENV=test and both ORIGIN and this URL are loopback (ARCHITECTURE §4).
+	CF_ACCESS_TEST_JWKS_URL: z.url().optional(),
 	ADMIN_ALLOWED_EMAILS: commaList.pipe(z.array(z.email()))
 });
 
@@ -200,6 +203,7 @@ function toAppConfig(env: z.infer<typeof envSchema>) {
 		cloudflare: {
 			accessTeamDomain: env.CF_ACCESS_TEAM_DOMAIN,
 			accessAud: env.CF_ACCESS_AUD,
+			testJwksUrl: env.CF_ACCESS_TEST_JWKS_URL,
 			adminAllowedEmails: env.ADMIN_ALLOWED_EMAILS.map((email) => email.toLowerCase())
 		}
 	};
