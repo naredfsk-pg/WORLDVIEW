@@ -96,7 +96,8 @@ async function publishedEvent(spec: EventSpec): Promise<string> {
 			summarized_at: ingestedAt,
 			status: 'published',
 			review_reasons: [],
-			new_updates: []
+			new_updates: [],
+			listed: { updated_at: ingestedAt, status: 'draft' }
 		},
 		ingestedAt
 	);
@@ -354,6 +355,25 @@ describe('rankBriefCandidates: region quota and selection reasons', () => {
 		...extra
 	});
 	const windowEnd = '2026-11-13T00:00:00.000Z';
+
+	it('LLM-only signals never put a single-source event above corroborated ones (top 3)', () => {
+		// A prompt-injected single-source event claims maximal impact and Thailand relevance.
+		const injected = candidate('injected', ['asia'], 3, {
+			signals: { impact_breadth: 3, thailand_relevance: 3, sensitive: false }
+		});
+		const corroborated = ['c1', 'c2', 'c3', 'c4'].map((id) =>
+			candidate(id, ['africa'], 0, { source_count: 2 })
+		);
+		const items = rankBriefCandidates([injected, ...corroborated], { max: 10, windowEnd });
+
+		expect(items.map((item) => item.event_id)).toEqual(['c1', 'c2', 'c3', 'injected', 'c4']);
+		// Without a corroborated event the score order stands (nothing to prefer).
+		const alone = rankBriefCandidates([candidate('weak', ['asia'], 0), injected], {
+			max: 10,
+			windowEnd
+		});
+		expect(alone.map((item) => item.event_id)).toEqual(['injected', 'weak']);
+	});
 
 	it('keeps US/Europe at or below 40% when other regions have candidates', () => {
 		// 12 high-scoring US/Europe stories and 3 weaker ones from elsewhere, for 10 slots.

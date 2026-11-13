@@ -61,7 +61,8 @@ async function publishedEventAt(publishedAt: string, slug: string): Promise<stri
 			summarized_at: publishedAt,
 			status: 'published',
 			review_reasons: [],
-			new_updates: []
+			new_updates: [],
+			listed: { updated_at: publishedAt, status: 'draft' }
 		},
 		publishedAt
 	);
