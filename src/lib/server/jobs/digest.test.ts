@@ -139,8 +139,8 @@ const eventById = (id: string) => db.select().from(events).where(eq(events.id, i
 describe('digest on fixture feeds', () => {
 	it('ingest → digest publishes every event with Thai text, stored sources and real evidence ids', async () => {
 		await ingestFixtures();
-		const usage: Pick<LlmCallRepository, 'usageSince'> = {
-			usageSince: async () => ({ requests: 7, tokens: 1234 })
+		const usage: Pick<LlmCallRepository, 'usageForJobRun'> = {
+			usageForJobRun: async () => ({ requests: 7, tokens: 1234 })
 		};
 		const result = await digest(handlers(), { llmCalls: usage });
 

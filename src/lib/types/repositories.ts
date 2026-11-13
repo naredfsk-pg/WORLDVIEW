@@ -231,6 +231,9 @@ export interface LlmCallRepository {
 	record(call: Omit<LlmCall, 'id'>): Promise<void>;
 	/** Non-cached calls (ok + error) since `since`; tokens = tokens_in + tokens_out. */
 	usageSince(since: IsoUtc): Promise<LlmUsage>;
+	// CONTRACT-CHANGE: added (Wave 2 review). Network calls recorded for one job run, so digest
+	// counters never include another process's calls.
+	usageForJobRun(jobRunId: string): Promise<LlmUsage>;
 }
 
 export interface AcademyCatalogRepository {

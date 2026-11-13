@@ -37,7 +37,7 @@ export interface DigestDeps {
 	digest: DigestRepository;
 	llm: LLMProvider;
 	/** Network requests and tokens of this run are read back from `llm_calls`. */
-	llmCalls: Pick<LlmCallRepository, 'usageSince'>;
+	llmCalls: Pick<LlmCallRepository, 'usageForJobRun'>;
 	/** `--max-events N`: bounds how many events get content (and so how many LLM calls run). */
 	maxEvents?: number;
 }
@@ -101,7 +101,7 @@ export async function runDigest(deps: DigestDeps, ctx: JobContext): Promise<JobO
 		}
 	}
 
-	const usage = await deps.llmCalls.usageSince(ctx.run.started_at);
+	const usage = await deps.llmCalls.usageForJobRun(ctx.run.id);
 	counters.llm_requests = usage.requests;
 	counters.llm_tokens = usage.tokens;
 	if (ctx.signal.aborted) errors.unshift('aborted by the job time limit');
