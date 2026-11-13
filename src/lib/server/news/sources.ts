@@ -2,15 +2,22 @@
  * Checked-in source registry (ARCHITECTURE §5, §18 #9): there are no news-API env vars. Ingest
  * upserts the registry into `sources` at the start of every run; sources left out are disabled.
  *
- * The owner has not approved any real source yet (PRD §12), so every real candidate below is
- * `enabled: false` with `allow_excerpt: false`. To enable one, the owner confirms its terms,
- * replaces `license_notes`, then flips `enabled` (and `allow_excerpt` only if the terms allow it).
+ * On 2026-11-13 the owner approved all six feeds below for headline + link only (PRD §12), so
+ * they use `allow_excerpt: false`. Adding a source, or allowing excerpts, needs a new owner
+ * approval recorded in `license_notes`.
+ *
+ * Feed check on 2026-11-13 (one request per URL through SafeFetch): four feeds work and are
+ * enabled. Two are approved but disabled until a working URL is found and confirmed:
+ * - `who-news`: answers 200, but the feed is stale (83 items, newest 2026-10-10, mostly 2020
+ *   stories with re-dated pubDates), so it would only add old news under new dates.
+ * - `imf-news`: HTTP 404; `/en/News/RSS` and `/en/Publications/RSS` are 404 too, and imf.org no
+ *   longer links an RSS feed.
  */
 import type { SourceDefinition } from '#lib/types/news.js';
 
-const LICENSE_TODO = 'TODO: owner must confirm terms';
+const OWNER_APPROVAL = 'Owner approved 2026-11-13: headline + link only';
 
-/** Candidate real feeds: official/public bodies and major outlets with public RSS. All disabled. */
+/** Official/public bodies and major outlets with public RSS, all owner-approved (see above). */
 export const NEWS_SOURCES: readonly SourceDefinition[] = [
 	{
 		id: 'un-news',
@@ -18,10 +25,10 @@ export const NEWS_SOURCES: readonly SourceDefinition[] = [
 		kind: 'rss',
 		homepage_url: 'https://news.un.org/en/',
 		feed_url: 'https://news.un.org/feed/subscribe/en/news/all/rss.xml',
-		license_notes: LICENSE_TODO,
+		license_notes: OWNER_APPROVAL,
 		allow_excerpt: false,
 		is_demo: false,
-		enabled: false
+		enabled: true
 	},
 	{
 		id: 'who-news',
@@ -29,7 +36,7 @@ export const NEWS_SOURCES: readonly SourceDefinition[] = [
 		kind: 'rss',
 		homepage_url: 'https://www.who.int/news',
 		feed_url: 'https://www.who.int/rss-feeds/news-english.xml',
-		license_notes: LICENSE_TODO,
+		license_notes: OWNER_APPROVAL,
 		allow_excerpt: false,
 		is_demo: false,
 		enabled: false
@@ -40,7 +47,7 @@ export const NEWS_SOURCES: readonly SourceDefinition[] = [
 		kind: 'rss',
 		homepage_url: 'https://www.imf.org/en/News',
 		feed_url: 'https://www.imf.org/en/News/rss?language=eng',
-		license_notes: LICENSE_TODO,
+		license_notes: OWNER_APPROVAL,
 		allow_excerpt: false,
 		is_demo: false,
 		enabled: false
@@ -51,10 +58,10 @@ export const NEWS_SOURCES: readonly SourceDefinition[] = [
 		kind: 'rss',
 		homepage_url: 'https://www.bbc.com/news/world',
 		feed_url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
-		license_notes: LICENSE_TODO,
+		license_notes: OWNER_APPROVAL,
 		allow_excerpt: false,
 		is_demo: false,
-		enabled: false
+		enabled: true
 	},
 	{
 		id: 'guardian-world',
@@ -62,10 +69,10 @@ export const NEWS_SOURCES: readonly SourceDefinition[] = [
 		kind: 'rss',
 		homepage_url: 'https://www.theguardian.com/world',
 		feed_url: 'https://www.theguardian.com/world/rss',
-		license_notes: LICENSE_TODO,
+		license_notes: OWNER_APPROVAL,
 		allow_excerpt: false,
 		is_demo: false,
-		enabled: false
+		enabled: true
 	},
 	{
 		id: 'aljazeera-all',
@@ -73,10 +80,10 @@ export const NEWS_SOURCES: readonly SourceDefinition[] = [
 		kind: 'rss',
 		homepage_url: 'https://www.aljazeera.com/',
 		feed_url: 'https://www.aljazeera.com/xml/rss/all.xml',
-		license_notes: LICENSE_TODO,
+		license_notes: OWNER_APPROVAL,
 		allow_excerpt: false,
 		is_demo: false,
-		enabled: false
+		enabled: true
 	}
 ];
 

@@ -17,6 +17,7 @@ import { lookup as dnsLookupAsync } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import { BlockList, isIP } from 'node:net';
 import { Readable } from 'node:stream';
+import { gunzipSync } from 'node:zlib';
 import type { SafeFetch, SourceDefinition } from '#lib/types/news.js';
 import { NewsFetchError } from './errors.js';
 
@@ -42,7 +43,7 @@ export const NO_BODY_STATUSES = new Set([204, 205, 304]);
 /** Error code of the connect-time address check in the default transport. */
 const CONNECT_BLOCKED_CODE = 'EADDRNOTALLOWED';
 
-/** Performs exactly one request. Must not follow redirects or decompress. */
+/** Performs exactly one request. Must not follow redirects or decompress (SafeFetch inflates gzip itself, capped). */
 export type HttpTransport = (
 	url: URL,
 	init: { headers: Record<string, string>; signal: AbortSignal }
@@ -101,8 +102,11 @@ export function createSafeFetch(options: SafeFetchOptions): SafeFetch {
 				}
 
 				assertFeedContentType(response);
-				const body = await readBodyCapped(response, maxBodyBytes, signal);
-				return new Response(body, { status: response.status, headers: response.headers });
+				const raw = await readBodyCapped(response, maxBodyBytes, signal);
+				const body = gunzipIfCompressed(raw, response.headers, maxBodyBytes);
+				const responseHeaders = new Headers(response.headers);
+				responseHeaders.delete('content-encoding');
+				return new Response(body, { status: response.status, headers: responseHeaders });
 			}
 		} catch (error) {
 			throw toNewsFetchError(error, {
@@ -290,6 +294,41 @@ function toNewsFetchError(
 		status: null,
 		message: typeof code === 'string' ? `network error ${code}` : 'network error'
 	});
+}
+
+/**
+ * Some servers (UN News) send gzip even though we ask for `identity`. The compressed body was
+ * already capped, and inflation is capped at the same limit, so a decompression bomb fails as
+ * `too_large`. Detected by the header or the gzip magic bytes (XML never starts with 0x1f).
+ */
+function gunzipIfCompressed(
+	body: Uint8Array<ArrayBuffer>,
+	headers: Headers,
+	maxBodyBytes: number
+): Uint8Array<ArrayBuffer> {
+	const encoding = headers.get('content-encoding')?.trim().toLowerCase() ?? 'identity';
+	const isGzip = encoding === 'gzip' || encoding === 'x-gzip';
+	if (!isGzip && encoding !== 'identity') {
+		throw new NewsFetchError({
+			kind: 'parse_error',
+			retryable: false,
+			status: null,
+			message: `unsupported content-encoding ${encoding.slice(0, 20)}`
+		});
+	}
+	const hasGzipMagic = body[0] === 0x1f && body[1] === 0x8b;
+	if (!isGzip && !hasGzipMagic) return body;
+	try {
+		return new Uint8Array(gunzipSync(body, { maxOutputLength: maxBodyBytes }));
+	} catch (error) {
+		if (error instanceof RangeError) throw tooLarge(maxBodyBytes);
+		throw new NewsFetchError({
+			kind: 'parse_error',
+			retryable: false,
+			status: null,
+			message: 'invalid gzip body'
+		});
+	}
 }
 
 function notAllowed(message: string): NewsFetchError {

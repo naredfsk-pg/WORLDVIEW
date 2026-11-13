@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { gzipSync } from 'node:zlib';
 import type { SourceDefinition } from '#lib/types/news.js';
 import { NewsFetchError } from './errors';
 import {
@@ -230,6 +231,32 @@ describe('createSafeFetch', () => {
 				retryable: false
 			});
 		}
+	});
+
+	it('inflates a gzip body the server sent despite accept-encoding identity, capped', async () => {
+		const feed = `<rss><channel><title>${'x'.repeat(4000)}</title></channel></rss>`;
+		const gzipped = new Uint8Array(gzipSync(feed));
+		const routes = (headers: Record<string, string>) =>
+			fakeTransport({
+				'https://feeds.example.com/rss.xml': () =>
+					new Response(gzipped, { status: 200, headers: { ...FEED_HEADERS, ...headers } })
+			});
+		const fetchWith = (headers: Record<string, string>, maxBodyBytes?: number) =>
+			createSafeFetch({
+				allowedHosts: ['feeds.example.com'],
+				transport: routes(headers).transport,
+				resolveHost: fakeDns(),
+				maxBodyBytes
+			})('https://feeds.example.com/rss.xml');
+
+		const labelled = await fetchWith({ 'content-encoding': 'gzip' });
+		expect(await labelled.text()).toBe(feed);
+		expect(labelled.headers.get('content-encoding')).toBeNull();
+		// No header, but the gzip magic bytes give it away.
+		expect(await (await fetchWith({})).text()).toBe(feed);
+		// The inflated size counts against the cap: a decompression bomb fails as too_large.
+		await expectFetchError(fetchWith({ 'content-encoding': 'gzip' }, 1024), { kind: 'too_large' });
+		await expectFetchError(fetchWith({ 'content-encoding': 'br' }), { kind: 'parse_error' });
 	});
 
 	it('times out a request that never answers (retryable)', async () => {
