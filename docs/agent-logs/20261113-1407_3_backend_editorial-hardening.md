@@ -90,3 +90,65 @@ Wave 3 lane "Editorial hardening" บน branch `feature/editorial-hardening` (�
 - Shared-tag candidates อาจส่งคู่ที่ไม่เกี่ยวเข้า LLM มากขึ้นเมื่อ tags กว้าง (เช่น `us-politics` + `donald-trump`); จำกัดไว้ 1 คู่ต่อ draft, 20 คู่ต่อ call, 1 call ต่อรอบ และต้อง `same_event` ≥ 0.8 จึง merge — data-scientist ควรวัดบน live data
 - `stripFeedBoilerplate` ทำงานกับ HTML เท่านั้น ข้อความนำทางที่มาเป็น plain text (ไม่มี `<li>`/`<a>`) จะไม่ถูกตัด
 - QA: ตรวจ `/events/[id]` ส่วน timeline เมื่อมี `event_updates` จริง (ต้องรัน digest สองรอบโดยมี article ใหม่ link กับ event ที่ publish แล้ว)
+
+## รอบแก้ตาม review
+
+| Field | Value |
+|---|---|
+| Started | 2026-11-13 14:52:16 (Asia/Bangkok) |
+| Finished | 2026-11-13 15:16:00 (Asia/Bangkok) |
+| Input | `docs/agent-logs/20261113-1440_3_reviewer_editorial-hardening.md` + probe ของ reviewer + คำตัดสินของ coordinator (branch ถูก rebase บน `main` @ `2000c24` แล้ว) |
+
+### What I did (in order)
+1. 14:52 — `git log` ยืนยันว่า branch อยู่บน `2000c24`; อ่าน review log และ `probe-editorial/probe.ts`; ตรวจว่า `review_reasons` ไม่มี DB CHECK constraint (เป็น JSON text ใน `0000_init.sql`) จึงไม่ต้องมี migration
+2. 14:55 — #4/#6: เขียน `editorial/tag-filter.ts` ใหม่เป็นกฎตาม kebab parts (stems `alleg`/`accus`/`brib`/`kickback`/`mistress`/`philander`/`rapist`/…, last-part person labels, `spy`/`espionage` + case words, `charge(s)` เฉพาะกับคำอาชญากรรม, `misconduct`/`harassment`/`rape`/`suspected` เว้นแต่มี topic qualifier, allowlist ของ `affairs`, `sex-`/`sexual-` compounds); tests ครบทุก tag ในรายการ bypass และ false positive; probe ของ reviewer ให้ผลตรงตามที่กำหนด
+3. 14:58 — #9: `AdminRepository.publishEvent(…, publicTags)` กรอง pipeline tags ตอน admin publish และเขียน `system` revision (เพื่อไม่ให้ digest มองว่า tags เป็น admin-edited); tags ที่ admin แก้เองไม่ถูกแตะ; tests 2 ตัว → commit `974a078`
+4. 15:00 — #1/#2/#3 + suspicion: `same_event` ต่อ published target (ทุก confidence) → `flagPossibleDuplicate` (draft ได้ `possible_duplicate` + pending `same_topic` relation พร้อม rationale ภาษาไทยหรือข้อความ fallback และ evidence = articles ของ draft; published event ไม่เปลี่ยน); `mergeDraftEvent` ปฏิเสธ published target; gate carry `possible_duplicate` เหมือน `manual_flag`; label ไทยใน `admin-labels.ts`; `clustering@3` (same_event = happening เดียวกันเท่านั้น, follow-up = related, `rationale_th` แบบ lenient); rule-band pairs ได้ slot ก่อน tag pairs; track ทั้ง source และ target ที่ merge แล้ว และ list ใหม่หลัง merge/flag; tests: Nvidia-style (confidence 0.9 และ 0.3) → review item + pending relation + published event เท่าเดิม, pair priority (20 tag pairs + rule-band pair), merge chain A→B→C; mutation check ทั้งสองกรณี fail ตามคาด → commit `c12233f`
+5. 15:06 — #5/#7/#8: `summary@4` เพิ่ม `update_refs` (subset ของ `new_refs` เป็น evidence เดียว; ว่างหรือมี ref ที่ไม่ใหม่ → ไม่เขียน); `update_th`/`update_refs` ใช้ `.catch` จึงไม่ทำให้ summary invalid; G3 ตรวจ `update_th` เฉพาะ event ที่ published; repository ไม่ให้ `reported_at` ย้อนก่อน update ล่าสุด; tests ครบสามกรณีของ #5 + update_refs + clamp → commit `be2cc2e`
+6. 15:10 — #10: `stripFeedBoilerplate` ตัด `<li>` เฉพาะเมื่อ link text ทุกตัวเป็น navigation หรือเป็น promo/related item; `<p>` ต้องมี label นอก link; headline ล้วน (อังกฤษ/ไทย) และ `Analysis: <a>ประโยค</a>` ถูกเก็บ; docstring ใหม่; ตรวจซ้ำกับ Guardian feed จริงและ probe → commit `60fcc5c`
+7. 15:12 — ARCHITECTURE §2/§6/§9/§10/§11 → commit `190e31c`
+8. 15:13 — gates ทั้งหมดบน `db:reset` ใหม่ (`E2E_PORT=4473`)
+
+### Findings → status
+| # | Finding | Status |
+|---|---|---|
+| 1 | [high] auto-merge เข้า published event | fixed: ไม่ merge เข้า published อีก; `possible_duplicate` + pending `same_topic` relation; published event ไม่เปลี่ยน (tested) |
+| 2 | `clustering@2` นิยาม same_event กว้างเกิน | fixed: `clustering@3` |
+| 3 | tag pairs แย่ง slot | fixed: rule-band ก่อน (tested) |
+| 4 | tag-filter bypass 18 ตัว | fixed: ทั้ง 18 ตัวถูกตัด (tested) |
+| 5 | `update_th` block content / invalidate summary | fixed: G3 เฉพาะ published, `.catch` (tested 3 กรณี) |
+| 6 | false positives 8 ตัว | fixed: ทั้ง 8 ตัวถูกเก็บ (tested) |
+| 7 | timeline text ไม่ผูก evidence | fixed: `update_refs` (tested) |
+| 8 | `reported_at` ย้อนหลัง | fixed: clamp ใน repository (tested) |
+| 9 | admin publish ไม่กรอง tags | fixed: `publishEvent(…, publicTags)` (tested) |
+| 10 | `stripFeedBoilerplate` ตัด headline link | fixed (tested + live feed) |
+| S | merge chain / target ที่ถูกแก้ก่อน content step | fixed: track source+target, list ใหม่หลัง merge/flag (tested) |
+
+### Commands run & results
+| Time | Command | Result |
+|---|---|---|
+| 14:57 | `npx vitest run …tag-filter.test.ts`; `tsx probe.ts` | 98 passed; bypass ทั้งหมด = true, false positives = false |
+| 15:04 | mutation: สลับลำดับ pair / ไม่ track target | test ที่เกี่ยวข้อง fail 1 ตัวต่อกรณี; คืนไฟล์จาก backup |
+| 15:11 | `tsx check-excerpts.ts guardian.xml`, `tsx probe.ts` | ตัดเฉพาะ nav/promo/"Continue reading"; headline Van Hollen ถูกเก็บ; ReDoS ≤ 1.3 ms |
+| 15:14 | `npx vitest run` | 55 files, 823 passed |
+| 15:13 | `db:reset` → `check` → `lint` → `test` → `build` → `E2E_PORT=4473 test:e2e` | exit 0 ทั้งหมด: check 1738 files 0 errors 0 warnings; prettier + eslint ผ่าน; vitest 55 files / 823 passed; build ok; Playwright 100 passed |
+
+### Errors & problems
+| # | Time | Where | Error | Cause | Resolution |
+|---|---|---|---|---|---|
+| R1 | 14:56 | Write `tag-filter.ts` | tool ปฏิเสธ: ยังไม่ได้ Read ไฟล์ | กฎของ Write tool | Read แล้ว Write ใหม่ |
+| R2 | 14:58 | commit `974a078` | ESLint error (`Tag` import ไม่ได้ใช้) หลุดเข้า commit | ใช้ `eslint … \| tail` ทำให้ exit code หาย | ลบ import, ตรวจด้วย `npx eslint src; echo exit=$?`; รวมเข้า commit เดิม (soft reset + amend เพราะ `fixup!` ไม่ใช่ Conventional Commit; ยังไม่ push) |
+| R3 | 15:00 | python edit ของ `db/repositories/digest.ts` | `AssertionError` (ไม่พบข้อความ) | นับ tab ผิด (6 แทน 5) | เขียนสคริปต์เป็นไฟล์ที่ใช้ tab ตามจริง; edit แรก (types) สำเร็จแล้วจึงไม่ซ้ำ |
+| R4 | 15:09 | `digest.test.ts` | ESLint `newArticle` ไม่ได้ใช้; `sed` ครั้งแรกแก้ผิดบรรทัด | prettier เลื่อนบรรทัด จึงใช้เลขบรรทัดเก่า | หาเลขบรรทัดด้วย `grep -n` แล้วแก้; amend เข้า commit `be2cc2e` ของตัวเอง |
+| R5 | 15:09 | lint check `&& echo LINT_OK` | ไม่มีข้อความแสดง และเกือบมองข้ามไป | ESLint fail แต่ output ถูกส่งไป `/dev/null` | เปลี่ยนเป็นพิมพ์ exit code ทุกครั้ง |
+
+ไม่มีปัญหา encoding รอบนี้: ทุก commit ผ่าน byte scan (`scan.sh`: control chars, ZW/bidi, BOM) ก่อน commit; regex ใหม่ใน `normalize.ts` เขียนด้วย Edit tool และไม่ใช้ `\b`
+
+### CONTRACT-CHANGEs / prompt versions (รอบนี้)
+- `ReviewReason` เพิ่ม `possible_duplicate`; `ClusteringOutput.decisions[].rationale_th?`; `DigestRepository.flagPossibleDuplicate`; `mergeDraftEvent` throw เมื่อ target เป็น published; `SummaryOutput.update_refs`; `AdminRepository.publishEvent(…, publicTags)`
+- `clustering@2 → @3`, `summary@3 → @4` (`tagging@2` เท่าเดิม); ไม่มี migration
+
+### Open issues (รอบนี้)
+- draft ที่เป็น `possible_duplicate` แล้ว LLM ล้ม จะเป็น `pending_review [llm_failed, possible_duplicate]` ซึ่งไม่ถูก retry อัตโนมัติ (ไม่ใช่ `[llm_failed]` อย่างเดียว) — admin ต้องแก้ข้อความเองหรือ hide
+- เมื่อ admin publish draft ที่เป็น possible duplicate แล้ว relation `same_topic` ยังเป็น pending จนกว่า admin approve/reject แยกต่างหาก
+- รายการ open issue ด้านบนเรื่อง "draft merge เข้า published event ที่ flag ไว้" ไม่เกิดขึ้นแล้ว (ไม่มี merge เข้า published อีก)
