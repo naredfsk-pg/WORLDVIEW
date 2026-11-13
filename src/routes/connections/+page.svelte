@@ -29,9 +29,10 @@
 	class="mb-[18px] flex flex-col items-start justify-between gap-[15px] rounded-2xl border bg-card px-[19px] py-4 md:flex-row md:items-center"
 >
 	<div>
-		<p class="m-0 text-sm font-bold">ความเชื่อมโยงที่ตรวจสอบแล้วใน 30 วันล่าสุด</p>
+		<p class="m-0 text-sm font-bold">ความเชื่อมโยงที่เผยแพร่ใน 30 วันล่าสุดของข้อมูล</p>
 		<p class="mt-[3px] mb-0 text-xs text-muted-foreground">
-			ทุกเส้นเชื่อมมีเหตุผลและลิงก์หลักฐาน · “อาจเกี่ยวข้อง/เป็นไปได้” หมายถึงยังไม่ยืนยันว่าเป็นเหตุและผล
+			ทุกเส้นเชื่อมมีเหตุผลและลิงก์หลักฐาน · ป้าย “ตรวจโดยบรรณาธิการแล้ว” แสดงเฉพาะรายการที่ผ่านการตรวจ ·
+			“อาจเกี่ยวข้อง/เป็นไปได้” หมายถึงยังไม่ยืนยันว่าเป็นเหตุและผล
 		</p>
 	</div>
 	<span
