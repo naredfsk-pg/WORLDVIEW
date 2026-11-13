@@ -21,6 +21,7 @@ const PUBLIC_ROUTES = [
 	'/brief/2026-11-12',
 	'/connections',
 	'/events/demo-evt-01',
+	'/events/demo-evt-04',
 	'/search?q=AI',
 	'/nope'
 ];

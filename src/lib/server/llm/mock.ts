@@ -111,7 +111,9 @@ export function createDefaultMockHandlers(): Required<MockLlmHandlers> {
 				input.previous && input.previous.new_refs.length > 0
 					? `ข้อมูลใหม่ตัวอย่างจาก ${input.previous.new_refs.length} แหล่งข่าว`
 					: null,
-			update_refs: input.previous?.new_refs ?? []
+			update_refs: input.previous?.new_refs ?? [],
+			credibility_level: 'none',
+			credibility_reason_th: null
 		}),
 		relations: () => ({ relations: [] }),
 		academy_linking: (input) => ({

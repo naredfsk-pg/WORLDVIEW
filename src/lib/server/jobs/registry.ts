@@ -21,6 +21,7 @@ import { sourceRegistryFor } from '../news/sources.js';
 import { briefWindow, runBrief } from './briefs.js';
 import { DATE_JOBS, EXIT_USAGE } from './cli-args.js';
 import { runDigest } from './digest.js';
+import { runReevaluatePending } from './reevaluate.js';
 import { MAX_ITEM_AGE_HOURS, previewIngest, runIngest, type IngestDeps } from './ingest.js';
 import { archiveJobSlot, briefJobSlot, hourlyJobSlot, type JobSlot } from './job-slots.js';
 import { createJsonLogger } from './logger.js';
@@ -33,7 +34,10 @@ export interface RunJobOptions {
 	force?: boolean;
 	/** trigger "manual" instead of "cron". */
 	manual?: boolean;
-	/** ingest only: fetch + normalize without any database access. */
+	/**
+	 * ingest: fetch + normalize without any database access. reevaluate_pending: read and log the
+	 * planned decisions, write nothing (no job_runs claim either).
+	 */
 	dryRun?: boolean;
 	/** ingest only: the fictional fixture feeds (refused in production unless dryRun). */
 	fixtures?: boolean;
@@ -91,6 +95,7 @@ export async function runJobByType(
 			return { status: 'usage_error', exitCode: EXIT_USAGE, counters: {} };
 		}
 		if (type === 'ingest' && opts.dryRun) return await dryRunIngest(opts, logger);
+		if (type === 'reevaluate_pending' && opts.dryRun) return await dryRunReevaluate(logger);
 
 		// A brief built before its window closes would take the day's slot with half the news, and
 		// the real cron run would then be `already_done`. Refuse before claiming anything.
@@ -139,8 +144,9 @@ function findUsageError(type: JobType, opts: RunJobOptions): string | null {
 		return `date applies only to ${DATE_JOBS.join(', ')}`;
 	}
 	if (opts.date !== undefined && !isBriefDate(opts.date)) return 'date must be a real YYYY-MM-DD';
-	if ((opts.dryRun || opts.fixtures) && type !== 'ingest') {
-		return 'dryRun and fixtures apply only to ingest';
+	if (opts.fixtures && type !== 'ingest') return 'fixtures applies only to ingest';
+	if (opts.dryRun && type !== 'ingest' && type !== 'reevaluate_pending') {
+		return 'dryRun applies only to ingest and reevaluate_pending';
 	}
 	if (opts.maxEvents !== undefined) {
 		if (type !== 'digest') return 'maxEvents applies only to digest';
@@ -190,7 +196,24 @@ function planJob(
 						}),
 						llmCalls: repositories.llmCalls,
 						maxEvents: opts.maxEvents,
-						autoPublish: config.editorial.autoPublish
+						autoPublish: config.editorial.autoPublish,
+						relationMinConfidence: config.editorial.relationsMinConfidence
+					},
+					ctx
+				)
+		};
+	}
+
+	if (type === 'reevaluate_pending') {
+		return {
+			slot: hourlyJobSlot('reevaluate_pending', now),
+			execute: (ctx) =>
+				runReevaluatePending(
+					{
+						reevaluation: repositories.reevaluation,
+						autoPublish: config.editorial.autoPublish,
+						relationMinConfidence: config.editorial.relationsMinConfidence,
+						dryRun: false
 					},
 					ctx
 				)
@@ -249,6 +272,38 @@ async function dryRunIngest(
 	logger.info('dry-run finished', { ...outcome, rss_bytes: process.memoryUsage().rss });
 	const exitCode = outcome.status === 'succeeded' ? 0 : outcome.status === 'partial' ? 2 : 1;
 	return { status: outcome.status, exitCode, counters: { ...outcome.counters } };
+}
+
+/**
+ * `reevaluate_pending --dry-run`: the same planning on the real database, but nothing is written
+ * and no slot is claimed, so it can run any number of times before the real run.
+ */
+async function dryRunReevaluate(
+	logger: ReturnType<typeof createJsonLogger>
+): Promise<RunJobByTypeResult> {
+	const config = getConfig();
+	const db = openDb(config.app.databaseUrl);
+	try {
+		const outcome = await runReevaluatePending(
+			{
+				reevaluation: createRepositories(db).reevaluation,
+				autoPublish: config.editorial.autoPublish,
+				relationMinConfidence: config.editorial.relationsMinConfidence,
+				dryRun: true
+			},
+			{ now: () => new Date(), logger, signal: AbortSignal.timeout(MAX_JOB_DURATION_MS) }
+		);
+		logger.info('dry-run finished', {
+			job_type: 'reevaluate_pending',
+			policy: config.editorial.autoPublish,
+			status: outcome.status,
+			counters: { ...outcome.counters }
+		});
+		const exitCode = outcome.status === 'succeeded' ? 0 : outcome.status === 'partial' ? 2 : 1;
+		return { status: outcome.status, exitCode, counters: { ...outcome.counters } };
+	} finally {
+		db.$client.close();
+	}
 }
 
 /** Registry, SafeFetch (allowlist from the enabled registry hosts) and the adapters for this mode. */

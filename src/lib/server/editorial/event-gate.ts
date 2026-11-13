@@ -5,35 +5,70 @@
  * In `auto` mode an event that passes every gate is published only when the auto-publish policy
  * (`EDITORIAL_AUTO_PUBLISH`) allows it. A published event never reaches this gate in
  * `multi_source` / `off` mode: the digest flags `new_evidence_pending` without calling the LLM.
+ * Auto-publish wave: in `all` mode G6 (sensitive + one registry source) no longer holds an event
+ * back; it is published with at least the `unverified` credibility label (`assessCredibility`).
+ * G1–G5 failures still go to review: they are real failures, not approvals.
  */
-import { REVIEW_REASONS, type CategorySlug, type ReviewReason } from '../../types/domain';
-import type { EventGateDecision, EventGateInput } from '../../types/editorial';
+import {
+	REVIEW_REASONS,
+	type CategorySlug,
+	type EventStatus,
+	type NewsEvent,
+	type ReviewReason
+} from '../../types/domain';
+import type { AutoPublishPolicy, EventGateDecision, EventGateInput } from '../../types/editorial';
 import type { LlmErrorKind, SummaryOutput } from '../../types/llm';
 import type { ArticleWithSource } from '../../types/news';
 import { isHttpUrl } from '../../utils/url';
 import { containsContact, containsUrl, isThaiText } from './text';
 
 export function evaluateEventForPublish(input: EventGateInput): EventGateDecision {
-	const reasons = input.mode === 'admin' ? adminGateReasons(input) : autoGateReasons(input);
-	// ARCHITECTURE §6: only an admin clears a manual flag or a possible duplicate, or republishes
-	// a hidden event.
-	for (const sticky of ['manual_flag', 'possible_duplicate'] as const) {
-		if (input.mode === 'auto' && input.current_review_reasons?.includes(sticky)) {
-			reasons.add(sticky);
-		}
-	}
-	if (input.mode === 'auto' && reasons.size === 0 && !autoPublishAllowed(input)) {
-		reasons.add('auto_publish_disabled');
-	}
+	if (input.mode === 'admin') return toDecision(adminGateReasons(input), input.current_status);
+	return applyAutoRules(autoGateReasons(input), input);
+}
 
-	// Stable order (the enum order) so stored reasons and the "exactly [llm_failed]" retry check are deterministic.
-	const review_reasons = REVIEW_REASONS.filter((reason) => reasons.has(reason));
-	if (input.mode === 'auto' && input.current_status === 'hidden') {
-		return { status: 'keep_hidden', review_reasons };
-	}
-	if (review_reasons.length === 0) return { status: 'published', review_reasons: [] };
-	if (input.current_status === 'published') return { status: 'keep_published', review_reasons };
-	return { status: 'pending_review', review_reasons };
+/**
+ * The auto gate on an event's STORED text (the backlog job `reevaluate_pending`): G1–G3 on the
+ * stored fields, G6 from the stored signals, then the same sticky reasons and policy as the
+ * digest. G4/G5 were checked against the LLM output when that text was saved.
+ */
+export function evaluateStoredEventForAutoPublish(input: {
+	event: NewsEvent;
+	articles: readonly ArticleWithSource[];
+	auto_publish: AutoPublishPolicy;
+}): EventGateDecision {
+	const { event, articles, auto_publish } = input;
+	const reasons = new Set(storedEventGateReasons(event, articles));
+	addSensitiveSingleSource(reasons, event.signals?.sensitive ?? false, articles, auto_publish);
+	return applyAutoRules(reasons, {
+		articles: [...articles],
+		current_status: event.status,
+		current_review_reasons: event.review_reasons,
+		auto_publish
+	});
+}
+
+/**
+ * Hard gates G1–G3 on an event's stored text (admin publish and the stored re-evaluation). The
+ * credibility reason is public text too, so it is checked here; the digest drops a failing
+ * reason before saving instead.
+ */
+export function storedEventGateReasons(
+	event: NewsEvent,
+	articles: readonly ArticleWithSource[]
+): ReviewReason[] {
+	const reasons = adminGateReasons({
+		mode: 'admin',
+		articles: [...articles],
+		ref_to_article_id: {},
+		extraction: null,
+		summary: storedSummary(event),
+		signals: event.signals,
+		category: event.category,
+		current_status: event.status
+	});
+	addTextReasons(reasons, [event.credibility_reason_th]);
+	return REVIEW_REASONS.filter((reason) => reasons.has(reason));
 }
 
 /**
@@ -71,6 +106,38 @@ export function mapRefsToArticleIds(
 		if (!ids.includes(id)) ids.push(id);
 	}
 	return ids;
+}
+
+/** Sticky admin reasons, then the auto-publish policy, then the outcome for the current status. */
+function applyAutoRules(
+	reasons: Set<ReviewReason>,
+	input: Pick<
+		EventGateInput,
+		'articles' | 'current_status' | 'current_review_reasons' | 'auto_publish'
+	>
+): EventGateDecision {
+	// ARCHITECTURE §6: only an admin clears a manual flag or a possible duplicate, or republishes
+	// a hidden event.
+	for (const sticky of ['manual_flag', 'possible_duplicate'] as const) {
+		if (input.current_review_reasons?.includes(sticky)) reasons.add(sticky);
+	}
+	if (reasons.size === 0 && !autoPublishAllowed(input)) reasons.add('auto_publish_disabled');
+	if (input.current_status === 'hidden') {
+		return { status: 'keep_hidden', review_reasons: inEnumOrder(reasons) };
+	}
+	return toDecision(reasons, input.current_status);
+}
+
+function toDecision(reasons: Set<ReviewReason>, currentStatus: EventStatus): EventGateDecision {
+	const review_reasons = inEnumOrder(reasons);
+	if (review_reasons.length === 0) return { status: 'published', review_reasons: [] };
+	if (currentStatus === 'published') return { status: 'keep_published', review_reasons };
+	return { status: 'pending_review', review_reasons };
+}
+
+/** Stable order, so stored reasons and the "exactly [llm_failed]" retry check are deterministic. */
+function inEnumOrder(reasons: Set<ReviewReason>): ReviewReason[] {
+	return REVIEW_REASONS.filter((reason) => reasons.has(reason));
 }
 
 /** Admin publish: hard gates G1–G3 only; the admin's judgement replaces the rest. */
@@ -116,10 +183,23 @@ function autoGateReasons(input: EventGateInput): Set<ReviewReason> {
 
 	// G6 (PRD §4.3 #6). Either source marking it sensitive is enough: stored signals may be stale.
 	const sensitive = (input.signals?.sensitive ?? false) || extraction.sensitive;
-	if (sensitive && countDistinctSources(input.articles) < 2) {
+	addSensitiveSingleSource(reasons, sensitive, input.articles, input.auto_publish ?? 'off');
+	return reasons;
+}
+
+/**
+ * G6 holds a sensitive single-source event for review in `off` / `multi_source`. In `all` it is
+ * published with the credibility floor instead (owner decision 2026-11-13).
+ */
+function addSensitiveSingleSource(
+	reasons: Set<ReviewReason>,
+	sensitive: boolean,
+	articles: readonly ArticleWithSource[],
+	policy: AutoPublishPolicy
+): void {
+	if (policy !== 'all' && sensitive && countDistinctSources(articles) < 2) {
 		reasons.add('sensitive_single_source');
 	}
-	return reasons;
 }
 
 function hasCitableSource(articles: readonly ArticleWithSource[]): boolean {
@@ -143,7 +223,7 @@ function hasRequiredThaiFields(
  * `auto_publish` omitted counts as `off`, so a caller that forgets the policy never publishes.
  * `multi_source` needs at least two registry sources (`countDistinctSources`).
  */
-function autoPublishAllowed(input: EventGateInput): boolean {
+function autoPublishAllowed(input: Pick<EventGateInput, 'articles' | 'auto_publish'>): boolean {
 	const policy = input.auto_publish ?? 'off';
 	if (policy === 'all') return true;
 	return policy === 'multi_source' && countDistinctSources(input.articles) >= 2;
@@ -155,6 +235,10 @@ function addTextReasons(reasons: Set<ReviewReason>, texts: (string | null)[]): v
 	if (texts.some(containsContact)) reasons.add('contact_in_generated_text');
 }
 
+/**
+ * The texts G3 checks. The credibility reason is not among them in auto mode: a failing reason
+ * is dropped by `assessCredibility` and never blocks publishing.
+ */
 function generatedTexts(summary: SummaryOutput, includeUpdate = false): (string | null)[] {
 	return [
 		summary.title_th,
@@ -166,4 +250,28 @@ function generatedTexts(summary: SummaryOutput, includeUpdate = false): (string 
 		includeUpdate ? summary.update_th : null,
 		...summary.claims_th.flatMap((claim) => [claim.claimant_th, claim.claim_th])
 	];
+}
+
+/** The stored text in the summary shape the text gates read (no refs: G5 does not apply). */
+function storedSummary(event: NewsEvent): SummaryOutput {
+	return {
+		title_th: event.title_th,
+		summary_th: event.summary_th,
+		what_happened_th: event.what_happened_th,
+		why_it_matters_th: event.why_it_matters_th,
+		background_th: event.background_th,
+		uncertain_th: event.uncertain_th,
+		claims_th: event.claims.map((claim) => ({
+			claimant_th: claim.claimant_th,
+			claim_th: claim.claim_th,
+			evidence: []
+		})),
+		impact_breadth: 0,
+		thailand_relevance: 0,
+		cited_refs: [],
+		update_th: null,
+		update_refs: [],
+		credibility_level: event.credibility_level,
+		credibility_reason_th: event.credibility_reason_th
+	};
 }

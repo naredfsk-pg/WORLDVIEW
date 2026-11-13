@@ -2,7 +2,7 @@ import { error, fail } from '@sveltejs/kit';
 import { z } from 'zod';
 import { getRepositories } from '#lib/server/db/repositories/index.js';
 import { containsContact, containsUrl, isThaiText } from '#lib/server/editorial/index.js';
-import { CATEGORY_SLUGS } from '#lib/types/domain.js';
+import { CATEGORY_SLUGS, CREDIBILITY_LEVELS } from '#lib/types/domain.js';
 import type { AdminEventPatch } from '#lib/types/repositories.js';
 import type { AdminEventEditData } from '#lib/types/views.js';
 import {
@@ -22,7 +22,9 @@ const EDITABLE_FIELDS = [
 	'why_it_matters_th',
 	'background_th',
 	'uncertain_th',
-	'category'
+	'category',
+	'credibility_level',
+	'credibility_reason_th'
 ] as const satisfies readonly (keyof AdminEventPatch)[];
 
 type EditableField = (typeof EDITABLE_FIELDS)[number];
@@ -77,14 +79,28 @@ export const actions: Actions = {
 			return saveFailure(400, params.id, 'บันทึกไม่ได้ กรุณาแก้ไขช่องที่แจ้งไว้', fieldErrors, values);
 		}
 
-		const { change_reason, public_note_th, ...fields } = parsed.data;
+		const { change_reason, public_note_th, credibility_level, ...fields } = parsed.data;
+		// "อัตโนมัติ" ends an override: the label is the pipeline's again from the next re-summary.
+		const releaseCredibility = credibility_level === CREDIBILITY_AUTO;
+		const submitted = { ...fields, credibility_level };
 		const patch: AdminEventPatch = {};
 		for (const field of EDITABLE_FIELDS) {
+			if (releaseCredibility && field.startsWith('credibility_')) continue;
 			const loadedValue = loaded.data[`original_${field}`];
-			if (fields[field] !== loadedValue) Object.assign(patch, { [field]: fields[field] });
+			if (submitted[field] !== loadedValue) Object.assign(patch, { [field]: submitted[field] });
 		}
-		if (Object.keys(patch).length === 0) {
+		if (Object.keys(patch).length === 0 && !releaseCredibility) {
 			return saveFailure(400, params.id, 'ไม่มีข้อมูลที่เปลี่ยนแปลง', {}, values);
+		}
+		// The label and its reason are one override: both are written (and so both kept from later
+		// re-summaries), and a removed label keeps no reason.
+		if (
+			credibility_level !== CREDIBILITY_AUTO &&
+			('credibility_level' in patch || 'credibility_reason_th' in patch)
+		) {
+			patch.credibility_level = credibility_level;
+			patch.credibility_reason_th =
+				credibility_level === 'none' ? null : fields.credibility_reason_th;
 		}
 
 		const result = await getRepositories().admin.updateEventIfCurrent(
@@ -92,7 +108,8 @@ export const actions: Actions = {
 			loaded.data.loaded_updated_at,
 			patch,
 			{ changed_by: admin.email, change_reason, public_note_th },
-			new Date().toISOString()
+			new Date().toISOString(),
+			{ releaseCredibility }
 		);
 		if (!result.ok && result.error === 'conflict') {
 			return saveFailure(409, params.id, CONFLICT_MESSAGE, {}, values);
@@ -108,6 +125,9 @@ export const actions: Actions = {
 		} satisfies SaveActionData;
 	}
 };
+
+/** The select option that hands the label back to the pipeline (model assessment + floor). */
+const CREDIBILITY_AUTO = 'auto';
 
 const CONFLICT_MESSAGE =
 	'มีการแก้ไขจากระบบหรือผู้อื่นหลังจากคุณเปิดหน้านี้ — โหลดใหม่ (ข้อความที่คุณพิมพ์ยังอยู่ในฟอร์ม คัดลอกไว้ก่อนโหลดใหม่)';
@@ -172,7 +192,9 @@ const loadedForm = z.object({
 	original_why_it_matters_th: loadedValue,
 	original_background_th: loadedValue,
 	original_uncertain_th: loadedValue,
-	original_category: loadedValue
+	original_category: loadedValue,
+	original_credibility_level: loadedValue,
+	original_credibility_reason_th: loadedValue
 });
 
 const saveForm = z.object({
@@ -183,6 +205,14 @@ const saveForm = z.object({
 	background_th: optionalText('ภูมิหลัง', 3000),
 	uncertain_th: optionalText('สิ่งที่ยังไม่ชัดเจน', 1500),
 	category: z.enum(CATEGORY_SLUGS, { error: 'กรุณาเลือกหมวดหมู่' }),
+	credibility_level: z.enum([...CREDIBILITY_LEVELS, CREDIBILITY_AUTO], {
+		error: 'กรุณาเลือกระดับป้าย'
+	}),
+	// Public text next to the label: G3 like every other field, and Thai when given.
+	credibility_reason_th: optionalText('เหตุผลของป้าย', 300).refine(
+		(value) => value === null || isThaiText(value),
+		'เหตุผลของป้ายต้องมีข้อความภาษาไทย'
+	),
 	change_reason: changeReason,
 	public_note_th: optionalText('หมายเหตุการแก้ไข', 300)
 });

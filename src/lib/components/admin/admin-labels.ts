@@ -1,5 +1,12 @@
 /** Thai labels and small display helpers for the admin pages (FR-06). Pure and client-safe. */
-import type { BriefStatus, EventStatus, RelationStatus, ReviewReason } from '../../types/domain';
+import {
+	CREDIBILITY_LABEL_TH,
+	type BriefStatus,
+	type CredibilityLevel,
+	type EventStatus,
+	type RelationStatus,
+	type ReviewReason
+} from '../../types/domain';
 import type { JobStatus, JobType } from '../../types/jobs';
 
 export const REVIEW_REASON_LABEL_TH: Record<ReviewReason, string> = {
@@ -37,6 +44,12 @@ export const RELATION_STATUS_LABEL_TH: Record<RelationStatus, string> = {
 	rejected: 'ปฏิเสธแล้ว'
 };
 
+/** Options of the admin credibility select; `none` is spelled out here, never shown publicly. */
+export const CREDIBILITY_OPTION_LABEL_TH: Record<CredibilityLevel, string> = {
+	none: 'ไม่มีป้าย',
+	...CREDIBILITY_LABEL_TH
+};
+
 export const JOB_STATUS_LABEL_TH: Record<JobStatus, string> = {
 	running: 'กำลังทำงาน',
 	succeeded: 'สำเร็จ',
@@ -49,7 +62,8 @@ export const JOB_TYPE_LABEL_TH: Record<JobType, string> = {
 	digest: 'สรุปและจัดกลุ่ม (digest)',
 	brief_morning: 'สรุปรอบเช้า',
 	brief_evening: 'สรุปรอบเย็น',
-	archive_snapshot: 'บันทึกคลังรายวัน'
+	archive_snapshot: 'บันทึกคลังรายวัน',
+	reevaluate_pending: 'ประเมินรายการที่ค้างตามนโยบายปัจจุบัน'
 };
 
 /** "1 นาที 5 วินาที" / "850 มิลลิวินาที"; "—" while still running. */

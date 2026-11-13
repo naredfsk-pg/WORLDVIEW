@@ -132,6 +132,10 @@ export interface EventContentWrite {
 	tags: NewsEvent['tags'];
 	signals: EditorialSignals;
 	occurred_at: IsoUtc | null;
+	// CONTRACT-CHANGE (auto-publish wave): the label from `assessCredibility`. Content fields:
+	// an admin override (a non-system revision of either key) is never rewritten.
+	credibility_level: NewsEvent['credibility_level'];
+	credibility_reason_th: NewsEvent['credibility_reason_th'];
 	summarized_at: IsoUtc;
 	/** From `evaluateEventForPublish` ('keep_published' → caller does not save). */
 	status: 'published' | 'pending_review';
@@ -248,11 +252,77 @@ export interface DigestRepository {
 	/** Upsert on (from, to, type). Never downgrades an admin-reviewed relation. */
 	// CONTRACT-CHANGE (security wave): stores nothing when an admin rejected any relation between
 	// the two events (either direction, any type); resolves whether a row was written.
+	// CONTRACT-CHANGE (auto-publish wave): stored with origin `relations`; never overwrites a
+	// pending `possible_duplicate` relation of the same edge.
 	upsertRelation(
-		relation: Omit<EventRelation, 'id' | 'created_at' | 'reviewed_at' | 'reviewed_by'>
+		relation: Omit<EventRelation, 'id' | 'created_at' | 'reviewed_at' | 'reviewed_by' | 'origin'>
 	): Promise<boolean>;
 	replaceLessonLinks(eventId: string, links: Omit<EventLessonLink, 'created_at'>[]): Promise<void>;
 	listLessonCatalog(): Promise<AcademyLessonRow[]>;
+}
+
+// CONTRACT-CHANGE (auto-publish wave): the `reevaluate_pending` job (ARCHITECTURE §8, §11).
+// Every write is checked against the row as listed, appends a `content_revisions` row by
+// `system:policy` (a pipeline actor, so it never protects fields from a re-summary) and runs in
+// one transaction.
+export interface PendingRelationForReview {
+	relation: EventRelation;
+	from_article_ids: string[];
+	to_article_ids: string[];
+	/** An admin rejected a relation between the two events (either direction, any type). */
+	rejected_pair: boolean;
+}
+
+export interface ReevaluationRepository {
+	/** `pending_review` events whose review_reasons are non-empty and all within `reasons`. */
+	listEventsHeldOnlyBy(reasons: readonly ReviewReason[]): Promise<EventWithArticles[]>;
+	/** Published events whose review_reasons include `new_evidence_pending`. */
+	listPublishedWithNewEvidence(): Promise<NewsEvent[]>;
+	/**
+	 * Writes the new status, review_reasons and credibility label while `updated_at` and `status`
+	 * still equal `listed`; resolves null (nothing written) otherwise, else the status written.
+	 * As in saveEventContent, fields an admin edited are kept, and an unpublished event with any
+	 * admin-edited content field is not published but waits as `pending_review [manual_flag]`.
+	 * Publishing sets `published_at` once and passes pipeline tags through `publicTags` (as admin
+	 * publish does).
+	 */
+	applyEventDecision(
+		eventId: string,
+		write: {
+			status: 'published' | 'pending_review';
+			review_reasons: ReviewReason[];
+			credibility_level: NewsEvent['credibility_level'];
+			credibility_reason_th: NewsEvent['credibility_reason_th'];
+		},
+		listed: Pick<NewsEvent, 'updated_at' | 'status'>,
+		changeReason: string,
+		now: IsoUtc,
+		publicTags: (tags: Tag[]) => Tag[],
+		/** Decide and resolve the status, but write nothing (the job's `--dry-run`). */
+		options?: { dryRun?: boolean }
+	): Promise<'published' | 'pending_review' | null>;
+	/**
+	 * A published event flagged `new_evidence_pending` under `off` / `multi_source`: removes the
+	 * reason and moves `summarized_at` back to its last content save (the later of `published_at`
+	 * and the last automatic re-summary), so the next digest re-summarizes it with the articles
+	 * linked since. Resolves false when the row changed since it was listed.
+	 */
+	requeueForResummary(
+		eventId: string,
+		listedUpdatedAt: IsoUtc,
+		changeReason: string,
+		now: IsoUtc
+	): Promise<boolean>;
+	/** Pending relations of origin `relations` (a possible-duplicate review is never listed). */
+	listPendingRelations(): Promise<PendingRelationForReview[]>;
+	/**
+	 * pending_review → published (`reviewed_at` stays null: not an admin decision). Re-checks in
+	 * the same transaction that it is still a pending `relations` row of a pair no admin rejected;
+	 * resolves false otherwise.
+	 */
+	publishPendingRelation(relationId: string, changeReason: string, now: IsoUtc): Promise<boolean>;
+	/** Deletes a pending relation (as if the gate had dropped it); the revision keeps the row. */
+	dropPendingRelation(relationId: string, changeReason: string, now: IsoUtc): Promise<boolean>;
 }
 
 export interface BriefCandidate extends EventSummary {
@@ -340,6 +410,9 @@ export type AdminEventPatch = Partial<
 		| 'countries'
 		| 'tags'
 		| 'occurred_at'
+		// CONTRACT-CHANGE (auto-publish wave): admin override of the public label.
+		| 'credibility_level'
+		| 'credibility_reason_th'
 	>
 >;
 
@@ -372,7 +445,10 @@ export interface AdminRepository {
 		expectedUpdatedAt: IsoUtc,
 		patch: AdminEventPatch,
 		meta: RevisionMeta,
-		now: IsoUtc
+		now: IsoUtc,
+		// CONTRACT-CHANGE (auto-publish wave): `releaseCredibility` ends an admin credibility
+		// override (the editor's "อัตโนมัติ" option); the revision is written even with an empty patch.
+		options?: { releaseCredibility?: boolean }
 	): Promise<AdminTransitionResult>;
 	/** Published relations, newest first (the admin "unpublish" list). */
 	listPublishedRelations(limit: number): Promise<AdminRelationRow[]>;
@@ -454,4 +530,5 @@ export interface Repositories {
 	llmCalls: LlmCallRepository;
 	academy: AcademyCatalogRepository;
 	admin: AdminRepository;
+	reevaluation: ReevaluationRepository;
 }

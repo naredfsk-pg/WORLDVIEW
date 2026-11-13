@@ -10,6 +10,7 @@ import type {
 	BriefDate,
 	CategorySlug,
 	CountryCode,
+	CredibilityLevel,
 	IsoUtc,
 	RegionSlug,
 	RelationType,
@@ -124,6 +125,11 @@ export interface SummaryOutput {
 	// CONTRACT-CHANGE (Wave 3 review, summary@4): the refs (a subset of `previous.new_refs`) the
 	// update line is based on; its only evidence. Empty or not a subset → no timeline row.
 	update_refs: string[];
+	// CONTRACT-CHANGE (auto-publish wave, summary@5): the model's credibility assessment of the
+	// claims (never the outlet). Lenient: an invalid value becomes 'none' / null. The stored label
+	// adds the deterministic floor (`assessCredibility`); a reason failing the checks is dropped.
+	credibility_level: CredibilityLevel;
+	credibility_reason_th: string | null;
 }
 
 export interface RelationsInput {

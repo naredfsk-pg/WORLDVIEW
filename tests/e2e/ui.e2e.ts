@@ -188,6 +188,80 @@ test.describe('events', () => {
 	});
 });
 
+test.describe('credibility labels', () => {
+	const LABELLED = [
+		{
+			id: 'demo-evt-04',
+			level: 'disputed',
+			text: 'ข้อมูลขัดแย้งกัน',
+			reason: 'รายงานตัวเลขค่าระวางเรือไม่ตรงกัน'
+		},
+		{
+			id: 'demo-evt-05',
+			level: 'unverified',
+			text: 'ยังไม่ได้รับการยืนยัน',
+			reason: 'ยังไม่มีแหล่งอื่นยืนยัน'
+		}
+	];
+
+	for (const event of LABELLED) {
+		test(`${event.id} shows the ${event.level} label, its reason and the explainer`, async ({
+			page
+		}) => {
+			await page.goto(`/events/${event.id}`);
+			const header = page.getByTestId('event-detail').locator('header');
+			const label = header.getByTestId('credibility-label');
+			await expect(label).toHaveAttribute('data-level', event.level);
+			await expect(label).toHaveText(event.text);
+			await expect(header.getByTestId('credibility-reason')).toContainText(event.reason);
+
+			// Native <details>: closed by default, opens on click without any script.
+			const explainer = header.getByTestId('credibility-explainer');
+			await expect(explainer.locator('p')).toBeHidden();
+			await explainer.getByText('ป้ายนี้หมายถึงอะไร').click();
+			await expect(explainer).toHaveAttribute('open', '');
+			await expect(explainer.locator('p')).toContainText('ไม่ใช่การประเมินสำนักข่าว');
+			// Shared links (SEO / OG description) carry the label too.
+			await expect(page.locator('meta[name="description"]')).toHaveAttribute(
+				'content',
+				new RegExp(`^${event.text} · `)
+			);
+		});
+	}
+
+	test('an event without a label shows no badge and no explainer', async ({ page }) => {
+		await page.goto('/events/demo-evt-01');
+		const header = page.getByTestId('event-detail').locator('header');
+		await expect(header.getByTestId('credibility-label')).toHaveCount(0);
+		await expect(header.getByTestId('credibility-note')).toHaveCount(0);
+		await expect(page.locator('meta[name="description"]')).not.toHaveAttribute(
+			'content',
+			/ยังไม่ได้รับการยืนยัน|ข้อมูลขัดแย้งกัน|อาจเป็นข้อมูลเท็จ/
+		);
+	});
+
+	test('story cards on Today and the brief carry the label', async ({ page }) => {
+		for (const path of ['/', '/brief']) {
+			await page.goto(path);
+			const card = page.locator(
+				'a[href="/events/demo-evt-04"]:is([data-testid="story-card"], [data-testid="featured-story"])'
+			);
+			await expect(card.first().getByTestId('credibility-label'), path).toHaveText('ข้อมูลขัดแย้งกัน');
+		}
+	});
+
+	for (const colorScheme of ['light', 'dark'] as const) {
+		test(`the open explainer fits a 320px screen (${colorScheme})`, async ({ page }) => {
+			await page.setViewportSize({ width: 320, height: 720 });
+			await page.emulateMedia({ colorScheme });
+			await page.goto('/events/demo-evt-04');
+			await page.getByText('ป้ายนี้หมายถึงอะไร').click();
+			await expect(page.getByTestId('credibility-explainer')).toHaveAttribute('open', '');
+			await expectNoHorizontalOverflow(page);
+		});
+	}
+});
+
 test.describe('briefs', () => {
 	test('/brief redirects to the latest brief', async ({ page }) => {
 		await page.goto('/brief');

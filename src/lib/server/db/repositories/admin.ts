@@ -3,7 +3,7 @@
  * row in the same transaction (audit trail, PRD §9.2). Callers run the admin publish gate first.
  */
 import { randomUUID } from 'node:crypto';
-import { and, asc, count, desc, eq, gte, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import type {
 	EventStatus,
@@ -37,10 +37,12 @@ import {
 	llmCalls,
 	sources
 } from '../schema';
-import { SYSTEM_ACTOR } from './digest';
 import { selectEventSources } from './public-read';
 import {
+	byAdmin,
+	CREDIBILITY_RELEASE_KEY,
 	EntityNotFoundError,
+	SYSTEM_ACTOR,
 	evidenceUrls,
 	loadEvidenceUrls,
 	toJsonObject,
@@ -103,20 +105,29 @@ export function createAdminRepository(db: Db): AdminRepository {
 			});
 		},
 
-		async updateEventIfCurrent(id, expectedUpdatedAt, patch, meta, now) {
+		async updateEventIfCurrent(id, expectedUpdatedAt, patch, meta, now, options = {}) {
 			return db.transaction((tx): AdminTransitionResult => {
 				const before = tx.select().from(events).where(eq(events.id, id)).get();
 				if (!before) return { ok: false, error: 'not_found' };
 				if (before.updated_at !== expectedUpdatedAt) return { ok: false, error: 'conflict' };
 
+				const release = options.releaseCredibility === true;
 				const keys = Object.keys(patch) as (keyof AdminEventPatch)[];
-				if (keys.length === 0) return { ok: true };
+				if (keys.length === 0 && !release) return { ok: true };
 				tx.update(events)
 					.set({ ...patch, updated_at: now })
 					.where(eq(events.id, id))
 					.run();
-				const previous = Object.fromEntries(keys.map((key) => [key, before[key]]));
-				appendRevision(tx, 'event', id, meta, now, toJsonObject(previous), toJsonObject(patch));
+				// A release keeps the current label until the next re-summary recomputes it; the
+				// revision records the label it hands back.
+				const previous = Object.fromEntries(
+					[
+						...keys,
+						...(release ? (['credibility_level', 'credibility_reason_th'] as const) : [])
+					].map((key) => [key, before[key]])
+				);
+				const after = release ? { ...patch, [CREDIBILITY_RELEASE_KEY]: true } : patch;
+				appendRevision(tx, 'event', id, meta, now, toJsonObject(previous), toJsonObject(after));
 				return { ok: true };
 			});
 		},
@@ -291,6 +302,7 @@ export function createAdminRepository(db: Db): AdminRepository {
 					.where(eq(eventRelations.id, id))
 					.run();
 				appendRevision(tx, 'event_relation', id, meta, now, { status: before.status }, { status });
+				if (status === 'rejected') rejectUnreviewedSiblings(tx, before, meta, now);
 				return { ok: true };
 			});
 		},
@@ -439,7 +451,8 @@ function selectReviewEvents(
 		fallback_title: selectEventSources(tx, row.id)[0]?.title ?? '',
 		category: row.category,
 		source_count: row.source_count,
-		last_updated_at: row.last_updated_at
+		last_updated_at: row.last_updated_at,
+		credibility_level: row.credibility_level
 	}));
 }
 
@@ -486,6 +499,53 @@ function toRelationEndpoint(row: EventRow): AdminRelationEndpoint {
 	return { id: row.id, title_th: row.title_th, status: row.status, category: row.category };
 }
 
+/**
+ * A rejection blocks the pair for every type in both directions, so the pair's other relations
+ * that no admin reviewed (auto-published or pending) are rejected with it, each with a revision.
+ * Relations an admin approved stay as the admin decided.
+ */
+function rejectUnreviewedSiblings(
+	tx: Executor,
+	rejected: typeof eventRelations.$inferSelect,
+	meta: RevisionMeta,
+	now: string
+): void {
+	const { from_event_id: a, to_event_id: b } = rejected;
+	const siblings = tx
+		.select({ id: eventRelations.id, status: eventRelations.status })
+		.from(eventRelations)
+		.where(
+			and(
+				ne(eventRelations.id, rejected.id),
+				isNull(eventRelations.reviewed_at),
+				ne(eventRelations.status, 'rejected'),
+				or(
+					and(eq(eventRelations.from_event_id, a), eq(eventRelations.to_event_id, b)),
+					and(eq(eventRelations.from_event_id, b), eq(eventRelations.to_event_id, a))
+				)
+			)
+		)
+		.all();
+	for (const sibling of siblings) {
+		tx.update(eventRelations)
+			.set({ status: 'rejected', reviewed_at: now, reviewed_by: meta.changed_by })
+			.where(eq(eventRelations.id, sibling.id))
+			.run();
+		appendRevision(
+			tx,
+			'event_relation',
+			sibling.id,
+			{
+				...meta,
+				change_reason: `${meta.change_reason} (same pair as rejected relation ${rejected.id})`
+			},
+			now,
+			{ status: sibling.status },
+			{ status: 'rejected' }
+		);
+	}
+}
+
 /** An admin revision of the event changed its tags (admin-edited tags are never filtered). */
 function hasAdminEditedTags(tx: Executor, eventId: string): boolean {
 	const row = tx
@@ -495,7 +555,7 @@ function hasAdminEditedTags(tx: Executor, eventId: string): boolean {
 			and(
 				eq(contentRevisions.entity_type, 'event'),
 				eq(contentRevisions.entity_id, eventId),
-				ne(contentRevisions.changed_by, SYSTEM_ACTOR),
+				byAdmin(),
 				sql`json_extract(${contentRevisions.before_after}, '$.after.tags') IS NOT NULL`
 			)
 		)

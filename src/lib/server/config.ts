@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { AUTO_PUBLISH_POLICIES } from '../types/editorial';
+import {
+	AUTO_PUBLISH_POLICIES,
+	DEFAULT_RELATION_AUTO_PUBLISH_MIN_CONFIDENCE
+} from '../types/editorial';
 
 /**
  * Server-only application config, parsed from environment variables with Zod.
@@ -143,6 +146,14 @@ const envSchema = z.object({
 	// to an admin; `multi_source` auto-publishes only events reported by ≥ 2 registry sources;
 	// `all` auto-publishes whatever passes the gates. Admin publish is never affected.
 	EDITORIAL_AUTO_PUBLISH: z.enum(AUTO_PUBLISH_POLICIES).default('off'),
+	// Only with `all`: a validated AI relation at or above this confidence is published, one below
+	// it is dropped (ARCHITECTURE §11). 0.8 = CLUSTERING_MERGE_MIN_CONFIDENCE, the other "confident
+	// model decision that changes public content" threshold.
+	RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE: z.coerce
+		.number()
+		.min(0)
+		.max(1)
+		.default(DEFAULT_RELATION_AUTO_PUBLISH_MIN_CONFIDENCE),
 	// New articles one source may add per ingest run (ARCHITECTURE §9).
 	INGEST_MAX_NEW_ITEMS_PER_SOURCE: positiveInt(40),
 
@@ -276,7 +287,8 @@ function toAppConfig(env: z.infer<typeof envSchema>, rawNodeEnv: string | undefi
 			maxRequestsPerRun: env.LLM_MAX_REQUESTS_PER_RUN
 		},
 		editorial: {
-			autoPublish: env.EDITORIAL_AUTO_PUBLISH
+			autoPublish: env.EDITORIAL_AUTO_PUBLISH,
+			relationsMinConfidence: env.RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE
 		},
 		ingest: {
 			maxNewItemsPerSource: env.INGEST_MAX_NEW_ITEMS_PER_SOURCE

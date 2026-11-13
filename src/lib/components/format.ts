@@ -18,6 +18,7 @@ import {
 } from '../types/domain';
 import { DEFAULT_TIMEZONE, formatThaiDate, formatThaiTime } from '../utils/date';
 
+export { CREDIBILITY_LABEL_TH } from '../types/domain';
 export { formatThaiDate, formatThaiTime, isBriefDate, isYearMonth, monthOf } from '../utils/date';
 export { parseCategory, parseEdition, parsePageNumber } from '../utils/params';
 export { isHttpUrl } from '../utils/url';

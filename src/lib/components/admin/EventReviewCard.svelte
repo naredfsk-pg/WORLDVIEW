@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import CredibilityLabel from '#lib/components/CredibilityLabel.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { categoryLabel, formatThaiDateTimeShort } from '#lib/components/format.js';
 	import type { AdminEventRow } from '#lib/types/views.js';
@@ -26,6 +27,7 @@
 		<span>{event.source_count} แหล่งข่าว</span>
 		<span aria-hidden="true">·</span>
 		<span>อัปเดต {formatThaiDateTimeShort(event.last_updated_at)}</span>
+		<CredibilityLabel level={event.credibility_level} />
 	</div>
 	<h3 class="mt-0 mb-2 text-[15px] leading-snug font-bold break-words">
 		<a href={resolve('/admin/events/[id]', { id: event.id })} class="hover:text-primary">{title}</a>

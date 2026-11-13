@@ -15,6 +15,7 @@ import type {
 	EventRelation,
 	RegionSlug,
 	ReviewReason,
+	ShownCredibilityLevel,
 	Tag
 } from '../../../types/domain';
 import type { SourceDefinition } from '../../../types/news';
@@ -69,6 +70,8 @@ export interface DemoEvent {
 	updates: { id: string; reported_at: string; update_text_th: string; article_ids: string[] }[];
 	/** Links to lessons missing from the catalog are skipped by the seed with a warning. */
 	lessons: { lesson_id: string; rationale_th: string }[];
+	/** Public credibility label (ARCHITECTURE §11); omitted → 'none'. */
+	credibility?: { level: ShownCredibilityLevel; reason_th: string | null };
 }
 
 function article(id: string, wire: 'a' | 'b' | 'c', title: string, at: string): DemoArticle {
@@ -194,6 +197,10 @@ export const DEMO_EVENTS: DemoEvent[] = [
 			article('demo-art-04a', 'a', 'ค่าระวางเรือขนส่งพลังงานปรับตัว', '2026-11-13 06:10'),
 			article('demo-art-04b', 'c', 'ผู้นำเข้าน้ำมันจับตาเส้นทางเดินเรือ', '2026-11-13 06:30')
 		],
+		credibility: {
+			level: 'disputed',
+			reason_th: 'แหล่งข่าวสมมติสองแห่งรายงานตัวเลขค่าระวางเรือไม่ตรงกัน (ข้อมูลตัวอย่าง)'
+		},
 		updates: [
 			{
 				id: 'demo-upd-04-1',
@@ -226,6 +233,10 @@ export const DEMO_EVENTS: DemoEvent[] = [
 		occurred_at: null,
 		// Single source on purpose: the UI must show "มีแหล่งข่าวเดียว".
 		articles: [article('demo-art-05a', 'b', 'รายงานสมมติชี้สัดส่วนผู้สูงอายุเพิ่มขึ้น', '2026-11-13 01:30')],
+		credibility: {
+			level: 'unverified',
+			reason_th: 'ตัวเลขมาจากรายงานสมมติฉบับเดียว ยังไม่มีแหล่งอื่นยืนยัน (ข้อมูลตัวอย่าง)'
+		},
 		updates: [],
 		lessons: [{ lesson_id: 'w4-d25', rationale_th: 'อธิบายผลของโลกสูงวัยต่อเศรษฐกิจและสังคม' }]
 	},
@@ -434,7 +445,7 @@ export const DEMO_EVENTS: DemoEvent[] = [
 	}
 ];
 
-export type DemoRelation = Omit<EventRelation, 'evidence_refs'> & {
+export type DemoRelation = Omit<EventRelation, 'evidence_refs' | 'origin'> & {
 	evidence_article_ids: string[];
 };
 

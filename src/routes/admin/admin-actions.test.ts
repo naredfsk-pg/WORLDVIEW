@@ -219,6 +219,8 @@ describe('event edit (save)', () => {
 		background_th: '',
 		uncertain_th: 'ยังไม่ทราบตัวเลขที่แน่ชัด',
 		category: 'geopolitics',
+		credibility_level: 'none',
+		credibility_reason_th: '',
 		change_reason: 'ปรับถ้อยคำ',
 		public_note_th: 'แก้ไขหัวข้อให้ชัดเจนขึ้น'
 	};
@@ -229,7 +231,9 @@ describe('event edit (save)', () => {
 		'why_it_matters_th',
 		'background_th',
 		'uncertain_th',
-		'category'
+		'category',
+		'credibility_level',
+		'credibility_reason_th'
 	] as const;
 
 	/** The hidden fields the edit page renders: version token + the values it was loaded with. */
@@ -355,10 +359,125 @@ describe('event edit (save)', () => {
 			background_th: current.background_th ?? '',
 			uncertain_th: current.uncertain_th ?? '',
 			category: current.category ?? '',
+			credibility_level: current.credibility_level,
+			credibility_reason_th: current.credibility_reason_th ?? '',
 			change_reason: 'ไม่ได้แก้อะไร'
 		});
 		expect(result).toMatchObject({ status: 400, data: { message: 'ไม่มีข้อมูลที่เปลี่ยนแปลง' } });
 		expect(revisionsFor('demo-evt-13')).toHaveLength(0);
+	});
+
+	describe('credibility override', () => {
+		const unchanged = () => {
+			const row = eventRow('demo-evt-13');
+			return Object.fromEntries(EDITABLE.map((name) => [name, row[name] ?? ''])) as Record<
+				string,
+				string
+			>;
+		};
+		const reason = 'ตัวเลขในรายงานแต่ละแหล่งยังไม่ตรงกัน';
+
+		it('sets the level and reason together in one admin revision', async () => {
+			const result = await save({
+				...unchanged(),
+				credibility_level: 'disputed',
+				credibility_reason_th: reason,
+				change_reason: 'ปรับป้ายความน่าเชื่อถือ'
+			});
+
+			expect(result).toMatchObject({ ok: true });
+			expect(eventRow('demo-evt-13')).toMatchObject({
+				credibility_level: 'disputed',
+				credibility_reason_th: reason
+			});
+			const revision = revisionsFor('demo-evt-13')[0]!;
+			expect(revision.changed_by).toBe(ADMIN.email);
+			expect(revision.before_after).toEqual({
+				before: { credibility_level: 'none', credibility_reason_th: null },
+				after: { credibility_level: 'disputed', credibility_reason_th: reason }
+			});
+		});
+
+		it('a level-only change writes both keys, and removing the label clears the reason', async () => {
+			await save({
+				...unchanged(),
+				credibility_level: 'unverified',
+				credibility_reason_th: reason,
+				change_reason: 'ตั้งป้าย'
+			});
+			const result = await save(
+				{ ...unchanged(), credibility_level: 'none', change_reason: 'เอาป้ายออก' },
+				loadedFields()
+			);
+
+			expect(result).toMatchObject({ ok: true });
+			expect(eventRow('demo-evt-13')).toMatchObject({
+				credibility_level: 'none',
+				credibility_reason_th: null
+			});
+			expect(Object.keys(revisionsFor('demo-evt-13')[0]!.before_after.after ?? {}).sort()).toEqual([
+				'credibility_level',
+				'credibility_reason_th'
+			]);
+		});
+
+		it('"อัตโนมัติ" ends the override with a release revision and keeps the stored label', async () => {
+			await save({
+				...unchanged(),
+				credibility_level: 'disputed',
+				credibility_reason_th: reason,
+				change_reason: 'ตั้งป้าย'
+			});
+			const result = await save(
+				{ ...unchanged(), credibility_level: 'auto', change_reason: 'ให้ระบบประเมินเอง' },
+				loadedFields()
+			);
+
+			expect(result).toMatchObject({ ok: true });
+			expect(eventRow('demo-evt-13')).toMatchObject({
+				credibility_level: 'disputed',
+				credibility_reason_th: reason
+			});
+			const release = revisionsFor('demo-evt-13').find(
+				(row) => row.before_after.after?.credibility_release === true
+			);
+			expect(release).toMatchObject({
+				changed_by: ADMIN.email,
+				change_reason: 'ให้ระบบประเมินเอง',
+				before_after: {
+					before: { credibility_level: 'disputed', credibility_reason_th: reason },
+					after: { credibility_release: true }
+				}
+			});
+		});
+
+		it.each([
+			[
+				'a URL in the reason',
+				{ credibility_reason_th: 'ดูที่ evil.example.com' },
+				'credibility_reason_th'
+			],
+			[
+				'contact details in the reason',
+				{ credibility_reason_th: 'โทร 081-234-5678' },
+				'credibility_reason_th'
+			],
+			['a reason without Thai', { credibility_reason_th: 'not verified' }, 'credibility_reason_th'],
+			['a too long reason', { credibility_reason_th: 'ก'.repeat(301) }, 'credibility_reason_th'],
+			['an unknown level', { credibility_level: 'fake' }, 'credibility_level']
+		])('rejects %s with a field error', async (_name, overrides, field) => {
+			const result = await save({
+				...unchanged(),
+				credibility_level: 'unverified',
+				...overrides,
+				change_reason: 'ตั้งป้าย'
+			});
+
+			expect(result).toMatchObject({ status: 400, data: { ok: false } });
+			const data = (result as { data: { field_errors: Record<string, string> } }).data;
+			expect(data.field_errors[field]).toBeTruthy();
+			expect(revisionsFor('demo-evt-13')).toHaveLength(0);
+		});
 	});
 });
 

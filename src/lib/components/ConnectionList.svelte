@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import Sparkles from '@lucide/svelte/icons/sparkles';
+	import CredibilityLabel from '#lib/components/CredibilityLabel.svelte';
 	import EvidenceLinks from '#lib/components/EvidenceLinks.svelte';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { categoryLabel, formatThaiDate, RELATION_LABEL_TH } from '#lib/components/format.js';
@@ -29,6 +31,7 @@
 				{event.title_th}
 			</a>
 		{/if}
+		<CredibilityLabel level={event.credibility_level} class="mt-1.5" />
 	</span>
 {/snippet}
 
@@ -62,6 +65,15 @@
 			{/if}
 			<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-muted-foreground">
 				<EvidenceLinks urls={relation.evidence_source_urls} />
+				<!-- Relations are published automatically by AI confidence, so every one says so. -->
+				<Badge
+					variant="outline"
+					class="h-auto rounded-md px-2 py-0.5 text-meta text-muted-foreground"
+					data-testid="relation-ai-label"
+				>
+					<Sparkles aria-hidden="true" strokeWidth={2} />
+					AI วิเคราะห์ความเชื่อมโยง
+				</Badge>
 				{#if relation.reviewed}
 					<Badge
 						variant="outline"

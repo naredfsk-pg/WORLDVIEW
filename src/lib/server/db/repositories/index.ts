@@ -13,6 +13,7 @@ import { createIngestRepository } from './ingest';
 import { createJobRunRepository } from './job-runs';
 import { createLlmCallRepository } from './llm-calls';
 import { createPublicReadRepository } from './public-read';
+import { createReevaluationRepository } from './reevaluation';
 
 export { EntityNotFoundError } from './shared';
 
@@ -32,6 +33,7 @@ export function createRepositories(db: Db): Repositories {
 		jobs: createJobRunRepository(db),
 		llmCalls: createLlmCallRepository(db),
 		academy: createAcademyCatalogRepository(db),
-		admin: createAdminRepository(db)
+		admin: createAdminRepository(db),
+		reevaluation: createReevaluationRepository(db)
 	};
 }

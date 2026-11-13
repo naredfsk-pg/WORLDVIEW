@@ -45,10 +45,17 @@ import {
 	events,
 	sources
 } from '../schema';
-import { EntityNotFoundError, isPublicEvent, toJsonObject, type Executor } from './shared';
+import {
+	byAdmin,
+	CREDIBILITY_RELEASE_KEY,
+	EntityNotFoundError,
+	isPublicEvent,
+	SYSTEM_ACTOR,
+	toJsonObject,
+	type Executor
+} from './shared';
 
-/** `content_revisions.changed_by` of pipeline changes; every other actor is an admin email. */
-export const SYSTEM_ACTOR = 'system';
+export { SYSTEM_ACTOR } from './shared';
 /** Events read before the source round-robin picks `limit` of them (newest evidence first). */
 const CONTENT_CANDIDATE_POOL = 500;
 
@@ -447,7 +454,8 @@ export function createDigestRepository(db: Db): DigestRepository {
 							explanation_th: relation.explanation_th,
 							evidence_refs: relation.evidence_article_ids.map((article_id) => ({ article_id })),
 							status: 'pending_review',
-							confidence: relation.confidence
+							confidence: relation.confidence,
+							origin: 'possible_duplicate'
 						},
 						now
 					);
@@ -496,7 +504,9 @@ export function createDigestRepository(db: Db): DigestRepository {
 
 		async upsertRelation(relation) {
 			// CONTRACT-GAP: upsertRelation has no `now` parameter, so the clock is read here.
-			return db.transaction((tx) => upsertRelationRow(tx, relation, new Date().toISOString()));
+			return db.transaction((tx) =>
+				upsertRelationRow(tx, { ...relation, origin: 'relations' }, new Date().toISOString())
+			);
 		},
 
 		async replaceLessonLinks(eventId, links) {
@@ -534,7 +544,9 @@ export function createDigestRepository(db: Db): DigestRepository {
 /**
  * Upsert on (from, to, type); never overwrites an admin decision (`reviewed_at` set), and stores
  * nothing for a pair of events an admin rejected a relation between, in either direction and of
- * any type. Returns whether a row was written.
+ * any type. A relations-task row never overwrites a pending `possible_duplicate` row of the same
+ * edge (that one waits for an admin); a possible-duplicate flag takes the edge over. Returns
+ * whether a row was written.
  */
 function upsertRelationRow(
 	executor: Executor,
@@ -570,16 +582,20 @@ function upsertRelationRow(
 				explanation_th: relation.explanation_th,
 				evidence_refs: relation.evidence_refs,
 				status: relation.status,
-				confidence: relation.confidence
+				confidence: relation.confidence,
+				origin: relation.origin
 			},
-			setWhere: isNull(eventRelations.reviewed_at)
+			setWhere:
+				relation.origin === 'possible_duplicate'
+					? isNull(eventRelations.reviewed_at)
+					: and(isNull(eventRelations.reviewed_at), ne(eventRelations.origin, 'possible_duplicate'))
 		})
 		.run();
 	return result.changes > 0;
 }
 
 /** An admin rejected a relation between these two events (either direction, any type). */
-function isRejectedPair(executor: Executor, eventA: string, eventB: string): boolean {
+export function isRejectedPair(executor: Executor, eventA: string, eventB: string): boolean {
 	const row = executor
 		.select({ id: eventRelations.id })
 		.from(eventRelations)
@@ -722,9 +738,10 @@ function insertEventArticles(
  * Content fields an admin ever changed on this event: the `after` keys of every event revision
  * whose actor is not the pipeline. All of them, not only those newer than `summarized_at`: once
  * a re-summary kept an admin field, `summarized_at` moves past the edit, and the next re-summary
- * must still keep it.
+ * must still keep it. In order: a later revision marked `CREDIBILITY_RELEASE_KEY` (the editor's
+ * "อัตโนมัติ" option) hands the credibility label back to the pipeline.
  */
-function adminEditedContentFields(tx: Executor, eventId: string): Set<string> {
+export function adminEditedContentFields(tx: Executor, eventId: string): Set<string> {
 	const rows = tx
 		.select({ before_after: contentRevisions.before_after })
 		.from(contentRevisions)
@@ -732,13 +749,19 @@ function adminEditedContentFields(tx: Executor, eventId: string): Set<string> {
 			and(
 				eq(contentRevisions.entity_type, 'event'),
 				eq(contentRevisions.entity_id, eventId),
-				ne(contentRevisions.changed_by, SYSTEM_ACTOR)
+				byAdmin()
 			)
 		)
+		.orderBy(asc(contentRevisions.changed_at), asc(contentRevisions.id))
 		.all();
 	const fields = new Set<string>();
 	for (const row of rows) {
-		for (const key of Object.keys(row.before_after.after ?? {})) {
+		const after = row.before_after.after ?? {};
+		if (after[CREDIBILITY_RELEASE_KEY] === true) {
+			fields.delete('credibility_level');
+			fields.delete('credibility_reason_th');
+		}
+		for (const key of Object.keys(after)) {
 			if (CONTENT_FIELD_KEYS.has(key)) fields.add(key);
 		}
 	}
@@ -787,7 +810,7 @@ function hasAdminRevision(tx: Executor, eventId: string): boolean {
 			and(
 				eq(contentRevisions.entity_type, 'event'),
 				eq(contentRevisions.entity_id, eventId),
-				ne(contentRevisions.changed_by, SYSTEM_ACTOR)
+				byAdmin()
 			)
 		)
 		.get();
@@ -812,7 +835,9 @@ const CONTENT_FIELD_KEYS: ReadonlySet<string> = new Set([
 	'countries',
 	'tags',
 	'signals',
-	'occurred_at'
+	'occurred_at',
+	'credibility_level',
+	'credibility_reason_th'
 ]);
 
 function pickContentFields(source: EventContentWrite | typeof events.$inferSelect) {
@@ -829,11 +854,16 @@ function pickContentFields(source: EventContentWrite | typeof events.$inferSelec
 		countries: source.countries,
 		tags: source.tags,
 		signals: source.signals,
-		occurred_at: source.occurred_at
+		occurred_at: source.occurred_at,
+		credibility_level: source.credibility_level,
+		credibility_reason_th: source.credibility_reason_th
 	};
 }
 
-function withArticles(tx: Executor, rows: (typeof events.$inferSelect)[]): EventWithArticles[] {
+export function withArticles(
+	tx: Executor,
+	rows: (typeof events.$inferSelect)[]
+): EventWithArticles[] {
 	const articlesByEvent = loadArticlesByEvent(
 		tx,
 		rows.map((row) => row.id)

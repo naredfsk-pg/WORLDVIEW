@@ -194,6 +194,8 @@ function buildDemoRows(lessonIds: Set<string>) {
 			tags: event.tags,
 			signals: event.signals,
 			occurred_at: event.occurred_at,
+			credibility_level: event.credibility?.level ?? 'none',
+			credibility_reason_th: event.credibility?.reason_th ?? null,
 			...facts,
 			published_at: publishedAt,
 			summarized_at: summarizedAt,

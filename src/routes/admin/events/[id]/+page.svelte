@@ -1,7 +1,10 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import ActionNotice from '#lib/components/admin/ActionNotice.svelte';
-	import { EVENT_STATUS_LABEL_TH } from '#lib/components/admin/admin-labels.js';
+	import {
+		CREDIBILITY_OPTION_LABEL_TH,
+		EVENT_STATUS_LABEL_TH
+	} from '#lib/components/admin/admin-labels.js';
 	import ReasonField from '#lib/components/admin/ReasonField.svelte';
 	import ReviewReasons from '#lib/components/admin/ReviewReasons.svelte';
 	import {
@@ -13,7 +16,7 @@
 	import PageIntro from '#lib/components/PageIntro.svelte';
 	import SeoHead from '#lib/components/SeoHead.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
-	import { CATEGORY_SLUGS } from '#lib/types/domain.js';
+	import { CATEGORY_SLUGS, CREDIBILITY_LEVELS } from '#lib/types/domain.js';
 	import type { PageProps } from './$types';
 
 	let { data, form }: PageProps = $props();
@@ -33,8 +36,17 @@
 		{ name: 'uncertain_th', label: 'สิ่งที่ยังไม่ชัดเจน (ไม่บังคับ)', max: 1500, rows: 3, required: false }
 	] as const;
 
-	type EditableName = (typeof textFields)[number]['name'] | 'category';
-	const editableNames: EditableName[] = [...textFields.map((field) => field.name), 'category'];
+	type EditableName =
+		| (typeof textFields)[number]['name']
+		| 'category'
+		| 'credibility_level'
+		| 'credibility_reason_th';
+	const editableNames: EditableName[] = [
+		...textFields.map((field) => field.name),
+		'category',
+		'credibility_level',
+		'credibility_reason_th'
+	];
 
 	function valueOf(name: EditableName): string {
 		return submitted?.[name] ?? event[name] ?? '';
@@ -71,6 +83,13 @@
 				สถานะ: <span data-testid="event-status">{EVENT_STATUS_LABEL_TH[event.status]}</span>
 			</h2>
 			<div class="mb-3"><ReviewReasons reasons={event.review_reasons} /></div>
+			<p class="mt-0 mb-3 text-[12px] break-words" data-testid="event-credibility">
+				ป้ายความน่าเชื่อถือ:
+				<span class="font-bold">{CREDIBILITY_OPTION_LABEL_TH[event.credibility_level]}</span>
+				{#if event.credibility_reason_th}
+					<span class="text-muted-foreground">— {event.credibility_reason_th}</span>
+				{/if}
+			</p>
 			{#if event.status === 'published'}
 				<p class="mt-0 mb-3 text-[12px]">
 					<a
@@ -168,6 +187,62 @@
 						>
 					{/if}
 				</label>
+
+				<fieldset class="m-0 flex min-w-0 flex-col gap-3 rounded-xl border p-3">
+					<legend class="px-1 text-[13px] font-bold">ป้ายความน่าเชื่อถือ (แสดงต่อสาธารณะ)</legend>
+					<p class="m-0 text-[12px] text-muted-foreground">
+						ป้ายอธิบายคำกล่าวอ้างในเรื่องนี้ ไม่ใช่การประเมินสำนักข่าว
+					</p>
+					<label class="flex flex-col gap-1 text-[13px] font-semibold">
+						ระดับป้าย
+						<select
+							name="credibility_level"
+							aria-invalid={fieldErrors.credibility_level ? 'true' : undefined}
+							class="min-h-10 w-full min-w-0 rounded-lg border bg-background px-3 text-[14px] font-normal"
+						>
+							{#each CREDIBILITY_LEVELS as level (level)}
+								<option value={level} selected={valueOf('credibility_level') === level}
+									>{CREDIBILITY_OPTION_LABEL_TH[level]}</option
+								>
+							{/each}
+							<!-- Ends a manual override: the next re-summary sets the label again. -->
+							<option value="auto" selected={valueOf('credibility_level') === 'auto'}
+								>อัตโนมัติ (ให้ระบบประเมิน)</option
+							>
+						</select>
+						<span class="text-[12px] font-normal text-muted-foreground">
+							ระดับที่เลือกเองจะคงอยู่แม้ระบบสรุปข่าวใหม่ เลือก “อัตโนมัติ” เพื่อให้ระบบประเมินป้ายอีกครั้งในการสรุปครั้งถัดไป
+						</span>
+						{#if fieldErrors.credibility_level}
+							<span class="text-[12px] font-normal text-gold" role="alert"
+								>{fieldErrors.credibility_level}</span
+							>
+						{/if}
+					</label>
+					<label class="flex flex-col gap-1 text-[13px] font-semibold">
+						เหตุผลของป้าย (ไม่บังคับ)
+						<textarea
+							name="credibility_reason_th"
+							rows="2"
+							maxlength="300"
+							aria-describedby="credibility-reason-hint"
+							aria-invalid={fieldErrors.credibility_reason_th ? 'true' : undefined}
+							class="w-full min-w-0 rounded-lg border bg-background px-3 py-2 text-[14px] leading-relaxed font-normal"
+							>{valueOf('credibility_reason_th')}</textarea
+						>
+						<span
+							id="credibility-reason-hint"
+							class="text-[12px] font-normal text-muted-foreground"
+						>
+							ภาษาไทยหนึ่งประโยคที่เป็นกลาง ไม่ใส่ลิงก์หรือช่องทางติดต่อ (ไม่เกิน 300 ตัวอักษร)
+						</span>
+						{#if fieldErrors.credibility_reason_th}
+							<span class="text-[12px] font-normal text-gold" role="alert"
+								>{fieldErrors.credibility_reason_th}</span
+							>
+						{/if}
+					</label>
+				</fieldset>
 
 				<div
 					class="flex flex-col gap-3 rounded-xl border bg-surface-2 p-3 sm:flex-row sm:items-end"

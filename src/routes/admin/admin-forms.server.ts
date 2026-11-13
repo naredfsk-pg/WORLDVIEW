@@ -7,7 +7,7 @@
 import { error, fail, type RequestEvent } from '@sveltejs/kit';
 import { z } from 'zod';
 import { getRepositories } from '#lib/server/db/repositories/index.js';
-import { evaluateEventForPublish, filterAllegationTags } from '#lib/server/editorial/index.js';
+import { filterAllegationTags, storedEventGateReasons } from '#lib/server/editorial/index.js';
 import type { ReviewReason } from '#lib/types/domain.js';
 import type {
 	AdminRepository,
@@ -57,38 +57,15 @@ export function revisionMeta(admin: AdminIdentity, reason: string): RevisionMeta
 	return { changed_by: admin.email, change_reason: reason, public_note_th: null };
 }
 
-/** Admin publish runs only the hard gates G1–G3 (ARCHITECTURE §11) on the stored row. */
+/**
+ * Admin publish runs only the hard gates G1–G3 (ARCHITECTURE §11) on the stored row, including
+ * the public credibility reason.
+ */
 export function adminPublishGate({
 	event,
 	articles
 }: Pick<EventWithArticles, 'event' | 'articles'>): ReviewReason[] {
-	return evaluateEventForPublish({
-		mode: 'admin',
-		articles,
-		ref_to_article_id: {},
-		extraction: null,
-		summary: {
-			title_th: event.title_th,
-			summary_th: event.summary_th,
-			what_happened_th: event.what_happened_th,
-			why_it_matters_th: event.why_it_matters_th,
-			background_th: event.background_th,
-			uncertain_th: event.uncertain_th,
-			claims_th: event.claims.map((claim) => ({
-				claimant_th: claim.claimant_th,
-				claim_th: claim.claim_th,
-				evidence: []
-			})),
-			impact_breadth: 0,
-			thailand_relevance: 0,
-			cited_refs: [],
-			update_th: null,
-			update_refs: []
-		},
-		signals: event.signals,
-		category: event.category,
-		current_status: event.status
-	}).review_reasons;
+	return storedEventGateReasons(event, articles);
 }
 
 /** Maps a repository transition result to action data (`fail` for every error). */

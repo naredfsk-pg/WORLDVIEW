@@ -31,6 +31,7 @@ import {
 } from '../schema';
 import type { Db } from '../client';
 import { searchEvents, searchLessons } from './search';
+import { keepMisinformationOutOfTopRanks } from '../../../utils/brief-order';
 import {
 	evidenceUrls,
 	isReadableEvent,
@@ -214,11 +215,15 @@ function readPublishedBrief(
 		edition: brief.edition,
 		generated_at: brief.generated_at,
 		published_at: brief.published_at,
-		events: items.map((item) => ({
-			...toEventSummary(item.event),
-			rank: item.rank,
-			selection_reason: item.selection_reason
-		}))
+		// An event labelled possible_misinformation after the brief was built never keeps ranks 1–3
+		// (nor the home page's featured slot); the ranks shown are renumbered.
+		events: keepMisinformationOutOfTopRanks(items, (item) => item.event.credibility_level).map(
+			(item, index) => ({
+				...toEventSummary(item.event),
+				rank: index + 1,
+				selection_reason: item.selection_reason
+			})
+		)
 	};
 }
 

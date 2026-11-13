@@ -119,6 +119,10 @@ async function expectRelationsWellFormed(relations: Locator, where: string): Pro
 			.replace('ทำไมจึงเชื่อมโยง:', '')
 			.trim();
 		expect.soft(explanation.length, `${where} ${type}: explanation`).toBeGreaterThan(0);
+		// Relations are published automatically, so each one is labelled as AI analysis.
+		await expect
+			.soft(relation.getByTestId('relation-ai-label'), `${where} ${type}: AI label`)
+			.toHaveText('AI วิเคราะห์ความเชื่อมโยง');
 
 		const evidence = await attributeOf(
 			relation.getByTestId('evidence-links').locator('a[href^="http"]'),
