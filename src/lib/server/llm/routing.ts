@@ -1,10 +1,11 @@
 /** Per-task model routing and request-parameter rules (ARCHITECTURE §10). Pure. */
 import type { LlmTask, ModelRoute } from '../../types/llm';
 
-/** Same field names as `AppConfig['llm']['models']`, so `config.llm.models` can be passed as-is. */
+/**
+ * Same field names as `AppConfig['llm']['models']`, so `config.llm.models` can be passed as-is.
+ * `config.ts` already fills every task model with `LLM_MODEL_ID` when `LLM_MODEL_<TASK>` is unset.
+ */
 export interface LlmModelSettings {
-	/** LLM_MODEL_ID */
-	default: string | undefined;
 	tagging: string | undefined;
 	clustering: string | undefined;
 	extraction: string | undefined;
@@ -26,9 +27,9 @@ const MODEL_SETTING_BY_TASK = {
 	academy_linking: 'academyLinking'
 } as const satisfies Record<LlmTask, keyof LlmModelSettings>;
 
-/** `LLM_MODEL_<TASK> ?? LLM_MODEL_ID`, plus a cross-vendor fallback. Null → `not_configured`. */
+/** The task's model plus a cross-vendor fallback. Null → `not_configured`. */
 export function resolveModelRoute(task: LlmTask, models: LlmModelSettings): ModelRoute | null {
-	const primary = models[MODEL_SETTING_BY_TASK[task]] ?? models.default;
+	const primary = models[MODEL_SETTING_BY_TASK[task]];
 	if (!primary) return null;
 
 	const fallback = primary.startsWith('cx/') ? models.fallbackSecondary : models.fallback;

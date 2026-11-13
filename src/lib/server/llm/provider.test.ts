@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { LlmCall, SummaryOutput, TaggingInput } from '../../types/llm';
+import type {
+	ChatRequest,
+	ChatTransport,
+	LlmCall,
+	LlmInput,
+	LlmTask,
+	SummaryOutput,
+	TaggingInput
+} from '../../types/llm';
 import type { Db } from '../db/client';
 import { createJobRunRepository } from '../db/repositories/job-runs';
 import { createLlmCallRepository } from '../db/repositories/llm-calls';
@@ -8,8 +16,10 @@ import { openTestDb } from '../db/test-db';
 import { evaluateEventForPublish } from '../editorial';
 import { computeCacheKey } from './cache-key';
 import { createMockTransport, type MockTransportStep } from './mock';
+import { buildTaskMessages, estimateTokens } from './prompt';
 import { createLlmProvider, type LlmLogEntry, type LlmSettings } from './provider';
 import { PROMPT_VERSIONS, TASK_DEFINITIONS } from './tasks';
+import { LlmTransportError } from './transport';
 import {
 	LINKED_ARTICLES,
 	REF_TO_ARTICLE_ID,
@@ -35,10 +45,9 @@ afterEach(() => db.$client.close());
 function settings(overrides: Partial<LlmSettings> = {}): LlmSettings {
 	return {
 		models: {
-			default: 'cc/model-a',
 			tagging: 'cx/model-b',
 			clustering: undefined,
-			extraction: undefined,
+			extraction: 'cc/model-a',
 			summary: 'cc/model-a',
 			relations: undefined,
 			academyLinking: undefined,
@@ -81,6 +90,17 @@ const summaryJson = (summary: SummaryOutput = VALID_SUMMARY) => ({
 const schemaInvalid: MockTransportStep = { fail: 'schema_invalid' };
 
 const TAGGING_INPUT: TaggingInput = { articles: SUMMARY_INPUT.articles };
+
+/** The provider's own input-token estimate for a task's first request. */
+function estimateFor<T extends LlmTask>(task: T, input: LlmInput<T>): number {
+	const messages = buildTaskMessages(TASK_DEFINITIONS[task].systemPrompt, input);
+	return estimateTokens(messages.map((message) => message.content).join(''));
+}
+
+/** Tagging inputs that differ only in the title, so they never share a cache key. */
+function taggingInput(n: number): TaggingInput {
+	return { articles: [{ ...SUMMARY_INPUT.articles[0]!, title: `Fictional title ${n}` }] };
+}
 const taggingJson = {
 	content: JSON.stringify({
 		items: [
@@ -114,7 +134,8 @@ describe('LLMProvider routing and request parameters', () => {
 				prompt_version: 'tagging@1',
 				status: 'ok',
 				error_kind: null,
-				tokens_in: 10,
+				// The mock reports 10 input tokens; the recorded value is never below the estimate.
+				tokens_in: estimateFor('tagging', TAGGING_INPUT),
 				tokens_out: 10,
 				job_run_id: jobRunId
 			}
@@ -135,7 +156,7 @@ describe('LLMProvider routing and request parameters', () => {
 
 	it('returns not_configured without any call when no model is set', async () => {
 		const { provider, transport } = providerWith([summaryJson()], {
-			models: { ...settings().models, default: undefined, summary: undefined }
+			models: { ...settings().models, summary: undefined }
 		});
 		const result = await provider.run('summary', SUMMARY_INPUT);
 
@@ -217,7 +238,10 @@ describe('LLMProvider validation, repair and fallback', () => {
 		const result = await provider.run('summary', SUMMARY_INPUT);
 
 		expect(result.ok).toBe(true);
-		expect(transport.requests[1]?.messages[3]?.content).toContain('unknown ref "a9"');
+		// Path and count only: model-produced ref strings are never echoed outside <data>.
+		const repairText = transport.requests[1]?.messages[3]?.content;
+		expect(repairText).toContain('cited_refs: 1 unknown ref(s)');
+		expect(repairText).not.toContain('a9');
 	});
 
 	it('runs repair turn → cross-vendor fallback → invalid_output → pending_review', async () => {
@@ -543,5 +567,265 @@ describe('LLMProvider logging', () => {
 		}
 		expect(logs[0]).toMatchObject({ status: 'error', error_class: 'schema_invalid' });
 		expect(JSON.stringify(logs)).not.toContain('Port Vela');
+	});
+});
+
+/** A provider over a hand-written transport (for timing-sensitive cases). */
+function providerOver(
+	transport: ChatTransport,
+	overrides: Partial<LlmSettings> = {},
+	runDeadlineMs?: number
+) {
+	return createLlmProvider({
+		transport,
+		calls: createLlmCallRepository(db),
+		settings: settings(overrides),
+		now: () => NOW,
+		sleep,
+		random: () => 1,
+		log: (entry) => logs.push(entry),
+		runDeadlineMs
+	});
+}
+
+const noFallback = () => ({
+	models: { ...settings().models, fallback: undefined, fallbackSecondary: undefined }
+});
+
+/** Replies with valid tagging JSON after a short delay, so concurrent calls overlap. */
+function slowTaggingTransport() {
+	const requests: ChatRequest[] = [];
+	const transport: ChatTransport = {
+		async complete(request) {
+			requests.push(request);
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			return { content: taggingJson.content, tokens_in: 1, tokens_out: 1 };
+		}
+	};
+	return { transport, requests };
+}
+
+describe('LLMProvider token accounting (review #3)', () => {
+	it('records tokens_in as max(reported, estimate) and tokens_out as reported', async () => {
+		const { provider } = providerWith([
+			{ content: taggingJson.content, tokens_in: 999_999, tokens_out: 3 }
+		]);
+		await provider.run('tagging', TAGGING_INPUT);
+
+		expect(recordedCalls()).toMatchObject([{ tokens_in: 999_999, tokens_out: 3 }]);
+	});
+
+	it('charges the estimated input of every sent request, including timeouts', async () => {
+		const { provider } = providerWith([{ fail: 'timeout' }], noFallback());
+		await provider.run('tagging', TAGGING_INPUT);
+
+		const estimate = estimateFor('tagging', TAGGING_INPUT);
+		expect(recordedCalls().map((call) => [call.tokens_in, call.tokens_out])).toEqual([
+			[estimate, 0],
+			[estimate, 0],
+			[estimate, 0]
+		]);
+		expect(await createLlmCallRepository(db).usageSince(BANGKOK_DAY_START)).toEqual({
+			requests: 3,
+			tokens: 3 * estimate
+		});
+	});
+
+	it('counts in-flight estimated tokens, so the token cap holds under concurrency', async () => {
+		const { transport, requests } = slowTaggingTransport();
+		const estimate = estimateFor('tagging', taggingInput(1));
+		const provider = providerOver(transport, {
+			...noFallback(),
+			maxRetries: 0,
+			dailyMaxTokens: Math.floor(estimate * 1.5)
+		});
+
+		const results = await Promise.all([
+			provider.run('tagging', taggingInput(1)),
+			provider.run('tagging', taggingInput(2))
+		]);
+
+		expect(requests).toHaveLength(1);
+		expect(results.filter((result) => result.ok)).toHaveLength(1);
+		expect(
+			results.filter((result) => !result.ok && result.error.kind === 'budget_exceeded')
+		).toHaveLength(1);
+	});
+});
+
+describe('LLMProvider request cap under concurrency (review #4)', () => {
+	it.each([1, 3])(
+		'with cap %i and twice as many queued calls, sends exactly the cap',
+		async (cap) => {
+			const { transport, requests } = slowTaggingTransport();
+			const provider = providerOver(transport, {
+				...noFallback(),
+				maxRetries: 0,
+				maxConcurrency: 2,
+				dailyMaxRequests: cap
+			});
+
+			const results = await Promise.all(
+				Array.from({ length: 2 * cap }, (_, n) => provider.run('tagging', taggingInput(n)))
+			);
+
+			expect(requests).toHaveLength(cap);
+			expect(results.filter((result) => result.ok)).toHaveLength(cap);
+			expect(
+				results.filter((result) => !result.ok && result.error.kind === 'budget_exceeded')
+			).toHaveLength(cap);
+			expect(recordedCalls()).toHaveLength(cap);
+		}
+	);
+});
+
+describe('LLMProvider unexpected errors and abort (review #5, #6)', () => {
+	it('maps an unknown throwable to the non-retryable internal class', async () => {
+		const requests: ChatRequest[] = [];
+		const provider = providerOver(
+			{
+				async complete(request) {
+					requests.push(request);
+					throw new Error('transport bug');
+				}
+			},
+			noFallback()
+		);
+		const result = await provider.run('tagging', TAGGING_INPUT);
+
+		expect(result).toMatchObject({ ok: false, error: { kind: 'http_error' } });
+		expect(requests).toHaveLength(1);
+		expect(sleep).not.toHaveBeenCalled();
+		expect(logs).toMatchObject([{ error_class: 'internal' }]);
+	});
+
+	it('sends and records nothing for a call aborted while it waited for a slot', async () => {
+		let releaseFirst: () => void = () => {};
+		const requests: ChatRequest[] = [];
+		const provider = providerOver(
+			{
+				async complete(request) {
+					requests.push(request);
+					await new Promise<void>((resolve) => (releaseFirst = resolve));
+					return { content: taggingJson.content, tokens_in: 1, tokens_out: 1 };
+				}
+			},
+			{ ...noFallback(), maxConcurrency: 1 }
+		);
+
+		const controller = new AbortController();
+		const first = provider.run('tagging', taggingInput(1));
+		const second = provider.run('tagging', taggingInput(2), { signal: controller.signal });
+		await new Promise((resolve) => setTimeout(resolve, 10)); // second is now queued
+		controller.abort();
+		releaseFirst();
+
+		expect((await first).ok).toBe(true);
+		expect(await second).toMatchObject({ ok: false, error: { kind: 'aborted' } });
+		expect(requests).toHaveLength(1);
+		expect(recordedCalls()).toHaveLength(1);
+	});
+});
+
+describe('LLMProvider JSON mode (review #9)', () => {
+	const rejectsJsonMode: MockTransportStep = (request) =>
+		request.response_format ? { fail: 'bad_request' } : taggingJson;
+
+	it('sends response_format by default', async () => {
+		const { provider, transport } = providerWith([taggingJson]);
+		await provider.run('tagging', TAGGING_INPUT);
+		expect(transport.requests[0]?.response_format).toEqual({ type: 'json_object' });
+	});
+
+	it('retries the same model once without response_format after a 400, then remembers', async () => {
+		const { provider, transport } = providerWith([rejectsJsonMode]);
+		const first = await provider.run('tagging', taggingInput(1));
+		const second = await provider.run('tagging', taggingInput(2));
+
+		expect(first).toMatchObject({ ok: true, meta: { model: 'cx/model-b', fell_back: false } });
+		expect(second.ok).toBe(true);
+		expect(
+			transport.requests.map((request) => [request.model, 'response_format' in request])
+		).toEqual([
+			['cx/model-b', true],
+			['cx/model-b', false],
+			['cx/model-b', false]
+		]);
+		expect(sleep).not.toHaveBeenCalled();
+	});
+
+	it('treats a 400 without response_format as a real failure (invalid_request)', async () => {
+		const { provider, transport } = providerWith([{ fail: 'bad_request' }]);
+		const result = await provider.run('tagging', TAGGING_INPUT);
+
+		// Primary: with and without JSON mode; then the same on the fallback model.
+		expect(transport.requests.map((request) => request.model)).toEqual([
+			'cx/model-b',
+			'cx/model-b',
+			'cc/model-small',
+			'cc/model-small'
+		]);
+		expect(result).toMatchObject({ ok: false, error: { kind: 'invalid_request' } });
+	});
+});
+
+describe('LLMProvider input limits and deadline (review #13)', () => {
+	const manyArticles = (count: number) =>
+		Array.from({ length: count }, (_, i) => ({ ...SUMMARY_INPUT.articles[0]!, ref: `a${i + 1}` }));
+
+	it('returns invalid_request without a request when there are no articles', async () => {
+		const { provider, transport } = providerWith([summaryJson()]);
+		const result = await provider.run('summary', { ...SUMMARY_INPUT, articles: [] });
+
+		expect(result).toMatchObject({ ok: false, error: { kind: 'invalid_request' } });
+		expect(transport.requests).toHaveLength(0);
+		expect(recordedCalls()).toHaveLength(0);
+	});
+
+	it('returns input_too_large for more than 12 articles in extraction or summary', async () => {
+		const { provider, transport } = providerWith([summaryJson()]);
+
+		expect(
+			await provider.run('summary', { ...SUMMARY_INPUT, articles: manyArticles(13) })
+		).toMatchObject({
+			ok: false,
+			error: { kind: 'input_too_large' }
+		});
+		expect(await provider.run('extraction', { articles: manyArticles(13) })).toMatchObject({
+			ok: false,
+			error: { kind: 'input_too_large' }
+		});
+		expect(transport.requests).toHaveLength(0);
+	});
+
+	it('allows up to 20 articles for tagging (ARCHITECTURE §9)', async () => {
+		const { provider, transport } = providerWith([taggingJson]);
+		expect((await provider.run('tagging', { articles: manyArticles(20) })).ok).toBe(true);
+		expect(await provider.run('tagging', { articles: manyArticles(21) })).toMatchObject({
+			ok: false,
+			error: { kind: 'input_too_large' }
+		});
+		expect(transport.requests).toHaveLength(1);
+	});
+
+	it('ends the run with a timeout at the run deadline, without falling back', async () => {
+		const requests: ChatRequest[] = [];
+		const hanging: ChatTransport = {
+			complete(request) {
+				requests.push(request);
+				return new Promise((_resolve, reject) => {
+					request.signal.addEventListener('abort', () =>
+						reject(new LlmTransportError('aborted', null))
+					);
+				});
+			}
+		};
+		const result = await providerOver(hanging, {}, 20).run('summary', SUMMARY_INPUT);
+
+		expect(result).toMatchObject({
+			ok: false,
+			error: { kind: 'timeout', message: 'run deadline exceeded' }
+		});
+		expect(requests).toHaveLength(1);
 	});
 });

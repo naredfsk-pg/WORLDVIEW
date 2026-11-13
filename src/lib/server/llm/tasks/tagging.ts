@@ -2,7 +2,14 @@
 import { z } from 'zod';
 import { CATEGORY_SLUGS, REGION_SLUGS } from '../../../types/domain';
 import type { TaggingOutput } from '../../../types/llm';
-import { countrySchema, defineTask, refSchema, tagSchema, unknownRefIssues } from './shared';
+import {
+	countrySchema,
+	defineTask,
+	MAX_ARTICLES_PER_TAGGING_CALL,
+	refSchema,
+	tagSchema,
+	unknownRefIssues
+} from './shared';
 
 export const TAGGING_PROMPT_VERSION = 'tagging@1';
 
@@ -28,6 +35,7 @@ export const taggingTask = defineTask({
 - tags: up to 8 short kebab-case English keywords (for example "nato", "interest-rates").
 Base the tags only on the title and excerpt.`,
 	outputSchema,
+	maxArticles: MAX_ARTICLES_PER_TAGGING_CALL,
 	findUnknownRefs(output, input) {
 		const refs = new Set(input.articles.map((article) => article.ref));
 		return unknownRefIssues(

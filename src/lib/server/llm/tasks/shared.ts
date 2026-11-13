@@ -18,6 +18,8 @@ export interface TaskDefinition<T extends LlmTask> {
 	outputSchema: z.ZodType<LlmOutput<T>>;
 	/** Issues for refs or ids in the output that were not supplied in the input. */
 	findUnknownRefs(output: LlmOutput<T>, input: LlmInput<T>): string[];
+	/** Cap on `input.articles` for tasks that take an article list; null otherwise. */
+	maxArticles: number | null;
 }
 
 export function defineTask<T extends LlmTask>(spec: {
@@ -26,6 +28,7 @@ export function defineTask<T extends LlmTask>(spec: {
 	instructions: string;
 	outputSchema: z.ZodType<LlmOutput<T>>;
 	findUnknownRefs: TaskDefinition<T>['findUnknownRefs'];
+	maxArticles?: number;
 }): TaskDefinition<T> {
 	const jsonSchema = z.toJSONSchema(spec.outputSchema, { io: 'input', unrepresentable: 'any' });
 	return {
@@ -33,9 +36,15 @@ export function defineTask<T extends LlmTask>(spec: {
 		promptVersion: spec.promptVersion,
 		systemPrompt: buildSystemPrompt(spec.instructions, jsonSchema),
 		outputSchema: spec.outputSchema,
-		findUnknownRefs: spec.findUnknownRefs
+		findUnknownRefs: spec.findUnknownRefs,
+		maxArticles: spec.maxArticles ?? null
 	};
 }
+
+/** ARCHITECTURE §10: at most 12 articles per extraction / summary call. */
+export const MAX_ARTICLES_PER_CALL = 12;
+/** ARCHITECTURE §9 digest order: tagging takes up to 20 (metadata only). */
+export const MAX_ARTICLES_PER_TAGGING_CALL = 20;
 
 export type OutputValidation<T extends LlmTask> =
 	{ ok: true; data: LlmOutput<T> } | { ok: false; issues: string[] };
@@ -63,13 +72,17 @@ export function validateOutput<T extends LlmTask>(
 	return { ok: true, data: parsed.data };
 }
 
-/** Issues for each ref not in `allowed`, labelled with where it appeared. */
+/**
+ * One issue per location with unknown refs: the path and the count only. Model-produced ref
+ * strings are never copied into the repair message (it sits outside `<data>`).
+ */
 export function unknownRefIssues(
 	refs: readonly string[],
 	allowed: ReadonlySet<string>,
 	where: string
 ): string[] {
-	return refs.filter((ref) => !allowed.has(ref)).map((ref) => `${where}: unknown ref "${ref}"`);
+	const unknownCount = refs.filter((ref) => !allowed.has(ref)).length;
+	return unknownCount === 0 ? [] : [`${where}: ${unknownCount} unknown ref(s)`];
 }
 
 export const refSchema = z.string().trim().min(1).max(32);

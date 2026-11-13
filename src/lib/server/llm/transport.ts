@@ -23,17 +23,20 @@ export type TransportErrorClass =
 	| 'bad_request'
 	| 'invalid_json'
 	| 'network'
-	| 'aborted';
+	| 'aborted'
+	/** A non-transport throwable (a bug); never retried. */
+	| 'internal';
 
 const ERROR_KIND_BY_CLASS: Record<TransportErrorClass, LlmErrorKind> = {
-	auth: 'http_error',
+	auth: 'invalid_request',
 	rate_limit: 'rate_limited',
 	server: 'http_error',
 	timeout: 'timeout',
-	bad_request: 'http_error',
+	bad_request: 'invalid_request',
 	invalid_json: 'http_error',
 	network: 'http_error',
-	aborted: 'aborted'
+	aborted: 'aborted',
+	internal: 'http_error'
 };
 
 const RETRYABLE_CLASSES: ReadonlySet<TransportErrorClass> = new Set([
@@ -116,8 +119,8 @@ function toRequestBody(request: ChatRequest) {
 		max_tokens: request.max_tokens,
 		// The key is left out entirely for models that reject it (LLM_OMIT_TEMPERATURE_FOR).
 		...(request.temperature === undefined ? {} : { temperature: request.temperature }),
-		// Accepted by the endpoint, but output parsing does not depend on it.
-		response_format: { type: 'json_object' }
+		// JSON mode when the provider asks for it; output parsing never depends on it.
+		...(request.response_format ? { response_format: request.response_format } : {})
 	};
 }
 

@@ -5,6 +5,7 @@ import {
 	countrySchema,
 	defineTask,
 	isoInstantSchema,
+	MAX_ARTICLES_PER_CALL,
 	refListSchema,
 	textSchema,
 	unknownRefIssues
@@ -43,6 +44,7 @@ export const extractionTask = defineTask({
 - sensitive: true for contested conflicts or disputed political topics.
 - open_questions: what remains unclear or disputed.`,
 	outputSchema,
+	maxArticles: MAX_ARTICLES_PER_CALL,
 	findUnknownRefs(output, input) {
 		const refs = new Set(input.articles.map((article) => article.ref));
 		return [

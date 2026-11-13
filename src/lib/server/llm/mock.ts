@@ -119,7 +119,7 @@ export function createDefaultMockHandlers(): Required<MockLlmHandlers> {
 }
 
 export type MockFailureMode =
-	'timeout' | 'rate_limited' | 'server_error' | 'invalid_json' | 'schema_invalid';
+	'timeout' | 'rate_limited' | 'server_error' | 'bad_request' | 'invalid_json' | 'schema_invalid';
 
 /** One scripted transport reply: model content, a failure mode, or a function of the request. */
 export type MockTransportStep =
@@ -167,6 +167,8 @@ function replyFor(step: MockTransportStep, request: ChatRequest): ChatResponse {
 			);
 		case 'server_error':
 			throw new LlmTransportError('server', 503);
+		case 'bad_request':
+			throw new LlmTransportError('bad_request', 400);
 		case 'invalid_json':
 			return { content: 'Sorry, I cannot help with that.', tokens_in: 10, tokens_out: 5 };
 		case 'schema_invalid':

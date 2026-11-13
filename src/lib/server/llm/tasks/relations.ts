@@ -52,9 +52,7 @@ Rules:
 
 		return output.relations.flatMap((relation, i) => {
 			const candidate = candidatesByRef.get(relation.candidate_ref);
-			if (!candidate) {
-				return [`relations.${i}.candidate_ref: unknown ref "${relation.candidate_ref}"`];
-			}
+			if (!candidate) return [`relations.${i}.candidate_ref: unknown ref`];
 
 			const allowed = new Set([...eventRefs, ...candidate.articles.map((article) => article.ref)]);
 			return unknownRefIssues(relation.evidence, allowed, `relations.${i}.evidence`);

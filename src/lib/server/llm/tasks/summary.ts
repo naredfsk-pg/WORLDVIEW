@@ -1,7 +1,13 @@
 /** `summary`: the neutral Thai event text (FR-02 fields) plus ranking signals and cited refs. */
 import { z } from 'zod';
 import type { SummaryOutput } from '../../../types/llm';
-import { defineTask, refListSchema, textSchema, unknownRefIssues } from './shared';
+import {
+	defineTask,
+	MAX_ARTICLES_PER_CALL,
+	refListSchema,
+	textSchema,
+	unknownRefIssues
+} from './shared';
 
 export const SUMMARY_PROMPT_VERSION = 'summary@1';
 
@@ -41,6 +47,7 @@ All *_th fields are in neutral, plain Thai (proper names may stay in their usual
 - cited_refs: refs of every article your text relies on (at least one).
 If <data>.previous is not null, keep its wording where the facts have not changed.`,
 	outputSchema,
+	maxArticles: MAX_ARTICLES_PER_CALL,
 	findUnknownRefs(output, input) {
 		const refs = new Set(input.articles.map((article) => article.ref));
 		return [

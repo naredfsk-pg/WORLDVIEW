@@ -1,5 +1,5 @@
 /** Task registry: one definition (schema, prompt, prompt version, ref check) per `LlmTask`. */
-import type { LlmTask } from '../../../types/llm';
+import { LLM_TASKS, type LlmTask } from '../../../types/llm';
 import { academyLinkingTask } from './academy-linking';
 import { clusteringTask } from './clustering';
 import { extractionTask } from './extraction';
@@ -19,11 +19,7 @@ export const TASK_DEFINITIONS: { [T in LlmTask]: TaskDefinition<T> } = {
 	academy_linking: academyLinkingTask
 };
 
-export const PROMPT_VERSIONS: Record<LlmTask, string> = {
-	tagging: taggingTask.promptVersion,
-	clustering: clusteringTask.promptVersion,
-	extraction: extractionTask.promptVersion,
-	summary: summaryTask.promptVersion,
-	relations: relationsTask.promptVersion,
-	academy_linking: academyLinkingTask.promptVersion
-};
+/** Derived from the definitions, so a version lives in exactly one place. */
+export const PROMPT_VERSIONS = Object.fromEntries(
+	LLM_TASKS.map((task) => [task, TASK_DEFINITIONS[task].promptVersion])
+) as Record<LlmTask, string>;

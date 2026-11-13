@@ -18,6 +18,7 @@ function request(overrides: Partial<ChatRequest> = {}): ChatRequest {
 		],
 		max_tokens: 100,
 		temperature: 0.1,
+		response_format: { type: 'json_object' },
 		signal: new AbortController().signal,
 		...overrides
 	};
@@ -88,12 +89,15 @@ describe('createOpenAiCompatibleTransport', () => {
 		});
 	});
 
-	it('leaves the temperature key out when the request has none', async () => {
+	it('leaves the temperature and response_format keys out when the request has none', async () => {
 		const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse(okBody));
-		await transportWith(fetchMock).complete(request({ temperature: undefined }));
+		await transportWith(fetchMock).complete(
+			request({ temperature: undefined, response_format: undefined })
+		);
 
 		const body = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body));
 		expect('temperature' in body).toBe(false);
+		expect('response_format' in body).toBe(false);
 	});
 
 	it('maps 429 to a retryable rate_limit error and honours Retry-After seconds', async () => {
@@ -116,9 +120,9 @@ describe('createOpenAiCompatibleTransport', () => {
 	});
 
 	it.each([
-		[401, 'auth', 'http_error', false],
-		[403, 'auth', 'http_error', false],
-		[400, 'bad_request', 'http_error', false],
+		[401, 'auth', 'invalid_request', false],
+		[403, 'auth', 'invalid_request', false],
+		[400, 'bad_request', 'invalid_request', false],
 		[408, 'timeout', 'timeout', true],
 		[500, 'server', 'http_error', true],
 		[503, 'server', 'http_error', true]
