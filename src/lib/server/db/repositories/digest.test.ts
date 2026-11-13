@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { ReviewReason } from '../../../types/domain';
 import type { EventContentWrite } from '../../../types/repositories';
 import type { Db } from '../client';
 import { contentRevisions, eventRelations, events, eventUpdates } from '../schema';
@@ -20,6 +21,17 @@ beforeEach(async () => {
 			kind: 'fixture',
 			homepage_url: 'https://example.com/a',
 			feed_url: 'a.xml',
+			license_notes: '',
+			allow_excerpt: false,
+			is_demo: false,
+			enabled: true
+		},
+		{
+			id: 'wire-b',
+			name: 'Wire B',
+			kind: 'fixture',
+			homepage_url: 'https://example.com/b',
+			feed_url: 'b.xml',
 			license_notes: '',
 			allow_excerpt: false,
 			is_demo: false,
@@ -61,7 +73,9 @@ async function addArticle(
 	return result.article_id;
 }
 
-const content = (overrides: Partial<EventContentWrite> = {}): EventContentWrite => ({
+const content = (
+	overrides: Partial<EventContentWrite> = {}
+): Omit<EventContentWrite, 'listed'> => ({
 	title_th: 'หัวข้อข่าว',
 	summary_th: 'สรุปข่าว',
 	what_happened_th: 'เกิดอะไรขึ้น',
@@ -83,6 +97,33 @@ const content = (overrides: Partial<EventContentWrite> = {}): EventContentWrite 
 });
 
 const getEvent = (id: string) => db.select().from(events).where(eq(events.id, id)).get()!;
+
+/** Retry backoff never holds an event back in these tests unless a test passes its own instant. */
+const RETRY_ANY = '9999-12-31T00:00:00.000Z';
+
+/** saveEventContent as digest calls it: `listed` is the row as stored now (no change meanwhile). */
+function saveAsListed(
+	id: string,
+	write: Omit<EventContentWrite, 'listed'> & Partial<Pick<EventContentWrite, 'listed'>>,
+	now: string
+) {
+	const row = getEvent(id);
+	return repos.digest.saveEventContent(
+		id,
+		{ listed: { updated_at: row.updated_at, status: row.status }, ...write },
+		now
+	);
+}
+
+function markAsListed(id: string, reasons: ReviewReason[], now: string) {
+	const row = getEvent(id);
+	return repos.digest.markEventForReview(
+		id,
+		reasons,
+		{ updated_at: row.updated_at, status: row.status },
+		now
+	);
+}
 
 describe('event_date is the Asia/Bangkok date of first_seen_at', () => {
 	it('keeps 16:59:59.999Z on the previous Bangkok day', async () => {
@@ -178,14 +219,16 @@ describe('DigestRepository content lifecycle', () => {
 			1,
 			'2026-11-13T01:00:00.000Z'
 		);
-		expect((await repos.digest.listEventsNeedingContent(10)).map((e) => e.event.id)).toEqual([id]);
+		expect(
+			(await repos.digest.listEventsNeedingContent(10, RETRY_ANY)).map((e) => e.event.id)
+		).toEqual([id]);
 
-		await repos.digest.saveEventContent(id, content(), '2026-11-13T02:00:00.000Z');
+		await saveAsListed(id, content(), '2026-11-13T02:00:00.000Z');
 		expect(getEvent(id)).toMatchObject({
 			status: 'published',
 			published_at: '2026-11-13T02:00:00.000Z'
 		});
-		expect(await repos.digest.listEventsNeedingContent(10)).toEqual([]);
+		expect(await repos.digest.listEventsNeedingContent(10, RETRY_ANY)).toEqual([]);
 
 		// A new article after summarized_at makes it stale again.
 		await repos.digest.linkArticles(
@@ -194,9 +237,11 @@ describe('DigestRepository content lifecycle', () => {
 			0.9,
 			'2026-11-13T03:00:00.000Z'
 		);
-		expect((await repos.digest.listEventsNeedingContent(10)).map((e) => e.event.id)).toEqual([id]);
+		expect(
+			(await repos.digest.listEventsNeedingContent(10, RETRY_ANY)).map((e) => e.event.id)
+		).toEqual([id]);
 
-		await repos.digest.saveEventContent(
+		await saveAsListed(
 			id,
 			content({
 				title_th: 'หัวข้อใหม่',
@@ -223,14 +268,14 @@ describe('DigestRepository content lifecycle', () => {
 	it('lists the articles linked since the last summary, and never stores the same update twice', async () => {
 		const first = await addArticle('2026-11-13T00:00:00.000Z');
 		const id = await repos.digest.createDraftEvent([first], 1, '2026-11-13T01:00:00.000Z');
-		const [draft] = await repos.digest.listEventsNeedingContent(10);
+		const [draft] = await repos.digest.listEventsNeedingContent(10, RETRY_ANY);
 		// Never summarized: every linked article is new.
 		expect(draft?.new_article_ids).toEqual([first]);
-		await repos.digest.saveEventContent(id, content(), '2026-11-13T02:00:00.000Z');
+		await saveAsListed(id, content(), '2026-11-13T02:00:00.000Z');
 
 		const later = await addArticle('2026-11-13T02:30:00.000Z');
 		await repos.digest.linkArticles(id, [later], 0.9, '2026-11-13T03:00:00.000Z');
-		const [stale] = await repos.digest.listEventsNeedingContent(10);
+		const [stale] = await repos.digest.listEventsNeedingContent(10, RETRY_ANY);
 		expect(stale?.new_article_ids).toEqual([later]);
 
 		const update = {
@@ -240,9 +285,9 @@ describe('DigestRepository content lifecycle', () => {
 			evidence_refs: [{ article_id: later }]
 		};
 		const resummary = content({ summarized_at: '2026-11-13T03:05:00.000Z', new_updates: [update] });
-		await repos.digest.saveEventContent(id, resummary, '2026-11-13T03:05:00.000Z');
+		await saveAsListed(id, resummary, '2026-11-13T03:05:00.000Z');
 		// A forced rerun with the same evidence set (and a duplicate in one list) adds nothing.
-		await repos.digest.saveEventContent(
+		await saveAsListed(
 			id,
 			{ ...resummary, new_updates: [update, { ...update, update_text_th: 'ข้อความอื่น' }] },
 			'2026-11-13T03:10:00.000Z'
@@ -261,7 +306,7 @@ describe('DigestRepository content lifecycle', () => {
 	it('never lets a new update report earlier than the latest stored one', async () => {
 		const first = await addArticle('2026-11-13T00:00:00.000Z');
 		const id = await repos.digest.createDraftEvent([first], 1, '2026-11-13T01:00:00.000Z');
-		await repos.digest.saveEventContent(id, content(), '2026-11-13T02:00:00.000Z');
+		await saveAsListed(id, content(), '2026-11-13T02:00:00.000Z');
 		const update = (articleId: string, reportedAt: string) => ({
 			occurred_at: null,
 			reported_at: reportedAt,
@@ -272,13 +317,13 @@ describe('DigestRepository content lifecycle', () => {
 		const older = await addArticle('2026-11-12T22:00:00.000Z');
 		await repos.digest.linkArticles(id, [later, older], 1, '2026-11-13T05:10:00.000Z');
 
-		await repos.digest.saveEventContent(
+		await saveAsListed(
 			id,
 			content({ new_updates: [update(later, '2026-11-13T05:00:00.000Z')] }),
 			'2026-11-13T05:20:00.000Z'
 		);
 		// A late-linked older article: its update is placed at the latest time, not before it.
-		await repos.digest.saveEventContent(
+		await saveAsListed(
 			id,
 			content({ new_updates: [update(older, '2026-11-12T22:00:00.000Z')] }),
 			'2026-11-13T05:30:00.000Z'
@@ -300,12 +345,12 @@ describe('DigestRepository content lifecycle', () => {
 			1,
 			'2026-11-13T01:00:00.000Z'
 		);
-		await repos.digest.saveEventContent(id, content(), '2026-11-13T02:00:00.000Z');
+		await saveAsListed(id, content(), '2026-11-13T02:00:00.000Z');
 
-		await repos.digest.markEventForReview(id, ['llm_failed'], '2026-11-13T03:00:00.000Z');
+		await markAsListed(id, ['llm_failed'], '2026-11-13T03:00:00.000Z');
 		expect(getEvent(id).status).toBe('published');
 		await expect(
-			repos.digest.saveEventContent(
+			saveAsListed(
 				id,
 				content({ status: 'pending_review', review_reasons: ['llm_failed'] }),
 				'2026-11-13T03:00:00.000Z'
@@ -324,14 +369,10 @@ describe('DigestRepository content lifecycle', () => {
 			1,
 			'2026-11-13T01:00:00.000Z'
 		);
-		await repos.digest.markEventForReview(retry, ['llm_failed'], '2026-11-13T01:10:00.000Z');
-		await repos.digest.markEventForReview(
-			manual,
-			['llm_failed', 'no_source'],
-			'2026-11-13T01:10:00.000Z'
-		);
+		await markAsListed(retry, ['llm_failed'], '2026-11-13T01:10:00.000Z');
+		await markAsListed(manual, ['llm_failed', 'no_source'], '2026-11-13T01:10:00.000Z');
 
-		const ids = (await repos.digest.listEventsNeedingContent(10)).map((e) => e.event.id);
+		const ids = (await repos.digest.listEventsNeedingContent(10, RETRY_ANY)).map((e) => e.event.id);
 		expect(ids).toEqual([retry]);
 	});
 });
@@ -343,7 +384,7 @@ describe('DigestRepository relations and lesson links', () => {
 			1,
 			'2026-11-13T01:00:00.000Z'
 		);
-		await repos.digest.saveEventContent(id, content({ tags }), '2026-11-13T02:00:00.000Z');
+		await saveAsListed(id, content({ tags }), '2026-11-13T02:00:00.000Z');
 		return id;
 	}
 
@@ -429,7 +470,7 @@ describe('DigestRepository.mergeDraftEvent', () => {
 			now
 		);
 		const draft = await repos.digest.createDraftEvent(
-			[await addArticle('2026-11-12T20:00:00.000Z', { publisher: 'Other Wire' })],
+			[await addArticle('2026-11-12T20:00:00.000Z', { source: 'wire-b', publisher: 'Wire B' })],
 			1,
 			now
 		);
@@ -442,9 +483,9 @@ describe('DigestRepository.mergeDraftEvent', () => {
 			source_count: 2,
 			first_seen_at: '2026-11-12T20:00:00.000Z'
 		});
-		expect((await repos.digest.listEventsNeedingContent(10)).map((e) => e.event.id)).toEqual([
-			target
-		]);
+		expect(
+			(await repos.digest.listEventsNeedingContent(10, RETRY_ANY)).map((e) => e.event.id)
+		).toEqual([target]);
 	});
 
 	it('never merges into a published event; flagPossibleDuplicate flags the draft and links them instead', async () => {
@@ -454,7 +495,7 @@ describe('DigestRepository.mergeDraftEvent', () => {
 			1,
 			now
 		);
-		await repos.digest.saveEventContent(published, content(), now);
+		await saveAsListed(published, content(), now);
 		const before = getEvent(published);
 		const draftArticle = await addArticle('2026-11-13T00:30:00.000Z', { publisher: 'Other Wire' });
 		const draft = await repos.digest.createDraftEvent([draftArticle], 1, now);
@@ -516,7 +557,7 @@ describe('DigestRepository.mergeDraftEvent', () => {
 			1,
 			now
 		);
-		await repos.digest.saveEventContent(published, content(), now);
+		await saveAsListed(published, content(), now);
 		const draft = await repos.digest.createDraftEvent(
 			[await addArticle('2026-11-13T00:10:00.000Z')],
 			1,
@@ -582,7 +623,7 @@ describe('review fixes in DigestRepository', () => {
 		);
 		expect(getEvent(id).summarized_at).toBeNull();
 
-		await repos.digest.saveEventContent(id, content(), now);
+		await saveAsListed(id, content(), now);
 		await repos.digest.markContentChecked(
 			id,
 			'2026-11-13T05:00:00.000Z',
@@ -607,7 +648,7 @@ describe('review fixes in DigestRepository', () => {
 		for (let index = 0; index < 3; index++) {
 			ids.push(await repos.digest.createDraftEvent([await addArticle(sameTime)], 1, sameTime));
 		}
-		const listed = await repos.digest.listEventsNeedingContent(10);
+		const listed = await repos.digest.listEventsNeedingContent(10, RETRY_ANY);
 		expect(listed.map((item) => item.event.id)).toEqual([...ids].sort());
 	});
 });

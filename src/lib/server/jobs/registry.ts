@@ -167,7 +167,15 @@ function planJob(
 		return {
 			slot: hourlyJobSlot('ingest', now, opts.fixtures ? 'fixtures' : null),
 			execute: (ctx) =>
-				runIngest({ ...sources, ingest: repositories.ingest, digest: repositories.digest }, ctx)
+				runIngest(
+					{
+						...sources,
+						ingest: repositories.ingest,
+						digest: repositories.digest,
+						maxNewItemsPerSource: config.ingest.maxNewItemsPerSource
+					},
+					ctx
+				)
 		};
 	}
 	if (type === 'digest') {
@@ -181,7 +189,8 @@ function planJob(
 							log: (entry) => ctx.logger.info('llm call', { ...entry })
 						}),
 						llmCalls: repositories.llmCalls,
-						maxEvents: opts.maxEvents
+						maxEvents: opts.maxEvents,
+						autoPublish: config.editorial.autoPublish
 					},
 					ctx
 				)

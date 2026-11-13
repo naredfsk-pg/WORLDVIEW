@@ -2,8 +2,8 @@
  * Task-level `LLMProvider` (ARCHITECTURE §10). For each model in the route (primary, then the
  * cross-vendor fallback):
  *   1. cache lookup (a hit makes no network call and does not count toward caps)
- *   2. inside the concurrency limit: abort re-check, then the daily budget check
- *      (`budget_exceeded` never falls back)
+ *   2. inside the concurrency limit: abort re-check, then the daily budget check and the per-job-run
+ *      request cap (`budget_exceeded` never falls back)
  *   3. HTTP call with bounded retries + backoff; JSON mode first, and one retry without it on a 400
  *   4. JSON extraction + Zod + ref validation
  *   5. one schema-repair turn on the same model, then the next model
@@ -46,6 +46,11 @@ export interface LlmSettings {
 	temperature: number;
 	dailyMaxRequests: number;
 	dailyMaxTokens: number;
+	/**
+	 * `LLM_MAX_REQUESTS_PER_RUN`: requests one job run (`job_run_id`) may send, so one run cannot
+	 * use most of the daily cap. Unset → no per-run cap (calls without a run id never have one).
+	 */
+	maxRequestsPerRun?: number;
 }
 
 /** One line per network call. Never contains prompts, source text, headers or keys. */
@@ -303,7 +308,9 @@ export function createLlmProvider(deps: LlmProviderDeps): LLMProvider {
 			// Re-check after waiting for a slot: an abort while queued sends and records nothing.
 			if (context.signal.aborted) return notSent(abortedError(model));
 
-			const budgetError = await withBudgetLock(() => reserveBudget(model, estimatedTokensIn));
+			const budgetError = await withBudgetLock(() =>
+				reserveBudget(model, estimatedTokensIn, context.jobRunId)
+			);
 			if (budgetError) return notSent(budgetError);
 
 			const sent = await sendAndValidate(
@@ -325,13 +332,25 @@ export function createLlmProvider(deps: LlmProviderDeps): LLMProvider {
 		});
 	}
 
-	async function reserveBudget(model: string, estimatedTokensIn: number): Promise<LlmError | null> {
+	async function reserveBudget(
+		model: string,
+		estimatedTokensIn: number,
+		jobRunId: string | null
+	): Promise<LlmError | null> {
 		const usage = await calls.usageSince(bangkokDayRangeUtc(todayBriefDate(now())).start_utc);
 		if (usage.requests + inFlight.requests + 1 > settings.dailyMaxRequests) {
 			return { kind: 'budget_exceeded', message: 'daily request cap reached', model };
 		}
 		if (usage.tokens + inFlight.tokens + estimatedTokensIn > settings.dailyMaxTokens) {
 			return { kind: 'budget_exceeded', message: 'daily token cap reached', model };
+		}
+		if (jobRunId !== null && settings.maxRequestsPerRun !== undefined) {
+			// In flight counts every run's calls: one process runs one job at a time, and the error
+			// is on the safe side.
+			const runUsage = await calls.usageForJobRun(jobRunId);
+			if (runUsage.requests + inFlight.requests + 1 > settings.maxRequestsPerRun) {
+				return { kind: 'budget_exceeded', message: 'per-run request cap reached', model };
+			}
 		}
 		inFlight.requests++;
 		inFlight.tokens += estimatedTokensIn;

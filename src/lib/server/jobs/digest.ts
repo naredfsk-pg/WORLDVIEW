@@ -15,6 +15,7 @@
  * hide or another job writing at the same time must not stop the rest of the run.
  */
 import type { AcademyLessonRow, IsoUtc } from '#lib/types/domain.js';
+import type { AutoPublishPolicy } from '#lib/types/editorial.js';
 import type { JobContext, JobCounters, JobOutcome } from '#lib/types/jobs.js';
 import type { ClusteringInput, LLMProvider, LlmErrorKind } from '#lib/types/llm.js';
 import type { ArticleWithSource, EventMatchCandidate } from '#lib/types/news.js';
@@ -23,7 +24,7 @@ import type {
 	EventWithArticles,
 	LlmCallRepository
 } from '#lib/types/repositories.js';
-import { containsUrl, isThaiText } from '../editorial/index.js';
+import { containsLinkOrContact, isThaiText } from '../editorial/index.js';
 import { bestEventMatch, GROUPING_CONFIG } from '../news/grouping.js';
 import { generateEventContent } from './digest-content.js';
 import { createRunTask, toArticleRef, type RunTask } from './digest-llm.js';
@@ -49,6 +50,12 @@ export const CLUSTERING_MERGE_MIN_CONFIDENCE = 0.8;
  * `same_event` answer only flags the draft for review (`possible_duplicate`).
  */
 export const PUBLISHED_TARGET_MIN_SHARED_TAGS = 2;
+/**
+ * Retry backoff for transient LLM failures (`pending_review [llm_failed]`): an event is retried
+ * only when its row was last written at least this long ago. With the four digest runs a day
+ * (06, 12, 18, 23 ICT) that is about two retries a day instead of one per run.
+ */
+export const LLM_FAILED_RETRY_DELAY_MS = 11 * 60 * 60 * 1000;
 
 export interface DigestDeps {
 	digest: DigestRepository;
@@ -57,6 +64,8 @@ export interface DigestDeps {
 	llmCalls: Pick<LlmCallRepository, 'usageForJobRun'>;
 	/** `--max-events N`: bounds how many events get content (and so how many LLM calls run). */
 	maxEvents?: number;
+	/** `EDITORIAL_AUTO_PUBLISH` (ARCHITECTURE §11). */
+	autoPublish: AutoPublishPolicy;
 }
 
 export async function runDigest(deps: DigestDeps, ctx: JobContext): Promise<JobOutcome> {
@@ -101,8 +110,14 @@ export async function runDigest(deps: DigestDeps, ctx: JobContext): Promise<JobO
 				now: ctx.now,
 				logger: ctx.logger,
 				checkedAt: prepared.listedAt,
-				taggingErrorKind: taggingErrorFor(item, taggingFailures)
+				taggingErrorKind: taggingErrorFor(item, taggingFailures),
+				autoPublish: deps.autoPublish
 			});
+			if (result.outcome === 'deferred') {
+				// No LLM call can succeed in this run any more; the rest waits, unchanged.
+				errors.push('LLM budget used up; remaining events wait for the next run');
+				break;
+			}
 			if (result.outcome === 'published' && result.event.category !== null) {
 				counters.events_published++;
 				published.push({
@@ -111,6 +126,10 @@ export async function runDigest(deps: DigestDeps, ctx: JobContext): Promise<JobO
 				});
 			} else if (result.outcome === 'pending_review') {
 				counters.events_pending_review++;
+			} else if (result.outcome === 'new_evidence_pending') {
+				counters.events_new_evidence++;
+			} else if (result.outcome === 'skipped') {
+				counters.events_skipped++;
 			}
 		} catch (error) {
 			errors.push(`event ${item.event.id}: ${sanitizeError(error)}`);
@@ -151,6 +170,8 @@ function emptyDigestCounters() {
 		events_updated: 0,
 		events_published: 0,
 		events_pending_review: 0,
+		events_new_evidence: 0,
+		events_skipped: 0,
 		relations_published: 0,
 		relations_pending_review: 0,
 		relations_dropped: 0,
@@ -176,7 +197,8 @@ async function prepareEvents(
 	errors: string[]
 ): Promise<{ events: EventWithArticles[]; listedAt: IsoUtc }> {
 	const listedAt = ctx.now().toISOString();
-	const listed = await digest.listEventsNeedingContent(limit);
+	const retryFailedBefore = new Date(ctx.now().getTime() - LLM_FAILED_RETRY_DELAY_MS).toISOString();
+	const listed = await digest.listEventsNeedingContent(limit, retryFailedBefore);
 	const untagged = listed.flatMap((item) => item.articles).filter((a) => a.taxonomy === null);
 	if (untagged.length === 0) return { events: listed, listedAt };
 
@@ -205,13 +227,14 @@ async function prepareEvents(
 		}
 	}
 	if (saved === 0) return { events: listed, listedAt };
-	return { events: await digest.listEventsNeedingContent(limit), listedAt };
+	return { events: await digest.listEventsNeedingContent(limit, retryFailedBefore), listedAt };
 }
 
 /**
  * The error to report for an event whose articles are all untagged. Only a request that can
- * never succeed (`invalid_request`, `input_too_large`) is passed on, so a human looks at it;
- * anything else, including untagged articles with no error, becomes `llm_failed` and is retried.
+ * never succeed (`invalid_request`, `input_too_large`) is passed on, so a human looks at it, and
+ * `budget_exceeded`, so the event is deferred untouched; anything else, including untagged
+ * articles with no error, becomes `llm_failed` and is retried.
  */
 function taggingErrorFor(
 	item: EventWithArticles,
@@ -219,7 +242,9 @@ function taggingErrorFor(
 ): LlmErrorKind | null {
 	for (const article of item.articles) {
 		const kind = taggingFailures.get(article.id);
-		if (kind === 'invalid_request' || kind === 'input_too_large') return kind;
+		if (kind === 'invalid_request' || kind === 'input_too_large' || kind === 'budget_exceeded') {
+			return kind;
+		}
 	}
 	return null;
 }
@@ -330,7 +355,7 @@ async function clusterAmbiguousDrafts(
 /** The relation text an admin sees: the model's Thai rationale when usable, else a fixed line. */
 function duplicateExplanation(rationale: string | null | undefined, confidence: number): string {
 	const text = rationale?.trim() ?? '';
-	if (isThaiText(text) && !containsUrl(text)) return text;
+	if (isThaiText(text) && !containsLinkOrContact(text)) return text;
 	return `ระบบจัดกลุ่มข่าวเห็นว่าอาจเป็นเหตุการณ์เดียวกับข่าวที่เผยแพร่แล้ว (ความมั่นใจ ${Math.round(confidence * 100)}%)`;
 }
 
