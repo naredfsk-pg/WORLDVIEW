@@ -90,7 +90,8 @@ export function createDigestRepository(db: Db): DigestRepository {
 						first_seen_at: row.first_seen_at,
 						last_updated_at: row.last_updated_at,
 						article_titles: titles,
-						is_demo: row.is_demo
+						is_demo: row.is_demo,
+						status: row.status
 					};
 				});
 			});

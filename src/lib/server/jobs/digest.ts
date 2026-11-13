@@ -4,7 +4,8 @@
  * 1. group anything ingest left unassigned (rules only, no LLM)
  * 2. pick the events needing content and tag their articles `WHERE taxonomy IS NULL` (≤ 20 per call)
  * 3. ambiguous clustering: a draft event whose best rule score against another event was in the
- *    0.3–0.6 band goes to the LLM `clustering` task; `same_event` with enough confidence merges it
+ *    0.3–0.6 band, or a single-article draft sharing ≥ 2 tags with a published event, goes to the
+ *    LLM `clustering` task; `same_event` with enough confidence merges it
  * 4. per event: extraction → summary → publish gates → save (see digest-content.ts)
  * 5. per event published in this run: relations and Academy links (see digest-links.ts)
  * LLM failures never throw: each ends in a gate decision, and the run becomes `partial`.
@@ -33,8 +34,17 @@ export const MAX_CONTENT_EVENTS = 30;
 export const TAGGING_BATCH_SIZE = 20;
 /** Pairs per `clustering` call. */
 export const MAX_CLUSTERING_PAIRS = 20;
-/** A wrong merge is worse than a duplicate: merge only on a confident `same_event`. */
-export const CLUSTERING_MERGE_MIN_CONFIDENCE = 0.7;
+/**
+ * A wrong merge is worse than a duplicate: merge only on a confident `same_event`. Raised from 0.7
+ * in Wave 3 after a borderline merge of two different happenings of one papal visit.
+ */
+export const CLUSTERING_MERGE_MIN_CONFIDENCE = 0.8;
+/**
+ * Recall for published targets: a single-article draft whose article shares at least this many
+ * tags with a published event is sent to the LLM even when the titles share almost no words
+ * ("Nvidia scandal sparks …" vs "Ex-Nvidia CEO … summoned to testify" scores 0.05).
+ */
+export const PUBLISHED_TARGET_MIN_SHARED_TAGS = 2;
 
 export interface DigestDeps {
 	digest: DigestRepository;
@@ -204,8 +214,8 @@ function taggingErrorFor(
 
 /**
  * Ingest turns an ambiguous match (rule score 0.3–0.6) into a new draft event. Here the LLM
- * decides: a confident `same_event` merges the draft into the other event; anything else, or a
- * failed call, keeps them separate. Returns how many drafts were merged.
+ * decides: a confident `same_event` merges the draft into the other event (a draft or a published
+ * one); anything else, or a failed call, keeps them separate. Returns how many drafts were merged.
  */
 async function mergeAmbiguousDrafts(
 	digest: DigestRepository,
@@ -284,7 +294,11 @@ interface AmbiguousPair {
 	other: EventMatchCandidate;
 }
 
-/** One pair per unordered event pair; demo and real events are never paired. */
+/**
+ * One pair per draft and per unordered event pair; demo and real events are never paired, and
+ * hidden events are never candidates. The rule score's ambiguous band comes first; a
+ * single-article draft without one may still pair with a published event by shared tags.
+ */
 function findAmbiguousPairs(
 	drafts: EventWithArticles[],
 	candidates: EventMatchCandidate[]
@@ -296,19 +310,52 @@ function findAmbiguousPairs(
 			(candidate) =>
 				candidate.event_id !== draft.event.id && candidate.is_demo === draft.event.is_demo
 		);
-		const match = bestEventMatch(draft.articles, others);
-		const isAmbiguous =
-			match !== null &&
-			match.score >= GROUPING_CONFIG.ambiguousThreshold &&
-			match.score < GROUPING_CONFIG.joinThreshold;
-		if (!isAmbiguous) continue;
+		const other = ambiguousRuleMatch(draft, others) ?? publishedTagMatch(draft, others);
+		if (!other) continue;
 
-		const key = [draft.event.id, match.event_id].sort().join('|');
+		const key = [draft.event.id, other.event_id].sort().join('|');
 		if (seen.has(key)) continue;
 		seen.add(key);
-		pairs.push({ draft, other: others.find((other) => other.event_id === match.event_id)! });
+		pairs.push({ draft, other });
 	}
 	return pairs;
+}
+
+/** The best rule match, when its score is in the ambiguous band (0.3–0.6). */
+function ambiguousRuleMatch(
+	draft: EventWithArticles,
+	others: EventMatchCandidate[]
+): EventMatchCandidate | null {
+	const match = bestEventMatch(draft.articles, others);
+	const isAmbiguous =
+		match !== null &&
+		match.score >= GROUPING_CONFIG.ambiguousThreshold &&
+		match.score < GROUPING_CONFIG.joinThreshold;
+	if (!isAmbiguous) return null;
+	return others.find((other) => other.event_id === match.event_id) ?? null;
+}
+
+/**
+ * For a draft of one tagged article: the published event sharing the most tags with it, if at
+ * least `PUBLISHED_TARGET_MIN_SHARED_TAGS` (ties go to the newest, the candidates' order).
+ */
+function publishedTagMatch(
+	draft: EventWithArticles,
+	others: EventMatchCandidate[]
+): EventMatchCandidate | null {
+	if (draft.articles.length !== 1) return null;
+	const draftTags = new Set(draft.articles[0]!.taxonomy?.tags ?? []);
+	let best: EventMatchCandidate | null = null;
+	let bestShared = PUBLISHED_TARGET_MIN_SHARED_TAGS - 1;
+	for (const other of others) {
+		if (other.status !== 'published') continue;
+		const shared = other.tags.filter((tag) => draftTags.has(tag)).length;
+		if (shared > bestShared) {
+			best = other;
+			bestShared = shared;
+		}
+	}
+	return best;
 }
 
 function clusterItemOfDraft(articles: ArticleWithSource[]): ClusteringInput['pairs'][number]['a'] {

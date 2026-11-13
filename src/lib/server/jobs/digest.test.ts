@@ -21,7 +21,12 @@ import {
 import { openTestDb } from '#lib/server/db/test-db.js';
 import type { AcademyLessonRow } from '#lib/types/domain.js';
 import type { LlmCallRepository, Repositories } from '#lib/types/repositories.js';
-import type { MockLlmHandlers, SummaryInput, SummaryOutput } from '#lib/types/llm.js';
+import type {
+	ClusteringInput,
+	MockLlmHandlers,
+	SummaryInput,
+	SummaryOutput
+} from '#lib/types/llm.js';
 import { createDefaultMockHandlers, createMockLlmProvider, mockLlmError } from '../llm/mock';
 import { createFixtureAdapter } from '../news/adapters';
 import { sourceRegistryFor } from '../news/sources';
@@ -1069,5 +1074,205 @@ describe('timeline: event_updates on re-summary', () => {
 		db.update(events).set({ status: 'hidden' }).where(eq(events.id, id)).run();
 		await digest(withUpdate('มีข้อมูลใหม่'));
 		expect(updatesOf(id)).toEqual([]);
+	});
+});
+
+describe('clustering regressions (Wave 3 live runs, mock LLM)', () => {
+	/** Tags by title, as the live tagging did; the published event keeps only topic tags. */
+	const nvidiaTags = (title: string) => {
+		if (/scandal sparks/i.test(title))
+			return ['nvidia', 'jensen-huang', 'us-china', 'national-security'];
+		if (/nvidia|huang/i.test(title))
+			return ['nvidia', 'jensen-huang', 'us-congress', 'semiconductors'];
+		return ['water'];
+	};
+	const sameEvent = (confidence: number, seen: ClusteringInput[] = []) =>
+		handlers({
+			tagging: (input) => ({
+				items: input.articles.map((article) => ({
+					ref: article.ref,
+					category: 'technology',
+					regions: ['americas'],
+					countries: ['US'],
+					tags: nvidiaTags(article.title)
+				}))
+			}),
+			clustering: (input) => {
+				seen.push(input);
+				return {
+					decisions: input.pairs.map((pair) => ({
+						pair_ref: pair.pair_ref,
+						verdict: 'same_event',
+						confidence
+					}))
+				};
+			},
+			summary: (input) => ({
+				...defaultSummary(input),
+				update_th: input.previous ? 'The Guardian รายงานปฏิกิริยาด้านความมั่นคงในสหรัฐฯ' : null
+			})
+		});
+
+	async function publishedNvidiaEvent(): Promise<string> {
+		const id = await repositories.digest.createDraftEvent(
+			[
+				await addArticle(
+					'Ex-Nvidia CEO Jensen Huang summoned to testify before Congress about affair with alleged Chinese spy',
+					'2026-11-12T20:57:01.000Z'
+				),
+				await addArticle(
+					'Nvidia’s Jensen Huang to testify before Congress – live updates',
+					'2026-11-12T21:30:00.000Z'
+				)
+			],
+			1,
+			clock.toISOString()
+		);
+		await digest(sameEvent(0.9));
+		expect(eventById(id).status).toBe('published');
+		return id;
+	}
+
+	it('recall: a single-article draft with different wording merges into the published event', async () => {
+		const published = await publishedNvidiaEvent();
+		clock = new Date(NOW.getTime() + 60 * 60 * 1000);
+		const article = await addArticle(
+			'Nvidia scandal sparks US national security furore and calls to take tough line on China',
+			'2026-11-12T23:34:59.000Z'
+		);
+		// What ingest does: the rule score is far below the ambiguous band, so it is a new draft.
+		const draft = await repositories.digest.createDraftEvent([article], 1, clock.toISOString());
+
+		const seen: ClusteringInput[] = [];
+		const result = await digest(sameEvent(0.9, seen));
+
+		expect(seen).toHaveLength(1);
+		expect(seen[0]!.pairs).toHaveLength(1);
+		expect(db.select().from(events).where(eq(events.id, draft)).get()).toBeUndefined();
+		expect(
+			db.select().from(eventArticles).where(eq(eventArticles.article_id, article)).get()?.event_id
+		).toBe(published);
+		expect(result.counters.events_updated).toBe(1);
+		// The merge is new evidence: the event is re-summarized and its timeline grows.
+		expect(eventById(published)).toMatchObject({ status: 'published', source_count: 1 });
+		expect(
+			db.select().from(eventUpdates).where(eq(eventUpdates.event_id, published)).all()
+		).toMatchObject([{ evidence_refs: [{ article_id: article }] }]);
+	});
+
+	it('one shared tag is not enough to ask the LLM', async () => {
+		await publishedNvidiaEvent();
+		const draft = await repositories.digest.createDraftEvent(
+			[await addArticle('Avalor opens Kessel River dam')],
+			1,
+			clock.toISOString()
+		);
+		const seen: ClusteringInput[] = [];
+		await digest(
+			handlers({
+				tagging: (input) => ({
+					items: input.articles.map((article) => ({
+						ref: article.ref,
+						category: 'technology',
+						regions: ['asia'],
+						countries: [],
+						tags: ['semiconductors', 'water']
+					}))
+				}),
+				clustering: (input) => {
+					seen.push(input);
+					return { decisions: [] };
+				}
+			})
+		);
+		expect(seen).toEqual([]);
+		expect(eventById(draft).status).toBe('published');
+	});
+
+	const nvidiaDraft = async () =>
+		repositories.digest.createDraftEvent(
+			[await addArticle('Nvidia scandal sparks US national security furore')],
+			1,
+			clock.toISOString()
+		);
+
+	it('guard: a hidden published event is never offered as a target', async () => {
+		const published = await publishedNvidiaEvent();
+		db.update(events).set({ status: 'hidden' }).where(eq(events.id, published)).run();
+		const draft = await nvidiaDraft();
+
+		const seen: ClusteringInput[] = [];
+		await digest(sameEvent(0.95, seen));
+
+		expect(seen).toEqual([]);
+		expect(eventById(draft).status).toBe('published');
+	});
+
+	it('guard: a real published event is never offered to a demo draft', async () => {
+		const published = await publishedNvidiaEvent();
+		// The fixture sources are demo; mark the target real (no write recomputes it before clustering).
+		db.update(events).set({ is_demo: false }).where(eq(events.id, published)).run();
+		const draft = await nvidiaDraft();
+
+		const seen: ClusteringInput[] = [];
+		await digest(sameEvent(0.95, seen));
+
+		expect(seen).toEqual([]);
+		expect(eventById(draft).status).toBe('published');
+	});
+
+	it('guard: a draft an admin edited is never merged into the published event', async () => {
+		const published = await publishedNvidiaEvent();
+		const draft = await nvidiaDraft();
+		await repositories.admin.updateEvent(
+			draft,
+			{ title_th: 'หัวข้อที่บรรณาธิการเขียน' },
+			{ changed_by: 'editor@example.com', change_reason: 'own wording', public_note_th: null },
+			clock.toISOString()
+		);
+
+		const seen: ClusteringInput[] = [];
+		await digest(sameEvent(0.95, seen));
+
+		expect(seen.flatMap((input) => input.pairs)).toHaveLength(1);
+		expect(eventById(draft)).toBeDefined();
+		expect(
+			db.select().from(eventArticles).where(eq(eventArticles.event_id, published)).all()
+		).toHaveLength(2);
+	});
+
+	it('precision: two different happenings of one papal visit stay apart on a borderline same_event', async () => {
+		const meeting = await repositories.digest.createDraftEvent(
+			[
+				await addArticle(
+					'Pope Leo meets clergy abuse survivors in Peru amid calls for justice',
+					'2026-11-12T22:05:50.000Z'
+				)
+			],
+			1,
+			clock.toISOString()
+		);
+		const reparations = await repositories.digest.createDraftEvent(
+			[
+				await addArticle(
+					'Pope Leo urges reparations for abuse victims during Peru visit',
+					'2026-11-12T23:10:00.000Z'
+				)
+			],
+			1,
+			clock.toISOString()
+		);
+		const seen: ClusteringInput[] = [];
+		// 0.75 merged under the old 0.7 threshold; 0.8 keeps them apart.
+		await digest(sameEvent(0.75, seen));
+
+		expect(seen.flatMap((input) => input.pairs)).toHaveLength(1);
+		expect(
+			db
+				.select()
+				.from(events)
+				.where(inArray(events.id, [meeting, reparations]))
+				.all()
+		).toHaveLength(2);
 	});
 });

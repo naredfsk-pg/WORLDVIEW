@@ -2,7 +2,7 @@
  * News acquisition contracts: source registry, adapters, normalization, dedup.
  * Implemented in `#lib/server/news`. Type-only imports.
  */
-import type { Article, IsoUtc, Source, Tag } from './domain';
+import type { Article, EventStatus, IsoUtc, Source, Tag } from './domain';
 
 /** Checked-in registry entry (`src/lib/server/news/sources.ts`). Upserted into `sources` at ingest start. */
 export type SourceDefinition = Omit<
@@ -106,6 +106,9 @@ export interface EventMatchCandidate {
 	article_titles: string[];
 	// CONTRACT-CHANGE: added (Wave 2). Real articles never join a demo event (and vice versa).
 	is_demo: boolean;
+	// CONTRACT-CHANGE: added (Wave 3). Digest also offers published events to single-article
+	// drafts as LLM merge targets. Never `hidden` (`listMatchableEvents` leaves those out).
+	status: EventStatus;
 }
 
 /** Rule-based grouping verdict; `ambiguous` pairs go to the LLM `clustering` task. */
