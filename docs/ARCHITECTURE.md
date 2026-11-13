@@ -247,7 +247,11 @@ When formatting a `BriefDate`, interpret it as Bangkok noon so it never shifts b
 
 ```
 npm run job -- <ingest|digest|brief_morning|brief_evening|archive_snapshot> [--date YYYY-MM-DD] [--force] [--manual]
+npm run job -- ingest [--fixtures] [--dry-run]
+npm run job -- digest [--max-events N]
 ```
+
+`scripts/job.ts` is a thin CLI over **`runJobByType(type, { date, force, manual, dryRun, fixtures, maxEvents, signal })`** in `src/lib/server/jobs/registry.ts` (Wave 2), which returns `{ status, exitCode, counters, runId? }`. The registry is the jobs composition root: the one file under `server/jobs` that reads config and opens the concrete database (one connection per call, closed at the end). Job bodies still see repository interfaces only. It never throws: setup failures return `failed`/1, usage errors `usage_error`/64. The admin lane calls it too. `--max-events N` bounds how many events digest gives content to (bounded smoke runs); `--dry-run` fetches and normalizes without any database access.
 
 Exit codes: `0` succeeded or skipped (already done, or running elsewhere) · `2` partial · `1` failed · `64` usage error. Other scripts: `academy:sync` (content → `academy_lessons` + FTS), plus `db:migrate` and `db:seed`, which 0.2/0.3 own. At the end of every job, log one JSON line with the counters and `process.memoryUsage().rss` (the RAM baseline for PRD §11 #12).
 
@@ -273,7 +277,7 @@ Jobs abort themselves after 20 min through `JobContext.signal`. Data writes are 
 
 A forced rerun therefore never duplicates anything (PRD §11 #4).
 
-**Counters** (`JobCounters`, a JSON object in `job_runs.counters`) use the keys in `JOB_COUNTER_KEYS`: ingest (`sources_ok`, `items_fetched`, `articles_inserted`, `duplicates_url`, `duplicates_content`, …), digest (`events_created`, `events_published`, `events_pending_review`, `relations_*`, `lesson_links`, `llm_requests`, `llm_cache_hits`, `llm_failures`, `llm_tokens`) and briefs (`brief_candidates`, `brief_events`).
+**Counters** (`JobCounters`, a JSON object in `job_runs.counters`) use the keys in `JOB_COUNTER_KEYS`: ingest (`sources_ok`, `items_fetched`, `articles_inserted`, `duplicates_url`, `duplicates_content`, …), digest (`events_created`, `events_published`, `events_pending_review`, `relations_*`, `lesson_links`, `llm_requests`, `llm_cache_hits`, `llm_failures`, `llm_tokens`) and briefs (`brief_candidates`, `brief_events`). In digest, `llm_requests` and `llm_tokens` are the network calls recorded in `llm_calls` since the run started (jobs run one at a time); `llm_cache_hits` and `llm_failures` count task results (a failure is a task that returned `ok: false`). `events_updated` includes drafts merged by clustering. A digest with any LLM failure or failed step is `partial`.
 
 **Retry/backoff** (`withRetry(fn, policy, isRetryable)` in `utils/retry.ts`):
 - Delay = `min(max, base·2^(n-1)) · rand(0.5..1)`. `Retry-After` is honoured, up to `max`.
@@ -308,19 +312,26 @@ The two steps are joined with `;`, not `&&`, so digest still processes earlier a
 | evening D | D-1 19:00 → D 19:00 |
 | daily_snapshot D | D 00:00 → D+1 00:00, merged with the events of the D morning and evening briefs |
 
-Ranking (`editorial.rankBriefCandidates`) is pure:
-- Inputs: `signals`, recency, `source_count`, continuity (`is_continuing`) and a region quota (no single region above 40% of items when alternatives exist).
-- Output: at most `DAILY_EVENT_TARGET_MAX` items, never padded up to MIN, each with a Thai `selection_reason`.
+`briefWindow` lives in `server/jobs/briefs.ts`; the snapshot merge is `listCandidateEvents({ …, include_briefs_of: D })` (items of D's *published* morning/evening briefs). Real events are preferred: demo events enter a brief only when no real candidate exists (an empty dev DB).
+
+Ranking (`rankBriefCandidates`, pure) lives in `server/jobs/brief-ranking.ts` (Wave 2; `editorial` was outside that lane):
+- Score = 3·`impact_breadth` + 3·`thailand_relevance` + 2·recency (1 at the window end, 0 a day earlier) + 1.5·`is_continuing` + source diversity (`source_count` − 1, max 3). Credibility is not scored separately: every source is owner-approved.
+- Region quota: no region except `global` above 40% of the items while other candidates remain; leftover slots are then filled in score order.
+- Output: at most `DAILY_EVENT_TARGET_MAX` items, never padded up to MIN (fewer than MIN is logged), each with a short Thai `selection_reason` built from the strongest signals (e.g. "ผลกระทบในวงกว้าง · รายงานจาก 3 แหล่งข่าว").
+- `saveBrief` keeps an admin-hidden brief hidden; a brief with no items is a `draft`.
 
 To add late reports to a past day, run `archive_snapshot --date D --force`.
 
 ## 9. News ingestion (`types/news.ts`)
 
+- **Sources** (Wave 2): the owner approved the six registry feeds on 2026-11-13 for headline + link only (`allow_excerpt: false`). UN News, BBC World, Guardian World and Al Jazeera are enabled. WHO (stale feed, re-dated 2020 items) and IMF (HTTP 404, no working RSS URL found) stay disabled until a working URL is confirmed.
+- **Conditional GET** (Wave 2): `sources.etag` / `sources.last_modified` (migration 0002) hold the validators of the last successful fetch. The RSS adapter sends `If-None-Match` / `If-Modified-Since`; a 304 ingests nothing; validators are stored only after the inserts commit.
 - **`NewsSourceAdapter`** has one adapter per `SourceKind` (`rss` covers RSS and Atom; `fixture` reads a local XML file). An adapter only fetches and parses into `RawFeedItem[]`. It does not normalize or touch the DB.
 - **`SafeFetch`** (SSRF):
   - only https, and only hosts taken from enabled registry `feed_url`s
   - at most 3 redirects, all inside the allowlist
   - 15 s timeout, 5 MB body cap
+  - asks for `identity`, but inflates a gzip body anyway (UN News sends one), with the inflated size capped at the same 5 MB; other encodings are refused
   - generic `User-Agent: WorldviewBot/0.1`
   - no scraping of article pages
 - **Normalization** (`normalizeFeedItem(source, raw, now): NormalizedArticle | null`, pure):
@@ -341,21 +352,24 @@ To add late reports to a past day, run `archive_snapshot --date D --force`.
   - `content_hash = sha256hex(norm(title) + '\n' + (excerpt ? norm(excerpt) : 'publisher:' + norm(publisher_name)))`, where `norm` = NFKC, lower-case, keep only `\p{L}\p{N}`, collapse whitespace.
   - When there is no excerpt, the publisher is part of the hash, so identical generic titles from different outlets do not collide.
 - **Dedup** (`insertArticleIfNew`): an existing `canonical_url` → `duplicate_url`; the same `content_hash` ingested in the last 7 days → `duplicate_content`. Existing rows are never updated.
-- **Grouping** (digest, `news/grouping.ts`, pure):
+- **Grouping vs tagging** (AGENT_PLAN Wave 2 decision (a)): rule-based grouping runs at the end of **ingest** (and again at the start of digest for anything left unassigned). Digest tags articles `WHERE taxonomy IS NULL` whether grouped or not, and the LLM `clustering` task runs only for ambiguous pairs. Real and demo articles never share an event.
+- **Grouping** (`news/grouping.ts`, pure):
   - Compare against events whose `last_updated_at` is within 72 h.
   - Score = title-token Jaccard plus tag overlap.
   - ≥ 0.6 → `join`; 0.3–0.6 → `ambiguous` (LLM `clustering`); < 0.3 → `new_event`.
-  - If clustering fails, ambiguous pairs become new events. Wrong merges are worse than duplicates.
+  - Ingest turns an ambiguous match into a new draft event. Digest recomputes the score of each draft it processes (`bestEventMatch`) and sends the 0.3–0.6 pairs (max 20 per call) to `clustering`; `same_event` with confidence ≥ 0.7 merges the draft into the other event (`mergeDraftEvent`, one transaction). Anything else, or a failed call, keeps them separate. Wrong merges are worse than duplicates.
   - The thresholds are named constants (data-scientist may tune them).
 
-**Digest order:**
-1. Load unassigned articles (72 h, up to 200).
-2. `tagging` (up to 20 per call), then `saveArticleTaxonomy`.
-3. Group, then `createDraftEvent` / `linkArticles`.
-4. For up to 30 `listEventsNeedingContent`: `extraction` → `summary` → `evaluateEventForPublish` → `saveEventContent` or `markEventForReview`.
-5. For events that were just published or updated:
-   - `relations`: up to 8 candidate published events from the last 14 days that share a tag or category, then the relation gate, then `upsertRelation`.
-   - `academy_linking`: up to 8 prefiltered lessons, then validated `lesson_id`s → `replaceLessonLinks`.
+**Digest order** (`server/jobs/digest.ts`, Wave 2):
+1. Group unassigned articles (72 h, up to 200) by rules: `createDraftEvent` / `linkArticles`.
+2. Take up to 30 (or `--max-events`) `listEventsNeedingContent` and tag their articles `WHERE taxonomy IS NULL` (up to 20 per call), then `saveArticleTaxonomy`.
+3. Ambiguous clustering for the drafts among them (see Grouping); after a merge, steps 2–3 list again.
+4. Per event: `extraction` → `summary` (with the previous wording for a published event) → `evaluateEventForPublish` (with `current_review_reasons`) → `saveEventContent` (output present) or `markEventForReview` (no output); nothing is written on `keep_published` / `keep_hidden`. Claim evidence goes through `mapRefsToArticleIds`. `signals` = summary `impact_breadth` / `thailand_relevance` + extraction `sensitive`. An event with no tagged article skips the LLM and records the tagging failure (`llm_failed`, retried).
+5. For events published or re-summarized in this run:
+   - `relations`: up to 8 published events from the last 14 days that share a tag or a region other than `global` (and the same `is_demo`), 3 articles each, then the relation gate, then `upsertRelation` on `store`.
+   - `academy_linking`: up to 8 lessons sharing a tag (2 points) or the category (1 point), then `selectLessonLinks(links, existing ids)` → `replaceLessonLinks`. A failed call keeps the previous links.
+
+Every LLM call passes `{ job_run_id, signal }`; no failure throws.
 
 Event taxonomy: `category` is the majority of the articles' `taxonomy.category` (a tie goes to the earliest article). `regions`, `countries` and `tags` are the union (tags capped at 10).
 
