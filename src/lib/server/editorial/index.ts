@@ -9,3 +9,4 @@ export { evaluateRelation, RELATION_PUBLISH_MIN_CONFIDENCE } from './relation-ga
 export { selectLessonLinks, MAX_LESSON_LINKS } from './lesson-links';
 export { containsUrl, isThaiText } from './text';
 export { filterAllegationTags, isAllegationTag } from './tag-filter';
+export { buildEventUpdate, type EventUpdateWrite } from './event-update';

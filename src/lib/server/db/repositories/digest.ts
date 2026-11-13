@@ -82,7 +82,7 @@ export function createDigestRepository(db: Db): DigestRepository {
 					rows.map((row) => row.id)
 				);
 				return rows.map((row): EventMatchCandidate => {
-					const titles = (articlesByEvent.get(row.id) ?? []).map((article) => article.title);
+					const titles = (articlesByEvent.get(row.id) ?? []).map(({ article }) => article.title);
 					return {
 						event_id: row.id,
 						title: row.title_th || titles[0] || '',
@@ -229,10 +229,11 @@ export function createDigestRepository(db: Db): DigestRepository {
 						.where(eq(events.id, eventId))
 						.run();
 
-					if (content.new_updates.length > 0) {
+					const newUpdates = withoutStoredUpdates(tx, eventId, content.new_updates);
+					if (newUpdates.length > 0) {
 						tx.insert(eventUpdates)
 							.values(
-								content.new_updates.map((update) => ({
+								newUpdates.map((update) => ({
 									...update,
 									id: randomUUID(),
 									event_id: eventId,
@@ -554,6 +555,34 @@ function adminEditedContentFields(tx: Executor, eventId: string): Set<string> {
 	return fields;
 }
 
+/**
+ * Idempotent timeline: drops each update whose evidence (as a set of article ids) equals that of
+ * a stored update of the event, or of an earlier one in the same list.
+ */
+function withoutStoredUpdates(
+	tx: Executor,
+	eventId: string,
+	updates: EventContentWrite['new_updates']
+): EventContentWrite['new_updates'] {
+	if (updates.length === 0) return [];
+	const evidenceKey = (refs: { article_id: string }[]) =>
+		[...new Set(refs.map((ref) => ref.article_id))].sort().join('|');
+	const seen = new Set(
+		tx
+			.select({ evidence_refs: eventUpdates.evidence_refs })
+			.from(eventUpdates)
+			.where(eq(eventUpdates.event_id, eventId))
+			.all()
+			.map((row) => evidenceKey(row.evidence_refs))
+	);
+	return updates.filter((update) => {
+		const key = evidenceKey(update.evidence_refs);
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
 function hasAdminRevision(tx: Executor, eventId: string): boolean {
 	const row = tx
 		.select({ id: contentRevisions.id })
@@ -613,17 +642,35 @@ function withArticles(tx: Executor, rows: (typeof events.$inferSelect)[]): Event
 		tx,
 		rows.map((row) => row.id)
 	);
-	return rows.map((event) => ({ event, articles: articlesByEvent.get(event.id) ?? [] }));
+	return rows.map((event) => {
+		const linked = articlesByEvent.get(event.id) ?? [];
+		// Both are UTC ISO strings, so the string comparison is chronological.
+		const isNew = (linkedAt: string) =>
+			event.summarized_at === null || linkedAt > event.summarized_at;
+		return {
+			event,
+			articles: linked.map(({ article }) => article),
+			new_article_ids: linked
+				.filter((item) => isNew(item.linked_at))
+				.map(({ article }) => article.id)
+		};
+	});
 }
 
-/** Linked articles per event, oldest evidence first. */
-function loadArticlesByEvent(tx: Executor, eventIds: string[]): Map<string, ArticleWithSource[]> {
-	const byEvent = new Map<string, ArticleWithSource[]>();
+interface LinkedArticle {
+	article: ArticleWithSource;
+	linked_at: string;
+}
+
+/** Linked articles per event, oldest evidence first, with the time each was linked. */
+function loadArticlesByEvent(tx: Executor, eventIds: string[]): Map<string, LinkedArticle[]> {
+	const byEvent = new Map<string, LinkedArticle[]>();
 	if (eventIds.length === 0) return byEvent;
 
 	const rows = tx
 		.select({
 			event_id: eventArticles.event_id,
+			linked_at: eventArticles.linked_at,
 			article: articles,
 			source_name: sources.name,
 			source_is_demo: sources.is_demo
@@ -636,7 +683,7 @@ function loadArticlesByEvent(tx: Executor, eventIds: string[]): Map<string, Arti
 		.all();
 	for (const row of rows) {
 		const list = byEvent.get(row.event_id) ?? [];
-		list.push(toArticleWithSource(row));
+		list.push({ article: toArticleWithSource(row), linked_at: row.linked_at });
 		byEvent.set(row.event_id, list);
 	}
 	return byEvent;

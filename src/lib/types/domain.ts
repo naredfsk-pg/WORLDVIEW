@@ -258,7 +258,7 @@ export interface EventUpdate {
 	id: string;
 	event_id: string;
 	occurred_at: IsoUtc | null;
-	/** Earliest publish time among the evidence articles for this update. */
+	/** Newest `published_at ?? ingested_at` among the evidence articles of this update. */
 	reported_at: IsoUtc;
 	update_text_th: string;
 	/** Non-empty. */

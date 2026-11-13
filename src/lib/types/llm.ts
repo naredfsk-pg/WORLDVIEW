@@ -100,7 +100,8 @@ export interface SummaryInput {
 	articles: ArticleRefInput[];
 	extraction: ExtractionOutput;
 	/** Present when re-summarizing a published event, to keep wording stable. */
-	previous: { title_th: string; summary_th: string } | null;
+	// CONTRACT-CHANGE (Wave 3): `new_refs` = refs of the articles linked since the last summary.
+	previous: { title_th: string; summary_th: string; new_refs: string[] } | null;
 }
 export interface SummaryOutput {
 	title_th: string;
@@ -114,6 +115,9 @@ export interface SummaryOutput {
 	thailand_relevance: 0 | 1 | 2 | 3;
 	/** Article refs the text relies on; must be a subset of input refs. */
 	cited_refs: string[];
+	// CONTRACT-CHANGE (Wave 3): added for the event timeline (`event_updates`).
+	/** One Thai line on what `previous.new_refs` add; null without `previous` or nothing new. */
+	update_th: string | null;
 }
 
 export interface RelationsInput {

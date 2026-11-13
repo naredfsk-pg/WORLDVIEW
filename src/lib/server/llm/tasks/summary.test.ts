@@ -1,14 +1,16 @@
 /**
  * summary@2 (Wave 2 review): a live event's title stated one outlet's framing ("former CEO") as
- * fact. The prompt now requires title and summary to state only facts every source agrees on,
- * and the version bump invalidates cached summary@1 outputs.
+ * fact. The prompt now requires title and summary to state only facts every source agrees on.
+ * summary@3 (Wave 3): allegations about a named person stay attributed claims, and the optional
+ * `update_th` timeline line. tagging@2: tags are topics, never allegations. Each version bump
+ * invalidates the cached outputs of the previous one.
  */
 import { describe, expect, it } from 'vitest';
 import type { LlmCallRepository } from '../../../types/repositories';
 import { createMockTransport } from '../mock';
 import { createLlmProvider } from '../provider';
 import { SUMMARY_INPUT, VALID_SUMMARY } from '../test-fixtures';
-import { PROMPT_VERSIONS } from './index';
+import { PROMPT_VERSIONS, TASK_DEFINITIONS } from './index';
 
 const noCache: LlmCallRepository = {
 	findCachedOutput: async () => null,
@@ -18,8 +20,20 @@ const noCache: LlmCallRepository = {
 };
 
 describe('summary task prompt', () => {
-	it('is version summary@2, so summary@1 cache entries are not reused', () => {
-		expect(PROMPT_VERSIONS.summary).toBe('summary@2');
+	it('is version summary@3 (and tagging@2), so older cache entries are not reused', () => {
+		expect(PROMPT_VERSIONS.summary).toBe('summary@3');
+		expect(PROMPT_VERSIONS.tagging).toBe('tagging@2');
+	});
+
+	it('tells the models that allegations about a person are claims, and tags are topics', () => {
+		const summary = TASK_DEFINITIONS.summary.systemPrompt;
+		expect(summary).toContain('Allegations about a named person');
+		expect(summary).toContain('are claims, never facts');
+		expect(summary).toContain('update_th');
+		const tagging = TASK_DEFINITIONS.tagging.systemPrompt;
+		expect(tagging).toContain('Tags describe topics');
+		expect(tagging).toContain('never allegations about individuals');
+		expect(tagging).toContain('"alleged-spy"');
 	});
 
 	it('tells the model to attribute single-outlet or contested framing, never to state it in the title', async () => {

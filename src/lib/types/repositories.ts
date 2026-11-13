@@ -108,7 +108,11 @@ export interface IngestRepository {
 
 export interface EventWithArticles {
 	event: NewsEvent;
+	/** Oldest evidence first. */
 	articles: ArticleWithSource[];
+	// CONTRACT-CHANGE (Wave 3): added for the event timeline.
+	/** Ids of the articles linked after `event.summarized_at` (all of them while it is null). */
+	new_article_ids: string[];
 }
 
 /** Result of summarization + publish gates, persisted atomically by `saveEventContent`. */
@@ -130,6 +134,7 @@ export interface EventContentWrite {
 	/** From `evaluateEventForPublish` ('keep_published' → caller does not save). */
 	status: 'published' | 'pending_review';
 	review_reasons: ReviewReason[];
+	/** Appended to the timeline; one whose evidence set equals a stored update's is skipped. */
 	new_updates: Omit<EventUpdate, 'id' | 'event_id' | 'created_at'>[];
 }
 
@@ -330,7 +335,7 @@ export interface AdminRepository {
 	 */
 	publishEvent(
 		id: string,
-		gate: (current: EventWithArticles) => ReviewReason[],
+		gate: (current: Pick<EventWithArticles, 'event' | 'articles'>) => ReviewReason[],
 		meta: RevisionMeta,
 		now: IsoUtc
 	): Promise<AdminTransitionResult>;

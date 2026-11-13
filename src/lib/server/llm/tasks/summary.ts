@@ -10,7 +10,9 @@ import {
 } from './shared';
 
 // summary@2 (Wave 2 review): title and summary state only facts every source agrees on.
-export const SUMMARY_PROMPT_VERSION = 'summary@2';
+// summary@3 (Wave 3): allegations about a person stay attributed claims; optional `update_th`
+// (one timeline line on what the new articles add) and `previous.new_refs` in the input.
+export const SUMMARY_PROMPT_VERSION = 'summary@3';
 
 const scoreSchema = z.literal([0, 1, 2, 3]);
 
@@ -29,7 +31,11 @@ const outputSchema: z.ZodType<SummaryOutput> = z.object({
 		.default([]),
 	impact_breadth: scoreSchema.describe('0 = local only … 3 = worldwide'),
 	thailand_relevance: scoreSchema.describe('0 = none … 3 = direct effect on Thailand'),
-	cited_refs: refListSchema.describe('refs of every article the text relies on')
+	cited_refs: refListSchema.describe('refs of every article the text relies on'),
+	update_th: textSchema(300)
+		.nullable()
+		.default(null)
+		.describe('one Thai line on what previous.new_refs add, or null')
 });
 
 export const summaryTask = defineTask({
@@ -45,9 +51,11 @@ All *_th fields are in neutral, plain Thai (proper names may stay in their usual
 - background_th: relevant background that the data supports, or null.
 - uncertain_th: what is still unclear or disputed. If the data is insufficient, write "ไม่แน่ชัด".
 - claims_th: each claim with claimant_th (who said it, in Thai) and claim_th; never restate a claim as fact. "evidence" lists the supporting refs.
+- Allegations about a named person (their private life or relationships, or criminal, corruption, espionage or sexual-misconduct allegations) are claims, never facts: put them in claims_th with who makes them, mark them as unconfirmed, and keep title_th and summary_th to what is confirmed (if the allegation is the core of the news, attribute it there too, e.g. "ตามรายงานของ …").
 - impact_breadth and thailand_relevance: integers 0-3.
 - cited_refs: refs of every article your text relies on (at least one).
-If <data>.previous is not null, keep its wording where the facts have not changed.`,
+If <data>.previous is not null, keep its wording where the facts have not changed.
+- update_th: when <data>.previous is not null and previous.new_refs is not empty, one short Thai sentence (a timeline entry) saying what the articles in previous.new_refs add to the story, with the same attribution rules; otherwise null. Use null when they add nothing new.`,
 	outputSchema,
 	maxArticles: MAX_ARTICLES_PER_CALL,
 	findUnknownRefs(output, input) {

@@ -71,7 +71,8 @@ export const VALID_SUMMARY: SummaryOutput = {
 	claims_th: [{ claimant_th: 'การท่าเรือ', claim_th: 'ความเสียหายมีเพียงเล็กน้อย', evidence: ['a1'] }],
 	impact_breadth: 1,
 	thailand_relevance: 0,
-	cited_refs: ['a1', 'a2']
+	cited_refs: ['a1', 'a2'],
+	update_th: null
 };
 
 export const REF_TO_ARTICLE_ID: Record<string, string> = { a1: 'art-1', a2: 'art-2' };

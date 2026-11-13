@@ -75,6 +75,10 @@ describe('evaluateEventForPublish (auto)', () => {
 		expect(evaluateEventForPublish(gateInput({ summary: inClaim })).review_reasons).toEqual([
 			'url_in_generated_text'
 		]);
+		const inUpdate = { ...VALID_SUMMARY, update_th: 'อัปเดตจาก evil-news.example.com/x' };
+		expect(evaluateEventForPublish(gateInput({ summary: inUpdate })).review_reasons).toEqual([
+			'url_in_generated_text'
+		]);
 	});
 
 	it('G4: a missing LLM output gives only the LLM reason, so the digest can retry', () => {

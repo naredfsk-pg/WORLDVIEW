@@ -133,6 +133,7 @@ function hasUrlInText(summary: SummaryOutput): boolean {
 		summary.why_it_matters_th,
 		summary.background_th,
 		summary.uncertain_th,
+		summary.update_th,
 		...summary.claims_th.flatMap((claim) => [claim.claimant_th, claim.claim_th])
 	];
 	return fields.some(containsUrl);

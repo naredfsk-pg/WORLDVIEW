@@ -15,7 +15,8 @@ import {
 	eventArticles,
 	eventLessonLinks,
 	eventRelations,
-	events
+	events,
+	eventUpdates
 } from '#lib/server/db/schema.js';
 import { openTestDb } from '#lib/server/db/test-db.js';
 import type { AcademyLessonRow } from '#lib/types/domain.js';
@@ -898,8 +899,14 @@ describe('owner policy: no public tags derived from allegations', () => {
 	it('the Nvidia-like event publishes, without the allegation tags but with its topic tags', async () => {
 		const id = await repositories.digest.createDraftEvent(
 			[
-				await addArticle('Chip maker chief summoned to testify about affair with alleged spy'),
-				await addArticle('Chip maker scandal sparks national security furore')
+				await addArticle(
+					'Chip maker chief summoned to testify about affair with alleged spy',
+					'2026-11-12T20:00:00.000Z'
+				),
+				await addArticle(
+					'Chip maker scandal sparks national security furore',
+					'2026-11-12T21:00:00.000Z'
+				)
 			],
 			1,
 			clock.toISOString()
@@ -964,5 +971,103 @@ describe('owner policy: no public tags derived from allegations', () => {
 		await digest(nvidiaTagging);
 
 		expect(eventById(id)).toMatchObject({ status: 'published', tags: ['nvidia', 'alleged-spy'] });
+	});
+});
+
+describe('timeline: event_updates on re-summary', () => {
+	const updatesOf = (id: string) =>
+		db.select().from(eventUpdates).where(eq(eventUpdates.event_id, id)).all();
+
+	async function publishedEventWithNewArticle(): Promise<{ id: string; newArticle: string }> {
+		const id = await repositories.digest.createDraftEvent(
+			[await addArticle('Avalor opens Kessel River dam', '2026-11-12T20:00:00.000Z')],
+			1,
+			clock.toISOString()
+		);
+		await digest();
+		expect(eventById(id).status).toBe('published');
+		clock = new Date(NOW.getTime() + 60 * 60 * 1000);
+		const newArticle = await addArticle(
+			'Avalor dam opening draws protest',
+			'2026-11-13T00:30:00.000Z'
+		);
+		await repositories.digest.linkArticles(id, [newArticle], 1, clock.toISOString());
+		return { id, newArticle };
+	}
+
+	const withUpdate = (update_th: string | null) =>
+		handlers({ summary: (input) => ({ ...defaultSummary(input), update_th }) });
+
+	it('a first publication adds no update', async () => {
+		const id = await repositories.digest.createDraftEvent(
+			[await addArticle('Avalor census results')],
+			1,
+			clock.toISOString()
+		);
+		await digest(withUpdate('มีข้อมูลใหม่'));
+		expect(eventById(id).status).toBe('published');
+		expect(updatesOf(id)).toEqual([]);
+	});
+
+	it('a published event re-summarized after new articles gets one update with those articles', async () => {
+		const { id, newArticle } = await publishedEventWithNewArticle();
+		let newRefs: string[] | null = null;
+		await digest(
+			handlers({
+				summary: (input) => {
+					newRefs = input.previous?.new_refs ?? null;
+					return { ...defaultSummary(input), update_th: 'มีการประท้วงหลังพิธีเปิดเขื่อน' };
+				}
+			})
+		);
+
+		// The LLM is told which refs are new (the newest article is a2).
+		expect(newRefs).toEqual(['a2']);
+		expect(updatesOf(id)).toMatchObject([
+			{
+				update_text_th: 'มีการประท้วงหลังพิธีเปิดเขื่อน',
+				reported_at: '2026-11-13T00:30:00.000Z',
+				occurred_at: null,
+				evidence_refs: [{ article_id: newArticle }]
+			}
+		]);
+		const detail = await repositories.read.getPublishedEventDetail(id);
+		expect(detail?.updates).toHaveLength(1);
+		expect(detail?.updates[0]?.evidence_source_urls).toHaveLength(1);
+
+		// Idempotent: a forced rerun with no newer evidence adds nothing.
+		await digest(withUpdate('มีการประท้วงหลังพิธีเปิดเขื่อน'));
+		expect(updatesOf(id)).toHaveLength(1);
+	});
+
+	it('keep_published (the gates rejected the re-summary) adds no update', async () => {
+		const { id } = await publishedEventWithNewArticle();
+		await digest(withUpdate('อ่านต่อที่ https://x.example'));
+
+		expect(eventById(id)).toMatchObject({ status: 'published' });
+		expect(updatesOf(id)).toEqual([]);
+	});
+
+	it('a re-summary without a usable Thai line saves the text but adds no update', async () => {
+		const { id } = await publishedEventWithNewArticle();
+		await digest(
+			handlers({
+				summary: (input) => ({
+					...defaultSummary(input),
+					title_th: 'หัวข้อใหม่จากการสรุปซ้ำ',
+					update_th: 'English only line'
+				})
+			})
+		);
+
+		expect(eventById(id).title_th).toBe('หัวข้อใหม่จากการสรุปซ้ำ');
+		expect(updatesOf(id)).toEqual([]);
+	});
+
+	it('a hidden event is never touched', async () => {
+		const { id } = await publishedEventWithNewArticle();
+		db.update(events).set({ status: 'hidden' }).where(eq(events.id, id)).run();
+		await digest(withUpdate('มีข้อมูลใหม่'));
+		expect(updatesOf(id)).toEqual([]);
 	});
 });

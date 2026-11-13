@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { EventContentWrite } from '../../../types/repositories';
 import type { Db } from '../client';
-import { contentRevisions, eventRelations, events } from '../schema';
+import { contentRevisions, eventRelations, events, eventUpdates } from '../schema';
 import { openTestDb } from '../test-db';
 import { createRepositories } from './index';
 
@@ -218,6 +218,44 @@ describe('DigestRepository content lifecycle', () => {
 		expect(revisions[0]?.before_after.before).toMatchObject({ title_th: 'หัวข้อข่าว' });
 		// First publication time is kept.
 		expect(getEvent(id).published_at).toBe('2026-11-13T02:00:00.000Z');
+	});
+
+	it('lists the articles linked since the last summary, and never stores the same update twice', async () => {
+		const first = await addArticle('2026-11-13T00:00:00.000Z');
+		const id = await repos.digest.createDraftEvent([first], 1, '2026-11-13T01:00:00.000Z');
+		const [draft] = await repos.digest.listEventsNeedingContent(10);
+		// Never summarized: every linked article is new.
+		expect(draft?.new_article_ids).toEqual([first]);
+		await repos.digest.saveEventContent(id, content(), '2026-11-13T02:00:00.000Z');
+
+		const later = await addArticle('2026-11-13T02:30:00.000Z');
+		await repos.digest.linkArticles(id, [later], 0.9, '2026-11-13T03:00:00.000Z');
+		const [stale] = await repos.digest.listEventsNeedingContent(10);
+		expect(stale?.new_article_ids).toEqual([later]);
+
+		const update = {
+			occurred_at: null,
+			reported_at: '2026-11-13T02:30:00.000Z',
+			update_text_th: 'มีพัฒนาการใหม่',
+			evidence_refs: [{ article_id: later }]
+		};
+		const resummary = content({ summarized_at: '2026-11-13T03:05:00.000Z', new_updates: [update] });
+		await repos.digest.saveEventContent(id, resummary, '2026-11-13T03:05:00.000Z');
+		// A forced rerun with the same evidence set (and a duplicate in one list) adds nothing.
+		await repos.digest.saveEventContent(
+			id,
+			{ ...resummary, new_updates: [update, { ...update, update_text_th: 'ข้อความอื่น' }] },
+			'2026-11-13T03:10:00.000Z'
+		);
+
+		const stored = db.select().from(eventUpdates).where(eq(eventUpdates.event_id, id)).all();
+		expect(stored).toHaveLength(1);
+		expect(stored[0]).toMatchObject({
+			update_text_th: 'มีพัฒนาการใหม่',
+			reported_at: '2026-11-13T02:30:00.000Z',
+			occurred_at: null,
+			evidence_refs: [{ article_id: later }]
+		});
 	});
 
 	it('never demotes a published event', async () => {

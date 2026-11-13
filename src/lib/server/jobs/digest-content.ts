@@ -7,6 +7,8 @@
  *   next digest retries; any other `keep_published` → `markContentChecked`, so the event comes
  *   back only when newer evidence is linked
  * - `keep_hidden` → nothing is written
+ * A published event re-summarized and published again also gets a timeline entry
+ * (`event_updates`) from the summary's `update_th`, with the newly linked articles as evidence.
  * `summarized_at` (and the checked marker) is the time the events were listed, so an article
  * linked while the LLM was working still triggers the next re-summary.
  */
@@ -34,6 +36,7 @@ import type {
 	EventWithArticles
 } from '#lib/types/repositories.js';
 import {
+	buildEventUpdate,
 	evaluateEventForPublish,
 	filterAllegationTags,
 	mapRefsToArticleIds
@@ -83,13 +86,17 @@ export async function generateEventContent(
 		refToArticleId[ref] = article.id;
 		return toArticleRef(article, ref);
 	});
+	// The articles linked since the last summary that the LLM sees: what a timeline entry is about.
+	const newRefs = Object.keys(refToArticleId).filter((ref) =>
+		item.new_article_ids.includes(refToArticleId[ref]!)
+	);
 
 	// Without any tagged article there is no category to publish under: skip the LLM and let the
 	// gate record the tagging failure (an `llm_failed` event is retried by the next digest).
 	const generated =
 		taxonomy.category === null
 			? { extraction: null, summary: null, errorKind: deps.taggingErrorKind }
-			: await extractAndSummarize(inputArticles, item, deps.runTask);
+			: await extractAndSummarize(inputArticles, newRefs, item, deps.runTask);
 	const { extraction, summary } = generated;
 	const signals: EditorialSignals | null =
 		extraction && summary
@@ -135,6 +142,15 @@ export async function generateEventContent(
 		return { outcome: 'pending_review', review_reasons: decision.review_reasons };
 	}
 
+	// Only a published event that stays published gets an entry; keep_* outcomes returned above.
+	const timelineUpdate =
+		event.status === 'published' && decision.status === 'published'
+			? buildEventUpdate({
+					update_th: summary.update_th,
+					evidence_article_ids: newRefs.map((ref) => refToArticleId[ref]!),
+					articles
+				})
+			: null;
 	const content: EventContentWrite = {
 		title_th: summary.title_th,
 		summary_th: summary.summary_th,
@@ -159,7 +175,7 @@ export async function generateEventContent(
 		summarized_at: deps.checkedAt,
 		status: decision.status,
 		review_reasons: decision.review_reasons,
-		new_updates: []
+		new_updates: timelineUpdate ? [timelineUpdate] : []
 	};
 	// Fields an admin edited are kept by the repository, and an unpublished event an admin edited
 	// waits for the admin, so the written status can differ from the gate's.
@@ -208,6 +224,7 @@ export function deriveEventTaxonomy(articles: readonly ArticleWithSource[]): Eve
 
 async function extractAndSummarize(
 	inputArticles: ArticleRefInput[],
+	newRefs: string[],
 	item: EventWithArticles,
 	runTask: RunTask
 ): Promise<{
@@ -221,7 +238,7 @@ async function extractAndSummarize(
 	// Re-summarizing a published event: pass the current wording so it stays stable.
 	const previous =
 		item.event.status === 'published'
-			? { title_th: item.event.title_th, summary_th: item.event.summary_th }
+			? { title_th: item.event.title_th, summary_th: item.event.summary_th, new_refs: newRefs }
 			: null;
 	const summarized = await runTask('summary', {
 		articles: inputArticles,
