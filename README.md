@@ -69,7 +69,8 @@ npm run dev                      # http://localhost:5173
 - [ ] `DATABASE_URL` เป็น absolute path บน volume: `file:/data/worldview.db` (compose fix ไว้ ห้ามใช้ `:memory:`)
 - [ ] ไม่มี proxy env (`HTTP_PROXY`, `HTTPS_PROXY`, `NODE_USE_ENV_PROXY`) ใน app/scheduler เพราะจะปิดการตรวจ IP ตอน connect ของ SafeFetch และไม่มี `NODE_OPTIONS` ที่มี `--inspect` (compose บังคับเป็นค่าว่าง)
 - [ ] `BODY_SIZE_LIMIT` ไม่เกิน `1M`
-- [ ] `OMNI_API_URL` / `LLM_BASE_URL` เป็น https (หรือ host ภายใน) และตั้ง `LLM_DAILY_MAX_REQUESTS` / `LLM_DAILY_MAX_TOKENS` ไว้ (อย่ายกเลิก cap)
+- [ ] `OMNI_API_URL` / `LLM_BASE_URL` เป็น https (หรือ host ภายใน) และตั้ง `LLM_DAILY_MAX_REQUESTS` / `LLM_DAILY_MAX_TOKENS` ไว้ (อย่ายกเลิก cap) ส่วน `LLM_MAX_REQUESTS_PER_RUN` (default 80 ต่อ job) ปล่อยว่างได้
+- [ ] `EDITORIAL_AUTO_PUBLISH=multi_source` (ตามที่เจ้าของเลือก: เผยแพร่อัตโนมัติเฉพาะข่าวที่มี ≥2 แหล่ง) ถ้าไม่ตั้ง จะได้ `off` ทุกข่าวจะเข้า `/admin/review` ทั้ง `off` และ `multi_source` ไม่เขียนทับข้อความของข่าวที่เผยแพร่แล้ว หลักฐานใหม่จะขึ้นเป็น `new_evidence_pending` ให้ admin ยืนยัน (อย่าใช้ `all` ใน production)
 - [ ] `TUNNEL_TOKEN` ตั้งใน `.env` (ถึงแค่ `cloudflared`) และ public hostname ของ tunnel ชี้ไป `http://app:3000`
 
 ถ้าอยากแยก secret ของ tunnel ออกจากไฟล์ของ app ในภายหลัง ให้ย้ายบรรทัด `TUNNEL_TOKEN=...` ไปไว้ในไฟล์ `cloudflared.env` (อยู่ใน `.gitignore` แล้ว) แล้วเปลี่ยน service `cloudflared` ให้ใช้ `env_file: cloudflared.env` แทน `environment:` ตอนนี้ยังไม่จำเป็น เพราะ app ไม่ได้รับไฟล์ `.env` ทั้งไฟล์อยู่แล้ว
