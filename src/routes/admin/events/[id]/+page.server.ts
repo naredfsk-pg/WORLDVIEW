@@ -2,7 +2,7 @@ import { error, fail } from '@sveltejs/kit';
 import { z } from 'zod';
 import { getRepositories } from '#lib/server/db/repositories/index.js';
 import { containsContact, containsUrl, isThaiText } from '#lib/server/editorial/index.js';
-import { CATEGORY_SLUGS } from '#lib/types/domain.js';
+import { CATEGORY_SLUGS, CREDIBILITY_LEVELS } from '#lib/types/domain.js';
 import type { AdminEventPatch } from '#lib/types/repositories.js';
 import type { AdminEventEditData } from '#lib/types/views.js';
 import {
@@ -22,7 +22,9 @@ const EDITABLE_FIELDS = [
 	'why_it_matters_th',
 	'background_th',
 	'uncertain_th',
-	'category'
+	'category',
+	'credibility_level',
+	'credibility_reason_th'
 ] as const satisfies readonly (keyof AdminEventPatch)[];
 
 type EditableField = (typeof EDITABLE_FIELDS)[number];
@@ -85,6 +87,13 @@ export const actions: Actions = {
 		}
 		if (Object.keys(patch).length === 0) {
 			return saveFailure(400, params.id, 'ไม่มีข้อมูลที่เปลี่ยนแปลง', {}, values);
+		}
+		// The label and its reason are one override: both are written (and so both kept from later
+		// re-summaries), and a removed label keeps no reason.
+		if ('credibility_level' in patch || 'credibility_reason_th' in patch) {
+			patch.credibility_level = fields.credibility_level;
+			patch.credibility_reason_th =
+				fields.credibility_level === 'none' ? null : fields.credibility_reason_th;
 		}
 
 		const result = await getRepositories().admin.updateEventIfCurrent(
@@ -172,7 +181,9 @@ const loadedForm = z.object({
 	original_why_it_matters_th: loadedValue,
 	original_background_th: loadedValue,
 	original_uncertain_th: loadedValue,
-	original_category: loadedValue
+	original_category: loadedValue,
+	original_credibility_level: loadedValue,
+	original_credibility_reason_th: loadedValue
 });
 
 const saveForm = z.object({
@@ -183,6 +194,12 @@ const saveForm = z.object({
 	background_th: optionalText('ภูมิหลัง', 3000),
 	uncertain_th: optionalText('สิ่งที่ยังไม่ชัดเจน', 1500),
 	category: z.enum(CATEGORY_SLUGS, { error: 'กรุณาเลือกหมวดหมู่' }),
+	credibility_level: z.enum(CREDIBILITY_LEVELS, { error: 'กรุณาเลือกระดับป้าย' }),
+	// Public text next to the label: G3 like every other field, and Thai when given.
+	credibility_reason_th: optionalText('เหตุผลของป้าย', 300).refine(
+		(value) => value === null || isThaiText(value),
+		'เหตุผลของป้ายต้องมีข้อความภาษาไทย'
+	),
 	change_reason: changeReason,
 	public_note_th: optionalText('หมายเหตุการแก้ไข', 300)
 });
