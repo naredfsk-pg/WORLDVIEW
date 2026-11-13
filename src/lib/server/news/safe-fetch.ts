@@ -69,8 +69,7 @@ export function createSafeFetch(options: SafeFetchOptions): SafeFetch {
 		try {
 			let url = parseUrl(rawUrl);
 			for (let redirects = 0; ; redirects++) {
-				await assertAllowed(url, allowedHosts, resolveHost);
-				signal.throwIfAborted();
+				await assertAllowed(url, allowedHosts, resolveHost, signal);
 				const response = await transport(url, { headers, signal });
 
 				if (REDIRECT_STATUSES.has(response.status)) {
@@ -143,7 +142,8 @@ function buildBlockedRanges(): BlockList {
 		['240.0.0.0', 4]
 	];
 	const ipv6: [string, number][] = [
-		['::', 128],
+		// ::/96 = unspecified, loopback and deprecated IPv4-compatible (`::127.0.0.1`).
+		['::', 96],
 		['::1', 128],
 		['64:ff9b::', 96],
 		['64:ff9b:1::', 48],
@@ -173,18 +173,29 @@ function parseUrl(raw: string, base?: URL): URL {
 async function assertAllowed(
 	url: URL,
 	allowedHosts: Set<string>,
-	resolveHost: ResolveHost
+	resolveHost: ResolveHost,
+	signal: AbortSignal
 ): Promise<void> {
 	if (url.protocol !== 'https:') throw notAllowed('only https is allowed');
 	if (url.username || url.password) throw notAllowed('credentials in URL are not allowed');
 	if (!allowedHosts.has(url.host)) throw notAllowed(`host ${url.host} is not in the allowlist`);
 
 	const hostname = url.hostname.replace(/^\[|\]$/g, '');
-	const addresses = isIP(hostname) ? [hostname] : await resolveHost(hostname);
+	const addresses = isIP(hostname) ? [hostname] : await raceAbort(resolveHost(hostname), signal);
 	if (addresses.length === 0) throw notAllowed(`host ${url.host} did not resolve`);
 	if (addresses.some(isBlockedAddress)) {
 		throw notAllowed(`host ${url.host} resolves to a non-public address`);
 	}
+}
+
+/** getaddrinfo cannot be cancelled, so a slow resolver is raced against the timeout instead. */
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	signal.throwIfAborted();
+	return new Promise((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener('abort', onAbort, { once: true });
+		promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+	});
 }
 
 function assertFeedContentType(response: Response): void {

@@ -102,6 +102,14 @@ describe('normalizeFeedItem', () => {
 		expect(Array.from(article!.excerpt!).length).toBeLessThanOrEqual(MAX_EXCERPT_LENGTH);
 	});
 
+	it('caps categories before cleaning them', () => {
+		const categories = Array.from({ length: 500 }, (_, index) => `c${index} ${'x'.repeat(5_000)}`);
+		const article = normalizeFeedItem(source, raw({ categories }), now);
+		const kept = article!.raw_metadata['categories'] as string[];
+		expect(kept).toHaveLength(20);
+		expect(kept.every((category) => Array.from(category).length <= 80)).toBe(true);
+	});
+
 	it('drops an invalid language tag', () => {
 		expect(
 			normalizeFeedItem(source, raw({ language: 'not a language' }), now)?.language

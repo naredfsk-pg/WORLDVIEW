@@ -209,11 +209,13 @@ async function insertArticles(
 	let inserted = 0;
 	for (const article of articles) {
 		const result = await ingest.insertArticleIfNew(article);
-		if (result.outcome === 'inserted') inserted++;
-		else if (result.outcome === 'duplicate_url') counters.duplicates_url++;
+		// Counted per row, so a later failing insert does not hide the committed ones.
+		if (result.outcome === 'inserted') {
+			inserted++;
+			counters.articles_inserted++;
+		} else if (result.outcome === 'duplicate_url') counters.duplicates_url++;
 		else counters.duplicates_content++;
 	}
-	counters.articles_inserted += inserted;
 	return inserted;
 }
 
@@ -222,6 +224,11 @@ function describeSourceError(error: unknown): string {
 	return sanitizeError(error);
 }
 
+/**
+ * Runs `worker` over `items` with at most `limit` in flight. Waits for every lane to settle
+ * before rethrowing the first error, so no lane is still writing after the caller gives up
+ * (e.g. after the CLI closes the database).
+ */
 async function forEachWithConcurrency<T>(
 	items: readonly T[],
 	limit: number,
@@ -231,5 +238,7 @@ async function forEachWithConcurrency<T>(
 	const lanes = Array.from({ length: Math.min(limit, items.length) }, async () => {
 		while (next < items.length) await worker(items[next++]!);
 	});
-	await Promise.all(lanes);
+	const settled = await Promise.allSettled(lanes);
+	const failure = settled.find((result) => result.status === 'rejected');
+	if (failure) throw failure.reason;
 }

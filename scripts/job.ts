@@ -74,6 +74,12 @@ async function main(options: JobCliOptions, logger: Logger): Promise<number> {
 		return options.strict ? 1 : 0;
 	}
 
+	// Fixture runs share the `ingest:{hour}` key and the database: never mix them into production.
+	if (options.fixtures && !options.dry_run && getConfig().nodeEnv === 'production') {
+		logger.error('--fixtures is refused when NODE_ENV=production (use --dry-run)');
+		return EXIT_USAGE;
+	}
+
 	const sourcesDeps = buildSourceDeps(options.fixtures);
 	if (options.dry_run) {
 		const outcome = await previewIngest(sourcesDeps, {

@@ -249,6 +249,18 @@ describe('createSafeFetch', () => {
 		});
 	});
 
+	it('times out a DNS lookup that never answers, without any request', async () => {
+		const { transport, calls } = fakeTransport({});
+		const safeFetch = createSafeFetch({
+			allowedHosts: ['feeds.example.com'],
+			transport,
+			resolveHost: () => new Promise(() => {}),
+			timeoutMs: 20
+		});
+		await expectFetchError(safeFetch('https://feeds.example.com/rss.xml'), { kind: 'timeout' });
+		expect(calls).toHaveLength(0);
+	});
+
 	it('times out a body that stalls after the headers', async () => {
 		const stalled = new ReadableStream<Uint8Array>({
 			start(controller) {
@@ -369,6 +381,8 @@ describe('isBlockedAddress', () => {
 		'::ffff:127.0.0.1',
 		'::ffff:10.0.0.1',
 		'64:ff9b::a00:1',
+		'::7f00:1',
+		'::127.0.0.1',
 		'not-an-ip'
 	])('blocks %s', (address) => {
 		expect(isBlockedAddress(address)).toBe(true);

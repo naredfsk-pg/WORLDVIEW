@@ -17,6 +17,7 @@ const MAX_GUID_LENGTH = 500;
 const MAX_AUTHOR_LENGTH = 200;
 const MAX_CATEGORY_LENGTH = 80;
 const MAX_CATEGORIES = 20;
+const MAX_RAW_CATEGORY_LENGTH = 1_000;
 /** Raw input is cut before any regex work, so a hostile feed cannot make cleanup slow. */
 const MAX_RAW_TEXT_LENGTH = 20_000;
 const LANGUAGE_TAG = /^[a-z]{2,3}(-[a-z0-9]{1,8}){0,3}$/;
@@ -94,8 +95,12 @@ function normalizeLanguage(raw: string | null): string | null {
 function buildRawMetadata(raw: RawFeedItem): JsonObject {
 	const guid = raw.guid?.trim().slice(0, MAX_GUID_LENGTH) || null;
 	const author = cleanFeedText(raw.author, MAX_AUTHOR_LENGTH) || null;
+	// Cap the raw input first, so hundreds of hostile categories cost no cleanup work.
+	const rawCategories = raw.categories
+		.slice(0, MAX_CATEGORIES)
+		.map((category) => category.slice(0, MAX_RAW_CATEGORY_LENGTH));
 	const categories = [
-		...new Set(raw.categories.map((category) => cleanFeedText(category, MAX_CATEGORY_LENGTH)))
+		...new Set(rawCategories.map((category) => cleanFeedText(category, MAX_CATEGORY_LENGTH)))
 	]
 		.filter((category) => category !== '')
 		.slice(0, MAX_CATEGORIES);
