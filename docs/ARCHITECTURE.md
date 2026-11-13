@@ -136,9 +136,41 @@ There are two layers. Cloudflare Access protects `/admin*` at the edge, and the 
 8. **E2E auth (test-only JWKS):** `CF_ACCESS_TEST_JWKS_URL` replaces the team JWKS URL only when **all** of these hold: `NODE_ENV=test`, `ORIGIN` is a loopback origin (`localhost`, `127.0.0.1`, `[::1]`; never the public hostname), and the JWKS URL itself is loopback. Issuer and audience checks stay. The production image runs with `NODE_ENV=production` and the public `ORIGIN`, so it is ignored there (unit-tested). `tests/e2e/admin-e2e-server.ts` builds with `NODE_ENV` unset (a real production build), then runs `vite preview` with the test env; the Playwright global setup serves a fresh per-run RSA public key on `127.0.0.1:E2E_JWKS_PORT`, and tests sign tokens with the private key.
 9. **Rate limit:** admin POSTs (form actions) pass an in-memory token bucket per client IP (`getClientAddress()`, i.e. `CF-Connecting-IP` via `ADDRESS_HEADER`): burst 10, then 1 every 2 s, at most 1000 tracked IPs (LRU). Over the limit → 429 with `Retry-After`. It runs before token verification and resets on restart.
 10. CSRF: keep SvelteKit's built-in origin check (`ORIGIN` must be the public URL). It runs before `handle`, so a cross-origin form POST is rejected even with a valid token (e2e). Do not expose JSON write endpoints; use form actions only.
-11. **Headers** on every response: `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()`, and `Content-Security-Policy: frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'`. There is no `script-src`/`style-src` yet: SvelteKit's inline hydration script and the theme script in `app.html` would need `kit.csp` (hash mode) in the SvelteKit config. `/admin*` responses also get `Cache-Control: private, no-store` and `X-Robots-Tag: noindex, nofollow`.
+11. **Headers:** every response that passes through `handle` gets the security headers and CSP described in "Security headers & CSP" below. `/admin*` responses also get `Cache-Control: private, no-store` and `X-Robots-Tag: noindex, nofollow`.
 
 Public routes are read-only and not rate-limited by the app (Cloudflare covers them).
+
+### Security headers & CSP
+
+Code: `src/lib/server/auth/csp.ts` (the directives, the only source) and `security-headers.ts` (`withSecurityHeaders`, called from `handle`).
+
+**Headers on every response through `handle`:** `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()`, `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, and a `Content-Security-Policy`.
+
+**CSP on pages:** `csp: { mode: 'hash', directives: CSP_DIRECTIVES }` in `vite.config.ts`. SvelteKit adds the sha256 of each page's inline hydration script, so a production page header reads:
+
+```
+default-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' data:; object-src 'none';
+script-src 'self' 'sha256-<app.html theme script>' 'sha256-<this page's hydration script>';
+style-src 'self' 'sha256-<error.html style>'; style-src-attr 'unsafe-inline';
+base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+```
+
+- **Hash mode, not nonces:** every inline script is known at build time (or hashed by SvelteKit at render), no load streams promises (those chunks would need nonces), and hashes keep HTML cacheable and ETags stable. SvelteKit does not hash scripts in `app.html`, so `APP_THEME_SCRIPT_HASH` is a constant. `csp.test.ts` recomputes it from `src/app.html` (CRLF folded to LF, as the HTML parser does), so editing the theme script fails `npm test` with the new hash, never silently in the browser. The same applies to `ERROR_PAGE_STYLE_HASH` for `src/error.html`.
+- **Scripts:** never `'unsafe-inline'`.
+- **`<style>` elements:** same-origin files or hashes only (`style-src`). Tailwind and component CSS are external files.
+- **Style attributes: `style-src-attr 'unsafe-inline'`.** This is the one unsafe source, and it is unavoidable. SSR markup has `style="…"` attributes (the `display: contents` wrapper in `app.html`, `style:` directives, bits-ui props), and the Svelte runtime sets them with dynamic values that no hash can cover (hashes do not apply to attributes without `'unsafe-hashes'`). An attribute cannot hold a selector or a script, and `url()` is still limited by `img-src`/`font-src 'self'`, so CSS-injection exfiltration through `<style>` stays blocked. Browsers without `style-src-attr` (Safari < 15.4, Firefox < 108) fall back to `style-src` and drop style attributes, which is cosmetic only.
+- **Dev:** SvelteKit itself switches `style-src` to `'unsafe-inline'` under `vite dev` (for Vite's injected `<style>`). Production builds are unaffected.
+
+**CSP on other responses** (`__data.json`, `+server` endpoints such as `/health`, redirects, the static `src/error.html` when the root layout fails): `FALLBACK_CSP`, the same directives without per-page hashes. `withSecurityHeaders` keeps a policy that is already set and only fills in one that is missing. The admin deny page (403/429/503) sets its own `default-src 'none'; style-src 'sha256-<its style>'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, hashed at module load.
+
+**HTTPS-only: HSTS and `upgrade-insecure-requests`.** Cloudflare terminates TLS, and cloudflared reaches the app over plain HTTP, so the socket says nothing about the visitor's scheme. `isHttpsRequest` returns true when the first `X-Forwarded-Proto` value is `https` (set by Cloudflare/cloudflared), or when `event.url` is https (`ORIGIN=https://…`). It then adds `Strict-Transport-Security: max-age=15552000` (180 days, this host only, no `preload`) and appends `; upgrade-insecure-requests` to the CSP. The header cannot be abused: the container has no published port, so only cloudflared reaches it, and browsers ignore HSTS received over plain HTTP. Local dev, `vite preview` and e2e (`http://localhost`) get neither.
+
+**Not covered: responses SvelteKit or the server sends without `handle`.**
+- Static files (`/_app/immutable/*`, fonts, `robots.txt`): adapter-node serves them with sirv, which offers no header hook. They are same-origin, content-hashed JS/CSS/fonts with correct MIME types.
+- SvelteKit's own early responses: the CSRF 403 (`Cross-site POST form submissions are forbidden`), the 400 for a reserved `x-sveltekit-*` query parameter, 404 for an unknown `/_app/*` file, a 500 when `reroute` throws, and the fallback 500 if `handle` itself throws.
+- If needed, a Cloudflare Response Header Transform Rule on the zone can add the static headers (nosniff, XFO, Referrer-Policy, COOP, CORP, HSTS) to every response at the edge. Do not set the CSP there, because it would replace the per-page hashed policy.
+
+**Tests:** `csp.test.ts` and `security-headers.test.ts` (unit tests). `tests/e2e/security.e2e.ts` covers no CSP violation (the `securitypolicyviolation` event plus Chrome's console) on every public route in light and dark, the theme set before `<body>` exists (no flash), interactive widgets, `error.html` under `FALLBACK_CSP`, headers on page/data/endpoint/deny responses, and HSTS only with `X-Forwarded-Proto: https`. `tests/e2e/admin-security.e2e.ts` covers every admin page signed in, plus the deny page. The client-bundle scan in `security.e2e.ts` checks `build/client` and `.svelte-kit/output/client` for any variable name from `.env.example` or the config schema, `CF_ACCESS`, `OMNI_`, `LLM_`, `TUNNEL`, `dev@localhost`, `lib/server/`, `sourceMappingURL`, and `.map` files. Vite emits no client source maps (`build.sourcemap` unset). Server maps stay in `build/server`, which is never served.
 
 ## 5. Entity model (PRD §7 → `types/domain.ts`)
 
