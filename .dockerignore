@@ -1,0 +1,53 @@
+# Keep the build context small and free of secrets: the image is built from source only.
+
+# Secrets / local env (only the template may enter the context). scripts/dev-tools.env sets
+# NODE_ENV=development for dev-only npm scripts; it must never be near a production build.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+scripts/dev-tools.env
+
+# VCS, editors, OS
+.git
+.gitignore
+.vscode
+.idea
+*.log
+Thumbs.db
+.DS_Store
+
+# Dependencies and build output (rebuilt inside the image)
+node_modules
+.svelte-kit
+build
+dist
+.output
+
+# Local data and backups
+data
+backups
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+
+# Tests (incl. the fixture feeds in tests/fixtures), QA output, screenshots and docs: not needed
+# at build or run time.
+tests
+docs/screenshots
+**/*.test.ts
+**/*.spec.ts
+test-results
+playwright-report
+coverage
+docs
+README.md
+WORLDVIEW_PROJECT_REQUIREMENTS.md
+worldview-ui-prototype
+
+# Deploy files themselves
+Dockerfile
+.dockerignore
+docker-compose.yml

@@ -84,9 +84,10 @@ export async function runJobByType(
 
 	try {
 		const config = getConfig();
-		if (opts.fixtures && !opts.dryRun && config.nodeEnv === 'production') {
+		if (opts.fixtures && !opts.dryRun && !config.devToolsAllowed) {
 			// Fixture runs use their own slot key, but they would still write the production database.
-			logger.error('--fixtures is refused when NODE_ENV=production (use --dry-run)');
+			// Allowlist: NODE_ENV must be explicitly development or test (unset refuses too).
+			logger.error('--fixtures needs NODE_ENV=development or test (use --dry-run to preview)');
 			return { status: 'usage_error', exitCode: EXIT_USAGE, counters: {} };
 		}
 		if (type === 'ingest' && opts.dryRun) return await dryRunIngest(opts, logger);

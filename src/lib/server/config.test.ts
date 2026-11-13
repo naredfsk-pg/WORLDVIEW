@@ -8,11 +8,26 @@ describe('parseConfig', () => {
 		expect(config.nodeEnv).toBe('development');
 		expect(config.app.databaseUrl).toBe('file:./data/worldview.db');
 		expect(config.app.timezone).toBe('Asia/Bangkok');
+		expect(config.backup).toEqual({ dir: './data/backups', keep: 14 });
 		expect(config.llm.baseUrl).toBeUndefined();
 		expect(config.llm.apiKey).toBeUndefined();
 		expect(config.llm.omitTemperatureFor).toEqual([]);
 		expect(config.cloudflare.adminAllowedEmails).toEqual([]);
 	});
+
+	it.each([
+		[undefined, false],
+		['', false],
+		['production', false],
+		['development', true],
+		['test', true]
+	])(
+		'allows dev-only tools only for an explicit development/test NODE_ENV (%j → %s)',
+		(nodeEnv, allowed) => {
+			const env = nodeEnv === undefined ? {} : { NODE_ENV: nodeEnv };
+			expect(parseConfig(env).devToolsAllowed).toBe(allowed);
+		}
+	);
 
 	it('treats empty values as unset', () => {
 		const config = parseConfig({
@@ -80,6 +95,7 @@ describe('parseConfig', () => {
 		[{ LLM_TIMEOUT_SECONDS: '0' }, 'LLM_TIMEOUT_SECONDS'],
 		[{ OMNI_API_URL: 'not-a-url' }, 'OMNI_API_URL'],
 		[{ DATABASE_URL: './data/worldview.db' }, 'DATABASE_URL'],
+		[{ BACKUP_KEEP: '0' }, 'BACKUP_KEEP'],
 		[{ ADMIN_ALLOWED_EMAILS: 'nope' }, 'ADMIN_ALLOWED_EMAILS'],
 		[{ NODE_ENV: 'staging' }, 'NODE_ENV'],
 		[{ APP_TIMEZONE: 'UTC' }, 'APP_TIMEZONE'],

@@ -10,6 +10,7 @@
 		"tests",
 		"scripts",
 		"vite.config.ts",
+		"vite.scripts.config.ts",
 		"drizzle.config.ts",
 		"playwright.config.ts",
 		"prettier.config.js",

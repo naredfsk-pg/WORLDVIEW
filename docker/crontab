@@ -1,0 +1,24 @@
+# WORLDVIEW scheduler crontab (supercronic, docker-compose.yml service `scheduler`).
+#
+# Times are UTC: the container has no TZ set, and ICT = UTC+7 with no DST (ARCHITECTURE §8).
+# Commands run with /bin/sh from /app, with the container environment (LLM settings included).
+# `;` not `&&`: digest still runs when an ingest fails. supercronic never starts a line again
+# while its previous run is still going, and each job's idempotency key makes a repeat a no-op.
+# Job output (JSON lines) goes straight to the container log: `docker compose logs scheduler`.
+
+# 06:00 ICT ingest + digest
+0 23 * * * node build/scripts/job.js ingest; node build/scripts/job.js digest
+# 07:00 ICT morning brief (today's Bangkok date)
+0 0 * * * node build/scripts/job.js brief_morning
+# 12:00 ICT ingest + digest
+0 5 * * * node build/scripts/job.js ingest; node build/scripts/job.js digest
+# 18:00 ICT ingest + digest
+0 11 * * * node build/scripts/job.js ingest; node build/scripts/job.js digest
+# 19:00 ICT evening brief (today's Bangkok date)
+0 12 * * * node build/scripts/job.js brief_evening
+# 23:00 ICT ingest + digest
+0 16 * * * node build/scripts/job.js ingest; node build/scripts/job.js digest
+# 01:00 ICT archive snapshot of the previous Bangkok date
+0 18 * * * node build/scripts/job.js archive_snapshot
+# 02:30 ICT database backup to /backups (host ./backups), keeps the newest BACKUP_KEEP files
+30 19 * * * node build/scripts/backup.js

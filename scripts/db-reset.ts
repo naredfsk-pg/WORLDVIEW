@@ -7,8 +7,10 @@ import { resolve } from 'node:path';
 import { getConfig } from '#lib/server/config.js';
 
 const config = getConfig();
-if (config.nodeEnv === 'production') {
-	console.error('db:reset: refusing to delete the database when NODE_ENV=production');
+// Allowlist: NODE_ENV must be explicitly development or test (`npm run db:reset` sets it through
+// scripts/dev-tools.env); unset or production refuses.
+if (!config.devToolsAllowed) {
+	console.error('db:reset: refused: needs NODE_ENV=development or test (dev-only tool)');
 	process.exit(1);
 }
 
