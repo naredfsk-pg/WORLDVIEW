@@ -5,7 +5,8 @@
  * 2. pick the events needing content and tag their articles `WHERE taxonomy IS NULL` (≤ 20 per call)
  * 3. ambiguous clustering: a draft event whose best rule score against another event was in the
  *    0.3–0.6 band, or a single-article draft sharing ≥ 2 tags with a published event, goes to the
- *    LLM `clustering` task; `same_event` with enough confidence merges it
+ *    LLM `clustering` task; `same_event` merges it into a draft or pending target, or sends it
+ *    to review as a possible duplicate of a published target (published events never change)
  * 4. per event: extraction → summary → publish gates → save (see digest-content.ts)
  * 5. per event published in this run: relations and Academy links (see digest-links.ts)
  * LLM failures never throw: each ends in a gate decision, and the run becomes `partial`.
@@ -22,6 +23,7 @@ import type {
 	EventWithArticles,
 	LlmCallRepository
 } from '#lib/types/repositories.js';
+import { containsUrl, isThaiText } from '../editorial/index.js';
 import { bestEventMatch, GROUPING_CONFIG } from '../news/grouping.js';
 import { generateEventContent } from './digest-content.js';
 import { createRunTask, toArticleRef, type RunTask } from './digest-llm.js';
@@ -35,14 +37,16 @@ export const TAGGING_BATCH_SIZE = 20;
 /** Pairs per `clustering` call. */
 export const MAX_CLUSTERING_PAIRS = 20;
 /**
- * A wrong merge is worse than a duplicate: merge only on a confident `same_event`. Raised from 0.7
- * in Wave 3 after a borderline merge of two different happenings of one papal visit.
+ * A wrong merge is worse than a duplicate: merge a draft into a draft or pending event only on a
+ * confident `same_event`. Raised from 0.7 in Wave 3 after a borderline merge of two different
+ * happenings of one papal visit. (A published target is never merged into: see below.)
  */
 export const CLUSTERING_MERGE_MIN_CONFIDENCE = 0.8;
 /**
- * Recall for published targets: a single-article draft whose article shares at least this many
+ * Recall for published events: a single-article draft whose article shares at least this many
  * tags with a published event is sent to the LLM even when the titles share almost no words
- * ("Nvidia scandal sparks …" vs "Ex-Nvidia CEO … summoned to testify" scores 0.05).
+ * ("Nvidia scandal sparks …" vs "Ex-Nvidia CEO … summoned to testify" scores 0.05). A
+ * `same_event` answer only flags the draft for review (`possible_duplicate`).
  */
 export const PUBLISHED_TARGET_MIN_SHARED_TAGS = 2;
 
@@ -73,9 +77,17 @@ export async function runDigest(deps: DigestDeps, ctx: JobContext): Promise<JobO
 
 	const taggingFailures = new Map<string, LlmErrorKind>();
 	let prepared = await prepareEvents(deps.digest, runTask, limit, taggingFailures, ctx, errors);
-	const merged = await mergeAmbiguousDrafts(deps.digest, runTask, prepared.events, ctx, errors);
-	if (merged > 0) {
-		counters.events_updated += merged;
+	const clustered = await clusterAmbiguousDrafts(
+		deps.digest,
+		runTask,
+		prepared.events,
+		ctx,
+		errors
+	);
+	counters.events_updated += clustered.merged;
+	counters.relations_pending_review += clustered.flagged;
+	if (clustered.merged + clustered.flagged > 0) {
+		// Merge targets and flagged drafts changed: the content step needs the rows as stored.
 		prepared = await prepareEvents(deps.digest, runTask, limit, taggingFailures, ctx, errors);
 	}
 
@@ -214,18 +226,26 @@ function taggingErrorFor(
 
 /**
  * Ingest turns an ambiguous match (rule score 0.3–0.6) into a new draft event. Here the LLM
- * decides: a confident `same_event` merges the draft into the other event (a draft or a published
- * one); anything else, or a failed call, keeps them separate. Returns how many drafts were merged.
+ * decides, and a published event is never changed by it:
+ * - `same_event` with a draft or pending target, at enough confidence → the draft is merged into
+ *   it (`mergeDraftEvent`)
+ * - `same_event` with a published target, at any confidence → the draft stays its own event but
+ *   gets `possible_duplicate` (so it is never auto-published) and a pending `same_topic` relation
+ *   to the published event, for an admin to decide in `/admin/relations` and `/admin/review`
+ * - anything else, or a failed call → nothing
+ * Every event a merge touched (source and target) is left out of later decisions of this run,
+ * so a chain of merges never acts on articles the LLM did not compare.
  */
-async function mergeAmbiguousDrafts(
+async function clusterAmbiguousDrafts(
 	digest: DigestRepository,
 	runTask: RunTask,
 	events: EventWithArticles[],
 	ctx: JobContext,
 	errors: string[]
-): Promise<number> {
+): Promise<{ merged: number; flagged: number }> {
+	const none = { merged: 0, flagged: 0 };
 	const drafts = events.filter((item) => item.event.status === 'draft');
-	if (drafts.length === 0) return 0;
+	if (drafts.length === 0) return none;
 
 	const since = new Date(ctx.now().getTime() - GROUPING_LOOKBACK_MS).toISOString();
 	let candidates: EventMatchCandidate[];
@@ -233,10 +253,10 @@ async function mergeAmbiguousDrafts(
 		candidates = await digest.listMatchableEvents(since);
 	} catch (error) {
 		errors.push(`clustering: ${sanitizeError(error)}`);
-		return 0;
+		return none;
 	}
-	const pairs = findAmbiguousPairs(drafts, candidates).slice(0, MAX_CLUSTERING_PAIRS);
-	if (pairs.length === 0) return 0;
+	const pairs = findAmbiguousPairs(drafts, candidates);
+	if (pairs.length === 0) return none;
 
 	const input: ClusteringInput = {
 		pairs: pairs.map((pair, index) => ({
@@ -251,24 +271,41 @@ async function mergeAmbiguousDrafts(
 		}))
 	};
 	const result = await runTask('clustering', input);
-	if (!result.ok) return 0;
+	if (!result.ok) return none;
 
-	const removed = new Set<string>();
-	let merged = 0;
+	const touched = new Set<string>();
+	const outcome = { merged: 0, flagged: 0 };
 	for (const decision of result.data.decisions) {
 		const pair = pairs[Number(decision.pair_ref.slice(1)) - 1];
-		const isSameEvent =
-			decision.verdict === 'same_event' && decision.confidence >= CLUSTERING_MERGE_MIN_CONFIDENCE;
-		if (!pair || !isSameEvent) continue;
+		if (!pair || decision.verdict !== 'same_event') continue;
 
-		// The draft is always the one merged away; derived fields are recomputed on the target.
+		// The draft is always the one merged away or flagged; derived fields are recomputed.
 		const source = pair.draft.event.id;
 		const target = pair.other.event_id;
-		if (removed.has(source) || removed.has(target)) continue;
+		if (touched.has(source) || touched.has(target)) continue;
 		const ids = { source_event_id: source, target_event_id: target };
 		try {
 			// One pair failing (the target was hidden meanwhile, another job linked or deleted an
 			// event) never stops the other pairs or the run.
+			if (pair.other.status === 'published') {
+				const done = await digest.flagPossibleDuplicate(
+					source,
+					target,
+					{
+						explanation_th: duplicateExplanation(decision.rationale_th, decision.confidence),
+						evidence_article_ids: pair.draft.articles.map((article) => article.id),
+						confidence: decision.confidence
+					},
+					ctx.now().toISOString()
+				);
+				if (!done) continue;
+				touched.add(source);
+				outcome.flagged++;
+				ctx.logger.info('possible duplicate of a published event sent to review', ids);
+				continue;
+			}
+
+			if (decision.confidence < CLUSTERING_MERGE_MIN_CONFIDENCE) continue;
 			const done = await digest.mergeDraftEvent(
 				source,
 				target,
@@ -279,14 +316,22 @@ async function mergeAmbiguousDrafts(
 				ctx.logger.info('merge skipped: the draft has admin edits', ids);
 				continue;
 			}
-			removed.add(source);
-			merged++;
+			touched.add(source);
+			touched.add(target);
+			outcome.merged++;
 			ctx.logger.info('ambiguous draft merged', ids);
 		} catch (error) {
 			errors.push(`merge ${source}: ${sanitizeError(error)}`);
 		}
 	}
-	return merged;
+	return outcome;
+}
+
+/** The relation text an admin sees: the model's Thai rationale when usable, else a fixed line. */
+function duplicateExplanation(rationale: string | null | undefined, confidence: number): string {
+	const text = rationale?.trim() ?? '';
+	if (isThaiText(text) && !containsUrl(text)) return text;
+	return `ระบบจัดกลุ่มข่าวเห็นว่าอาจเป็นเหตุการณ์เดียวกับข่าวที่เผยแพร่แล้ว (ความมั่นใจ ${Math.round(confidence * 100)}%)`;
 }
 
 interface AmbiguousPair {
@@ -295,30 +340,35 @@ interface AmbiguousPair {
 }
 
 /**
- * One pair per draft and per unordered event pair; demo and real events are never paired, and
- * hidden events are never candidates. The rule score's ambiguous band comes first; a
- * single-article draft without one may still pair with a published event by shared tags.
+ * At most `MAX_CLUSTERING_PAIRS` pairs, one per draft and per unordered event pair; demo and real
+ * events are never paired, and hidden events are never candidates. Rule-band pairs come first;
+ * the remaining slots go to single-article drafts paired with a published event by shared tags,
+ * so tag pairs never crowd out a rule-band pair.
  */
 function findAmbiguousPairs(
 	drafts: EventWithArticles[],
 	candidates: EventMatchCandidate[]
 ): AmbiguousPair[] {
-	const seen = new Set<string>();
-	const pairs: AmbiguousPair[] = [];
-	for (const draft of drafts) {
-		const others = candidates.filter(
+	const othersOf = (draft: EventWithArticles) =>
+		candidates.filter(
 			(candidate) =>
 				candidate.event_id !== draft.event.id && candidate.is_demo === draft.event.is_demo
 		);
-		const other = ambiguousRuleMatch(draft, others) ?? publishedTagMatch(draft, others);
-		if (!other) continue;
-
+	const seen = new Set<string>();
+	const paired = new Set<string>();
+	const pairs: AmbiguousPair[] = [];
+	const addPair = (draft: EventWithArticles, other: EventMatchCandidate | null) => {
+		if (!other || paired.has(draft.event.id)) return;
 		const key = [draft.event.id, other.event_id].sort().join('|');
-		if (seen.has(key)) continue;
+		if (seen.has(key)) return;
 		seen.add(key);
+		paired.add(draft.event.id);
 		pairs.push({ draft, other });
-	}
-	return pairs;
+	};
+
+	for (const draft of drafts) addPair(draft, ambiguousRuleMatch(draft, othersOf(draft)));
+	for (const draft of drafts) addPair(draft, publishedTagMatch(draft, othersOf(draft)));
+	return pairs.slice(0, MAX_CLUSTERING_PAIRS);
 }
 
 /** The best rule match, when its score is in the ambiguous band (0.3–0.6). */

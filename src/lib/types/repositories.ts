@@ -183,10 +183,25 @@ export interface DigestRepository {
 	// same happening as `targetEventId`: move its articles there and delete the draft, in one
 	// transaction. Throws unless the source is a `draft`, the target exists and is not hidden, and
 	// both have the same is_demo. Resolves false (nothing changed) when an admin edited the draft.
+	// CONTRACT-CHANGE (Wave 3 review): also throws for a `published` target; published events
+	// are never changed by clustering (see flagPossibleDuplicate).
 	mergeDraftEvent(
 		sourceEventId: string,
 		targetEventId: string,
 		confidence: number,
+		now: IsoUtc
+	): Promise<boolean>;
+	// CONTRACT-CHANGE: added (Wave 3 review). The LLM `clustering` task said a draft reports the
+	// same happening as a published event: in one transaction, add `possible_duplicate` to the
+	// draft's review_reasons (it stays a draft until digest saves its content, then waits for an
+	// admin) and upsert a `pending_review` `same_topic` relation from the draft to the published
+	// event with the draft's articles as evidence. The published event is not touched. Resolves
+	// false (nothing written) when the source is no longer a draft; throws unless the target is
+	// published with the same is_demo.
+	flagPossibleDuplicate(
+		draftEventId: string,
+		publishedEventId: string,
+		relation: { explanation_th: string; evidence_article_ids: string[]; confidence: number },
 		now: IsoUtc
 	): Promise<boolean>;
 	/**

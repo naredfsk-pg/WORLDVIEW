@@ -397,20 +397,80 @@ describe('DigestRepository.mergeDraftEvent', () => {
 			1,
 			now
 		);
-		await repos.digest.saveEventContent(target, content(), now);
 
 		await repos.digest.mergeDraftEvent(draft, target, 0.9, '2026-11-13T03:00:00.000Z');
 
 		expect(db.select().from(events).where(eq(events.id, draft)).get()).toBeUndefined();
 		expect(getEvent(target)).toMatchObject({
-			status: 'published',
+			status: 'draft',
 			source_count: 2,
 			first_seen_at: '2026-11-12T20:00:00.000Z'
 		});
-		// The published target now has evidence newer than its summary: digest re-summarizes it.
 		expect((await repos.digest.listEventsNeedingContent(10)).map((e) => e.event.id)).toEqual([
 			target
 		]);
+	});
+
+	it('never merges into a published event; flagPossibleDuplicate flags the draft and links them instead', async () => {
+		const now = '2026-11-13T02:00:00.000Z';
+		const published = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-13T00:00:00.000Z')],
+			1,
+			now
+		);
+		await repos.digest.saveEventContent(published, content(), now);
+		const before = getEvent(published);
+		const draftArticle = await addArticle('2026-11-13T00:30:00.000Z', { publisher: 'Other Wire' });
+		const draft = await repos.digest.createDraftEvent([draftArticle], 1, now);
+
+		await expect(repos.digest.mergeDraftEvent(draft, published, 0.95, now)).rejects.toThrow(
+			/into a published event/
+		);
+		const flagged = await repos.digest.flagPossibleDuplicate(
+			draft,
+			published,
+			{
+				explanation_th: 'อาจเป็นเหตุการณ์เดียวกัน',
+				evidence_article_ids: [draftArticle],
+				confidence: 0.9
+			},
+			'2026-11-13T03:00:00.000Z'
+		);
+
+		expect(flagged).toBe(true);
+		expect(getEvent(draft)).toMatchObject({
+			status: 'draft',
+			review_reasons: ['possible_duplicate']
+		});
+		expect(getEvent(published)).toEqual(before);
+		expect(db.select().from(eventRelations).all()).toMatchObject([
+			{
+				relation_type: 'same_topic',
+				status: 'pending_review',
+				explanation_th: 'อาจเป็นเหตุการณ์เดียวกัน',
+				evidence_refs: [{ article_id: draftArticle }],
+				confidence: 0.9,
+				reviewed_at: null
+			}
+		]);
+		// Not a published target, or no longer a draft: refused / nothing written.
+		await expect(
+			repos.digest.flagPossibleDuplicate(
+				published,
+				draft,
+				{ explanation_th: 'ก', evidence_article_ids: [], confidence: 1 },
+				now
+			)
+		).rejects.toThrow(/must be a published event/);
+		db.update(events).set({ status: 'pending_review' }).where(eq(events.id, draft)).run();
+		expect(
+			await repos.digest.flagPossibleDuplicate(
+				draft,
+				published,
+				{ explanation_th: 'ก', evidence_article_ids: [draftArticle], confidence: 1 },
+				now
+			)
+		).toBe(false);
 	});
 
 	it('refuses to merge away a non-draft event, or into a hidden one', async () => {

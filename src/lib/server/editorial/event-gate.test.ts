@@ -169,6 +169,20 @@ describe('evaluateEventForPublish (auto)', () => {
 		);
 	});
 
+	it('keeps possible_duplicate like manual_flag: a flagged draft is never auto-published', () => {
+		const flagged = { current_review_reasons: ['possible_duplicate' as const] };
+		expect(evaluateEventForPublish(gateInput({ ...flagged, current_status: 'draft' }))).toEqual({
+			status: 'pending_review',
+			review_reasons: ['possible_duplicate']
+		});
+		// The admin gate ignores it: publishing the draft as a separate event is the admin's call.
+		expect(
+			evaluateEventForPublish(
+				gateInput({ ...flagged, mode: 'admin', current_status: 'pending_review' })
+			)
+		).toEqual({ status: 'published', review_reasons: [] });
+	});
+
 	it('keeps an admin manual_flag: never auto-published, and not eligible for the llm_failed retry', () => {
 		const flagged = { current_review_reasons: ['manual_flag' as const] };
 

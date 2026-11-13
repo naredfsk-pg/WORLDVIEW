@@ -80,6 +80,9 @@ export interface ClusteringOutput {
 		pair_ref: string;
 		verdict: 'same_event' | 'related' | 'unrelated';
 		confidence: number;
+		// CONTRACT-CHANGE (Wave 3, clustering@3): short Thai reason, shown to the admin on a
+		// possible-duplicate relation. Omitted, invalid or overlong → null (never fails the call).
+		rationale_th?: string | null;
 	}[];
 }
 

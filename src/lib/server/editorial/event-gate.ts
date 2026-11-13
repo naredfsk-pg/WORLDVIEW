@@ -12,9 +12,12 @@ import { containsUrl, isThaiText } from './text';
 
 export function evaluateEventForPublish(input: EventGateInput): EventGateDecision {
 	const reasons = input.mode === 'admin' ? adminGateReasons(input) : autoGateReasons(input);
-	// ARCHITECTURE §6: only an admin clears a manual flag or republishes a hidden event.
-	if (input.mode === 'auto' && input.current_review_reasons?.includes('manual_flag')) {
-		reasons.add('manual_flag');
+	// ARCHITECTURE §6: only an admin clears a manual flag or a possible duplicate, or republishes
+	// a hidden event.
+	for (const sticky of ['manual_flag', 'possible_duplicate'] as const) {
+		if (input.mode === 'auto' && input.current_review_reasons?.includes(sticky)) {
+			reasons.add(sticky);
+		}
 	}
 
 	// Stable order (the enum order) so stored reasons and the "exactly [llm_failed]" retry check are deterministic.

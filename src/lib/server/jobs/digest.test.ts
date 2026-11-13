@@ -1133,31 +1133,166 @@ describe('clustering regressions (Wave 3 live runs, mock LLM)', () => {
 		return id;
 	}
 
-	it('recall: a single-article draft with different wording merges into the published event', async () => {
-		const published = await publishedNvidiaEvent();
-		clock = new Date(NOW.getTime() + 60 * 60 * 1000);
-		const article = await addArticle(
-			'Nvidia scandal sparks US national security furore and calls to take tough line on China',
-			'2026-11-12T23:34:59.000Z'
+	it.each([0.9, 0.3])(
+		'a same_event answer (confidence %s) on a published event sends the draft to review; the published event is unchanged',
+		async (confidence) => {
+			const published = await publishedNvidiaEvent();
+			const before = eventById(published);
+			clock = new Date(NOW.getTime() + 60 * 60 * 1000);
+			const article = await addArticle(
+				'Nvidia scandal sparks US national security furore and calls to take tough line on China',
+				'2026-11-12T23:34:59.000Z'
+			);
+			// What ingest does: the rule score is far below the ambiguous band, so it is a new draft.
+			const draft = await repositories.digest.createDraftEvent([article], 1, clock.toISOString());
+
+			const seen: ClusteringInput[] = [];
+			const result = await digest(sameEvent(confidence, seen));
+
+			expect(seen).toHaveLength(1);
+			expect(seen[0]!.pairs).toHaveLength(1);
+			// The draft keeps its article and gets its own text, but waits for an admin.
+			expect(eventById(draft)).toMatchObject({
+				status: 'pending_review',
+				review_reasons: ['possible_duplicate']
+			});
+			expect(eventById(draft).title_th).toMatch(/\p{Script=Thai}/u);
+			expect(
+				db.select().from(eventArticles).where(eq(eventArticles.article_id, article)).get()?.event_id
+			).toBe(draft);
+			// A pending same_topic relation for /admin/relations, with the draft's article as evidence.
+			const relations = db.select().from(eventRelations).all();
+			expect(relations).toHaveLength(1);
+			expect(relations[0]).toMatchObject({
+				relation_type: 'same_topic',
+				status: 'pending_review',
+				evidence_refs: [{ article_id: article }],
+				confidence
+			});
+			expect([relations[0]!.from_event_id, relations[0]!.to_event_id].sort()).toEqual(
+				[draft, published].sort()
+			);
+			expect(relations[0]!.explanation_th).toMatch(/\p{Script=Thai}/u);
+			const queue = await repositories.admin.listReviewQueue();
+			expect(queue.events.map((row) => row.id)).toContain(draft);
+			expect(queue.relations).toHaveLength(1);
+			// Nothing about the published event changed: no relink, no re-summary, no timeline row.
+			expect(eventById(published)).toEqual(before);
+			expect(
+				db.select().from(eventArticles).where(eq(eventArticles.event_id, published)).all()
+			).toHaveLength(2);
+			expect(
+				db.select().from(eventUpdates).where(eq(eventUpdates.event_id, published)).all()
+			).toEqual([]);
+			expect(result.counters).toMatchObject({ events_updated: 0, relations_pending_review: 1 });
+
+			// The next run leaves the flagged event alone.
+			clock = new Date(NOW.getTime() + 2 * 60 * 60 * 1000);
+			await digest(sameEvent(confidence));
+			expect(eventById(draft).status).toBe('pending_review');
+		}
+	);
+
+	it('pairs in the rule band are never crowded out by shared-tag pairs', async () => {
+		await publishedNvidiaEvent();
+		// 20 newer single-article drafts that pair with the published event by shared tags…
+		for (let n = 0; n < 20; n++) {
+			await repositories.digest.createDraftEvent(
+				[
+					await addArticle(
+						`Nvidia scandal sparks furore number ${n}`,
+						`2026-11-12T23:${10 + n}:00.000Z`
+					)
+				],
+				1,
+				clock.toISOString()
+			);
+		}
+		// …and an older pair of drafts in the rule band (score about 0.44).
+		await repositories.digest.createDraftEvent(
+			[
+				await addArticle(
+					'Pope Leo meets clergy abuse survivors in Peru amid calls for justice',
+					'2026-11-12T22:05:00.000Z'
+				)
+			],
+			1,
+			clock.toISOString()
 		);
-		// What ingest does: the rule score is far below the ambiguous band, so it is a new draft.
-		const draft = await repositories.digest.createDraftEvent([article], 1, clock.toISOString());
+		await repositories.digest.createDraftEvent(
+			[
+				await addArticle(
+					'Pope Leo urges reparations for abuse victims during Peru visit',
+					'2026-11-12T22:10:00.000Z'
+				)
+			],
+			1,
+			clock.toISOString()
+		);
 
 		const seen: ClusteringInput[] = [];
-		const result = await digest(sameEvent(0.9, seen));
+		await digest(
+			handlers({
+				clustering: (input) => {
+					seen.push(input);
+					return { decisions: [] };
+				},
+				tagging: (input) => ({
+					items: input.articles.map((article) => ({
+						ref: article.ref,
+						category: 'technology',
+						regions: ['americas'],
+						countries: [],
+						tags: nvidiaTags(article.title)
+					}))
+				})
+			})
+		);
 
-		expect(seen).toHaveLength(1);
-		expect(seen[0]!.pairs).toHaveLength(1);
-		expect(db.select().from(events).where(eq(events.id, draft)).get()).toBeUndefined();
-		expect(
-			db.select().from(eventArticles).where(eq(eventArticles.article_id, article)).get()?.event_id
-		).toBe(published);
-		expect(result.counters.events_updated).toBe(1);
-		// The merge is new evidence: the event is re-summarized and its timeline grows.
-		expect(eventById(published)).toMatchObject({ status: 'published', source_count: 1 });
-		expect(
-			db.select().from(eventUpdates).where(eq(eventUpdates.event_id, published)).all()
-		).toMatchObject([{ evidence_refs: [{ article_id: article }] }]);
+		const pairs = seen[0]!.pairs;
+		expect(pairs).toHaveLength(20);
+		expect(pairs[0]!.a.title).toMatch(/^Pope Leo/);
+		expect(pairs.filter((pair) => /Nvidia scandal/.test(pair.a.title))).toHaveLength(19);
+	});
+
+	it('a merge chain stops at events already touched in this run', async () => {
+		const draftAt = async (title: string, at: string) =>
+			repositories.digest.createDraftEvent([await addArticle(title, at)], 1, clock.toISOString());
+		// Newest first in the listing: A pairs with B (0.38), B pairs with C (0.57), A–C is 0.18.
+		const a = await draftAt(
+			'Avalor signs Kessel River water deal with Meridia',
+			'2026-11-12T12:00:00.000Z'
+		);
+		const b = await draftAt('Avalor and Meridia sign trade accord', '2026-11-12T11:00:00.000Z');
+		const c = await draftAt(
+			'Meridia parliament debates Avalor trade accord',
+			'2026-11-12T10:00:00.000Z'
+		);
+
+		const seen: ClusteringInput[] = [];
+		await digest(
+			handlers({
+				clustering: (input) => {
+					seen.push(input);
+					return {
+						decisions: input.pairs.map((pair) => ({
+							pair_ref: pair.pair_ref,
+							verdict: 'same_event',
+							confidence: 0.95
+						}))
+					};
+				}
+			})
+		);
+
+		expect(seen[0]!.pairs).toHaveLength(2);
+		// A merged into B; B (now holding A's article, which the LLM never compared with C) stays.
+		expect(db.select().from(events).where(eq(events.id, a)).get()).toBeUndefined();
+		expect(eventById(b)).toBeDefined();
+		expect(eventById(c)).toBeDefined();
+		expect(db.select().from(eventArticles).where(eq(eventArticles.event_id, b)).all()).toHaveLength(
+			2
+		);
 	});
 
 	it('one shared tag is not enough to ask the LLM', async () => {

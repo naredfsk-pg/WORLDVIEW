@@ -24,7 +24,7 @@ import {
 	type SQL
 } from 'drizzle-orm';
 import type { SQLiteColumn } from 'drizzle-orm/sqlite-core';
-import type { ReviewReason } from '../../../types/domain';
+import type { EventRelation, ReviewReason } from '../../../types/domain';
 import type { ArticleWithSource, EventMatchCandidate } from '../../../types/news';
 import type {
 	DigestRepository,
@@ -311,7 +311,11 @@ export function createDigestRepository(db: Db): DigestRepository {
 						.get();
 					if (!source) throw new EntityNotFoundError('event', sourceEventId);
 					if (!target) throw new EntityNotFoundError('event', targetEventId);
-					if (source.status !== 'draft' || target.status === 'hidden') {
+					if (
+						source.status !== 'draft' ||
+						target.status === 'hidden' ||
+						target.status === 'published'
+					) {
 						throw new Error(
 							`mergeDraftEvent: cannot merge a ${source.status} event into a ${target.status} event`
 						);
@@ -329,6 +333,57 @@ export function createDigestRepository(db: Db): DigestRepository {
 					// A draft has no public content; its updates, relations and links cascade away.
 					tx.delete(events).where(eq(events.id, sourceEventId)).run();
 					recomputeDerivedFields(tx, targetEventId, now);
+					return true;
+				},
+				{ behavior: 'immediate' }
+			);
+		},
+
+		async flagPossibleDuplicate(draftEventId, publishedEventId, relation, now) {
+			return db.transaction(
+				(tx) => {
+					const draft = tx
+						.select({
+							status: events.status,
+							is_demo: events.is_demo,
+							reasons: events.review_reasons
+						})
+						.from(events)
+						.where(eq(events.id, draftEventId))
+						.get();
+					const target = tx
+						.select({ status: events.status, is_demo: events.is_demo })
+						.from(events)
+						.where(eq(events.id, publishedEventId))
+						.get();
+					if (!draft) throw new EntityNotFoundError('event', draftEventId);
+					if (!target) throw new EntityNotFoundError('event', publishedEventId);
+					if (target.status !== 'published' || target.is_demo !== draft.is_demo) {
+						throw new Error(
+							'flagPossibleDuplicate: the target must be a published event of the same kind'
+						);
+					}
+					if (draft.status !== 'draft') return false;
+
+					if (!draft.reasons.includes('possible_duplicate')) {
+						tx.update(events)
+							.set({ review_reasons: [...draft.reasons, 'possible_duplicate'], updated_at: now })
+							.where(eq(events.id, draftEventId))
+							.run();
+					}
+					upsertRelationRow(
+						tx,
+						{
+							from_event_id: draftEventId,
+							to_event_id: publishedEventId,
+							relation_type: 'same_topic',
+							explanation_th: relation.explanation_th,
+							evidence_refs: relation.evidence_article_ids.map((article_id) => ({ article_id })),
+							status: 'pending_review',
+							confidence: relation.confidence
+						},
+						now
+					);
 					return true;
 				},
 				{ behavior: 'immediate' }
@@ -373,39 +428,8 @@ export function createDigestRepository(db: Db): DigestRepository {
 		},
 
 		async upsertRelation(relation) {
-			// same_topic is symmetric and stored with from_event_id < to_event_id (types/domain.ts).
-			const swap =
-				relation.relation_type === 'same_topic' && relation.from_event_id > relation.to_event_id;
-			const from_event_id = swap ? relation.to_event_id : relation.from_event_id;
-			const to_event_id = swap ? relation.from_event_id : relation.to_event_id;
-
-			db.insert(eventRelations)
-				.values({
-					...relation,
-					id: randomUUID(),
-					from_event_id,
-					to_event_id,
-					// CONTRACT-GAP: upsertRelation has no `now` parameter, so the clock is read here.
-					created_at: new Date().toISOString(),
-					reviewed_at: null,
-					reviewed_by: null
-				})
-				.onConflictDoUpdate({
-					target: [
-						eventRelations.from_event_id,
-						eventRelations.to_event_id,
-						eventRelations.relation_type
-					],
-					set: {
-						explanation_th: relation.explanation_th,
-						evidence_refs: relation.evidence_refs,
-						status: relation.status,
-						confidence: relation.confidence
-					},
-					// Never overwrite an admin decision.
-					setWhere: isNull(eventRelations.reviewed_at)
-				})
-				.run();
+			// CONTRACT-GAP: upsertRelation has no `now` parameter, so the clock is read here.
+			upsertRelationRow(db, relation, new Date().toISOString());
 		},
 
 		async replaceLessonLinks(eventId, links) {
@@ -438,6 +462,46 @@ export function createDigestRepository(db: Db): DigestRepository {
 			return db.select().from(academyLessons).orderBy(asc(academyLessons.day)).all();
 		}
 	};
+}
+
+/** Upsert on (from, to, type); never overwrites an admin decision (`reviewed_at` set). */
+function upsertRelationRow(
+	executor: Executor,
+	relation: Omit<EventRelation, 'id' | 'created_at' | 'reviewed_at' | 'reviewed_by'>,
+	createdAt: string
+): void {
+	// same_topic is symmetric and stored with from_event_id < to_event_id (types/domain.ts).
+	const swap =
+		relation.relation_type === 'same_topic' && relation.from_event_id > relation.to_event_id;
+	const from_event_id = swap ? relation.to_event_id : relation.from_event_id;
+	const to_event_id = swap ? relation.from_event_id : relation.to_event_id;
+
+	executor
+		.insert(eventRelations)
+		.values({
+			...relation,
+			id: randomUUID(),
+			from_event_id,
+			to_event_id,
+			created_at: createdAt,
+			reviewed_at: null,
+			reviewed_by: null
+		})
+		.onConflictDoUpdate({
+			target: [
+				eventRelations.from_event_id,
+				eventRelations.to_event_id,
+				eventRelations.relation_type
+			],
+			set: {
+				explanation_th: relation.explanation_th,
+				evidence_refs: relation.evidence_refs,
+				status: relation.status,
+				confidence: relation.confidence
+			},
+			setWhere: isNull(eventRelations.reviewed_at)
+		})
+		.run();
 }
 
 /** `column` (a JSON array) contains any of `values`; undefined when `values` is empty. */
