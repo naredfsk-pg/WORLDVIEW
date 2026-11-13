@@ -8,7 +8,7 @@ import type { LLMProvider } from '../../types/llm';
 import { createLlmProvider, type LlmProviderDeps, type LlmSettings } from './provider';
 import { createOpenAiCompatibleTransport } from './transport';
 
-export { createLlmProvider, backoffDelay, bangkokDayStartUtc } from './provider';
+export { createLlmProvider } from './provider';
 export type { LlmLogEntry, LlmProviderDeps, LlmSettings } from './provider';
 export { resolveModelRoute, shouldOmitTemperature, type LlmModelSettings } from './routing';
 export { computeCacheKey, canonicalJson } from './cache-key';

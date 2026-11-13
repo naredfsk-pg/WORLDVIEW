@@ -7,7 +7,8 @@ import { REVIEW_REASONS, type CategorySlug, type ReviewReason } from '../../type
 import type { EventGateDecision, EventGateInput } from '../../types/editorial';
 import type { LlmErrorKind, SummaryOutput } from '../../types/llm';
 import type { ArticleWithSource } from '../../types/news';
-import { containsUrl, isHttpUrl, isThaiText } from './text';
+import { isHttpUrl } from '../../utils/url';
+import { containsUrl, isThaiText } from './text';
 
 export function evaluateEventForPublish(input: EventGateInput): EventGateDecision {
 	const reasons = input.mode === 'admin' ? adminGateReasons(input) : autoGateReasons(input);

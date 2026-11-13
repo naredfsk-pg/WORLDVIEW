@@ -18,12 +18,3 @@ export function isThaiText(value: string | null | undefined): boolean {
 export function containsUrl(value: string | null | undefined): boolean {
 	return typeof value === 'string' && (URL_LIKE.test(value) || BARE_DOMAIN.test(value));
 }
-
-export function isHttpUrl(value: string): boolean {
-	try {
-		const { protocol } = new URL(value);
-		return protocol === 'http:' || protocol === 'https:';
-	} catch {
-		return false;
-	}
-}
