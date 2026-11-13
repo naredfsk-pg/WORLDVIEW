@@ -6,7 +6,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Db } from '#lib/server/db/client.js';
 import { createRepositories } from '#lib/server/db/repositories/index.js';
-import { dailyBriefEvents, dailyBriefs } from '#lib/server/db/schema.js';
+import { eq } from 'drizzle-orm';
+import { dailyBriefEvents, dailyBriefs, events } from '#lib/server/db/schema.js';
 import { openTestDb } from '#lib/server/db/test-db.js';
 import type { BriefEdition, EditorialSignals, RegionSlug } from '#lib/types/domain.js';
 import type { BriefCandidate, Repositories } from '#lib/types/repositories.js';
@@ -105,7 +106,7 @@ async function publishedEvent(spec: EventSpec): Promise<string> {
 async function runBriefJob(
 	jobType: 'brief_morning' | 'brief_evening' | 'archive_snapshot',
 	date: string,
-	options: { force?: boolean; max?: number; now?: string } = {}
+	options: { force?: boolean; max?: number; min?: number; now?: string } = {}
 ) {
 	const edition: BriefEdition =
 		jobType === 'brief_morning'
@@ -119,10 +120,14 @@ async function runBriefJob(
 		{ jobs: repositories.jobs, logger: createJsonLogger(() => {}), now },
 		{ job_type: jobType, ...slot, trigger: 'cron', force: options.force ?? false },
 		(ctx) =>
-			runBrief({ briefs: repositories.briefs, target: { min: 1, max: options.max ?? 15 } }, ctx, {
-				date,
-				edition
-			})
+			runBrief(
+				{ briefs: repositories.briefs, target: { min: options.min ?? 1, max: options.max ?? 15 } },
+				ctx,
+				{
+					date,
+					edition
+				}
+			)
 	);
 }
 
@@ -194,10 +199,31 @@ describe('acceptance #6: morning and evening briefs', () => {
 		expect(await repositories.read.getPublishedBrief('2026-11-13', 'morning')).toBeNull();
 	});
 
-	it('stores a brief with no eligible events as a draft', async () => {
+	it('stores a brief with no eligible events as a draft, and reports the run as partial', async () => {
 		const result = await runBriefJob('brief_morning', '2026-11-13');
-		expect(result).toMatchObject({ status: 'succeeded', counters: { brief_events: 0 } });
+		expect(result).toMatchObject({ status: 'partial', counters: { brief_events: 0 } });
 		expect(db.select().from(dailyBriefs).all()[0]?.status).toBe('draft');
+	});
+
+	it('is partial below DAILY_EVENT_TARGET_MIN, without padding', async () => {
+		await publishedEvent({ publishedAt: '2026-11-12T20:00:00.000Z' });
+		const result = await runBriefJob('brief_morning', '2026-11-13', { min: 3 });
+		expect(result).toMatchObject({ status: 'partial', counters: { brief_events: 1 } });
+		expect(await repositories.read.getPublishedBrief('2026-11-13', 'morning')).not.toBeNull();
+	});
+
+	it('a forced rerun that finds nothing never unpublishes a published brief', async () => {
+		const id = await publishedEvent({ publishedAt: '2026-11-12T20:00:00.000Z' });
+		await runBriefJob('brief_morning', '2026-11-13');
+		db.update(events).set({ status: 'hidden' }).where(eq(events.id, id)).run();
+
+		const rerun = await runBriefJob('brief_morning', '2026-11-13', { force: true });
+
+		expect(rerun).toMatchObject({ status: 'partial', counters: { brief_events: 0 } });
+		expect(db.select().from(dailyBriefs).all()[0]).toMatchObject({
+			status: 'published',
+			event_count: 1
+		});
 	});
 
 	it('leaves demo events out when real events are available', async () => {
@@ -234,6 +260,63 @@ describe('archive_snapshot', () => {
 		expect(db.select().from(dailyBriefs).all()).toHaveLength(1);
 	});
 
+	it('is a superset of the day’s briefs even when they carried more than MAX events', async () => {
+		// Two in the morning brief of the 12th (evidence on the 11th, ICT), two in the evening one.
+		const carried = [
+			await publishedEvent({ publishedAt: '2026-11-11T13:00:00.000Z' }),
+			await publishedEvent({ publishedAt: '2026-11-11T14:00:00.000Z' })
+		];
+		await runBriefJob('brief_morning', '2026-11-12', { max: 2 });
+		carried.push(
+			await publishedEvent({ publishedAt: '2026-11-12T05:00:00.000Z' }),
+			await publishedEvent({ publishedAt: '2026-11-12T06:00:00.000Z' })
+		);
+		await runBriefJob('brief_evening', '2026-11-12', { max: 2 });
+		const extra = await publishedEvent({ publishedAt: '2026-11-12T15:00:00.000Z' });
+
+		await runBriefJob('archive_snapshot', '2026-11-12', { max: 3 });
+
+		const snapshot = await repositories.read.getPublishedBrief('2026-11-12', 'daily_snapshot');
+		const ids = snapshot?.events.map((event) => event.id) ?? [];
+		expect(ids).toEqual(expect.arrayContaining(carried));
+		expect(ids).not.toContain(extra);
+	});
+
+	it('ranks a forced rerun by what was known at the window end, not by later reports', async () => {
+		// Last evidence inside the 12th: `fresh` at 23:00 ICT, `stale` at 08:00 ICT.
+		const fresh = await publishedEvent({ publishedAt: '2026-11-12T16:00:00.000Z' });
+		const stale = await publishedEvent({ publishedAt: '2026-11-12T01:00:00.000Z' });
+		// A report two days later makes `stale` the most recently updated event overall.
+		const followUp = await repositories.ingest.insertArticleIfNew({
+			source_id: 'real-wire',
+			source_url: 'https://real.example/late',
+			canonical_url: 'https://real.example/late',
+			publisher_name: 'Real Wire',
+			title: 'Late follow-up',
+			excerpt: null,
+			language: 'en',
+			published_at: '2026-11-14T01:00:00.000Z',
+			ingested_at: '2026-11-14T01:00:00.000Z',
+			content_hash: 'late-follow-up',
+			raw_metadata: {}
+		});
+		await repositories.digest.linkArticles(
+			stale,
+			[followUp.article_id],
+			1,
+			'2026-11-14T01:00:00.000Z'
+		);
+
+		await runBriefJob('archive_snapshot', '2026-11-12', {
+			max: 1,
+			force: true,
+			now: '2026-11-14T02:00:00.000Z'
+		});
+
+		const snapshot = await repositories.read.getPublishedBrief('2026-11-12', 'daily_snapshot');
+		expect(snapshot?.events.map((event) => event.id)).toEqual([fresh]);
+	});
+
 	it('merges the events of the day’s morning and evening briefs', async () => {
 		// In the morning brief of the 12th, but its evidence is from the 11th (ICT).
 		const fromMorning = await publishedEvent({ publishedAt: '2026-11-11T13:00:00.000Z' });
@@ -266,6 +349,8 @@ describe('rankBriefCandidates: region quota and selection reasons', () => {
 		is_demo: false,
 		signals: { impact_breadth: impact, thailand_relevance: 0, sensitive: false },
 		is_continuing: false,
+		window_evidence_at: null,
+		in_day_briefs: false,
 		...extra
 	});
 	const windowEnd = '2026-11-13T00:00:00.000Z';

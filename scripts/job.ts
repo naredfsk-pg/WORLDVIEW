@@ -25,6 +25,8 @@
  *
  * (`CRON_TZ=Asia/Bangkok` with ICT times is an alternative where the host cron supports it.)
  * Late reports for a past day: `npm run job -- archive_snapshot --date YYYY-MM-DD --force`.
+ * A brief or snapshot asked for before its window closes is refused (skipped, `window_open`,
+ * nothing claimed) unless `--force` is given.
  */
 import { EXIT_USAGE, parseJobCliArgs, USAGE } from '#lib/server/jobs/cli-args.js';
 import { runJobByType } from '#lib/server/jobs/registry.js';

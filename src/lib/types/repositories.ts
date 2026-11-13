@@ -204,6 +204,11 @@ export interface BriefCandidate extends EventSummary {
 	signals: EditorialSignals | null;
 	/** Has an update or a published relation to an older event (continuity, PRD §4.4). */
 	is_continuing: boolean;
+	// CONTRACT-CHANGE: added (Wave 2 review).
+	/** Newest `published_at ?? ingested_at` of its articles inside the window; null if none. */
+	window_evidence_at: IsoUtc | null;
+	/** An item of a published morning / evening brief of `include_briefs_of`. */
+	in_day_briefs: boolean;
 }
 
 export interface BriefRepository {
@@ -215,7 +220,10 @@ export interface BriefRepository {
 		end_utc: IsoUtc;
 		include_briefs_of?: BriefDate;
 	}): Promise<BriefCandidate[]>;
-	/** Upsert brief by (brief_date, edition) and replace its items, in one transaction. */
+	/**
+	 * Upsert brief by (brief_date, edition) and replace its items, in one transaction.
+	 * A `draft` (no items) never replaces a `published` brief: the call is then a no-op.
+	 */
 	saveBrief(input: {
 		brief_date: BriefDate;
 		edition: BriefEdition;

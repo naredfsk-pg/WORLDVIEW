@@ -18,7 +18,7 @@ import { createLlmProviderFromConfig } from '../llm/index.js';
 import { createFixtureAdapter, createRssAdapter } from '../news/adapters.js';
 import { allowedHostsFromRegistry, createSafeFetch } from '../news/safe-fetch.js';
 import { sourceRegistryFor } from '../news/sources.js';
-import { runBrief } from './briefs.js';
+import { briefWindow, runBrief } from './briefs.js';
 import { DATE_JOBS, EXIT_USAGE } from './cli-args.js';
 import { runDigest } from './digest.js';
 import { MAX_ITEM_AGE_HOURS, previewIngest, runIngest, type IngestDeps } from './ingest.js';
@@ -48,6 +48,11 @@ export interface RunJobByTypeResult {
 	exitCode: number;
 	counters: Record<string, number>;
 	runId?: string;
+	/**
+	 * Why a run was skipped: `already_done` / `running` (slot taken), or `window_open` (a brief or
+	 * snapshot asked for before its window closed, without `force`; the slot is not claimed).
+	 */
+	reason?: string;
 }
 
 const BRIEF_EDITION_BY_JOB = {
@@ -76,6 +81,14 @@ export async function runJobByType(
 		}
 		if (type === 'ingest' && opts.dryRun) return await dryRunIngest(opts, logger);
 
+		// A brief built before its window closes would take the day's slot with half the news, and
+		// the real cron run would then be `already_done`. Refuse before claiming anything.
+		const open = openBriefWindow(type, opts, new Date());
+		if (open) {
+			logger.warn('job skipped: window still open', { job_type: type, ...open });
+			return { status: 'skipped', exitCode: 0, counters: {}, reason: 'window_open' };
+		}
+
 		const db = openDb(config.app.databaseUrl);
 		try {
 			const repositories = createRepositories(db);
@@ -94,8 +107,9 @@ export async function runJobByType(
 			return {
 				status: result.status,
 				exitCode: exitCodeFor(result),
-				counters: result.status === 'skipped' ? {} : { ...result.counters },
-				...(result.status === 'skipped' ? {} : { runId: result.run_id })
+				...(result.status === 'skipped'
+					? { counters: {}, reason: result.reason }
+					: { counters: { ...result.counters }, runId: result.run_id })
 			};
 		} finally {
 			db.$client.close();
@@ -161,8 +175,7 @@ function planJob(
 	}
 
 	const edition = BRIEF_EDITION_BY_JOB[type];
-	const today = todayBriefDate(now);
-	const date = opts.date ?? (type === 'archive_snapshot' ? addDays(today, -1) : today);
+	const date = briefDateFor(type, opts, now);
 	return {
 		slot: type === 'archive_snapshot' ? archiveJobSlot(date) : briefJobSlot(type, date),
 		execute: (ctx) =>
@@ -175,6 +188,29 @@ function planJob(
 				{ date, edition }
 			)
 	};
+}
+
+/** brief_* default to today's Bangkok date, archive_snapshot to the previous one (§8). */
+function briefDateFor(
+	type: keyof typeof BRIEF_EDITION_BY_JOB,
+	opts: RunJobOptions,
+	now: Date
+): string {
+	const today = todayBriefDate(now);
+	return opts.date ?? (type === 'archive_snapshot' ? addDays(today, -1) : today);
+}
+
+/** The window of a brief / snapshot job that has not closed yet (and no `force`), else null. */
+function openBriefWindow(
+	type: JobType,
+	opts: RunJobOptions,
+	now: Date
+): { date: string; window_end_utc: string } | null {
+	if (opts.force || !(type in BRIEF_EDITION_BY_JOB)) return null;
+	const briefType = type as keyof typeof BRIEF_EDITION_BY_JOB;
+	const date = briefDateFor(briefType, opts, now);
+	const window = briefWindow(date, BRIEF_EDITION_BY_JOB[briefType]);
+	return now.toISOString() < window.end_utc ? { date, window_end_utc: window.end_utc } : null;
 }
 
 async function dryRunIngest(

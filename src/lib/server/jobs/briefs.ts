@@ -4,14 +4,18 @@
  * upserts on (brief_date, edition) and replaces the items in one transaction, so reruns never
  * duplicate and an admin-hidden brief stays hidden. A brief with no eligible event is a `draft`.
  *
- * `archive_snapshot` builds the `daily_snapshot` of a past Bangkok day: the day's window merged
- * with the events of that day's morning and evening briefs. Evidence time is
- * `published_at ?? ingested_at`, so a late report about day D (ingested on D+2, published on D)
- * joins D's snapshot on `archive_snapshot --date D --force`.
+ * `archive_snapshot` builds the `daily_snapshot` of a past Bangkok day (FR-03: a superset of what
+ * readers saw that day): every event of that day's published morning and evening briefs is kept,
+ * outside the cap and the quota, and the remaining slots up to MAX are ranked from the day's
+ * window. Evidence time is `published_at ?? ingested_at`, so a late report about day D (ingested
+ * on D+2, published on D) joins D's snapshot on `archive_snapshot --date D --force`.
+ *
+ * A brief with no item, or fewer than MIN, makes the run `partial` (exit 2) so the shortfall is
+ * visible; a run that finds nothing never takes down a brief that is already published.
  */
 import type { BriefDate, BriefEdition } from '#lib/types/domain.js';
 import type { BriefWindow, JobContext, JobOutcome } from '#lib/types/jobs.js';
-import type { BriefRepository } from '#lib/types/repositories.js';
+import type { BriefCandidate, BriefRepository } from '#lib/types/repositories.js';
 import { addDays, bangkokDateTimeToUtc, bangkokDayRangeUtc } from '#lib/utils/date.js';
 import { rankBriefCandidates } from './brief-ranking.js';
 
@@ -36,7 +40,10 @@ export async function runBrief(
 	const realCandidates = candidates.filter((candidate) => !candidate.is_demo);
 	const pool = realCandidates.length > 0 ? realCandidates : candidates;
 
-	const items = rankBriefCandidates(pool, { max: deps.target.max, windowEnd: window.end_utc });
+	const items =
+		brief.edition === 'daily_snapshot'
+			? snapshotItems(pool, deps.target.max, window.end_utc)
+			: rankBriefCandidates(pool, { max: deps.target.max, windowEnd: window.end_utc });
 	await deps.briefs.saveBrief({
 		brief_date: brief.date,
 		edition: brief.edition,
@@ -46,13 +53,30 @@ export async function runBrief(
 	});
 
 	const fields = { brief_date: brief.date, edition: brief.edition, events: items.length };
-	if (items.length < deps.target.min) ctx.logger.warn('brief below the daily target', fields);
+	const belowTarget = items.length < deps.target.min;
+	if (belowTarget) ctx.logger.warn('brief below the daily target', fields);
 	else ctx.logger.info('brief saved', fields);
 	return {
-		status: 'succeeded',
+		status: belowTarget ? 'partial' : 'succeeded',
 		counters: { brief_candidates: pool.length, brief_events: items.length },
-		error: null
+		error: belowTarget
+			? `${items.length} events, below DAILY_EVENT_TARGET_MIN ${deps.target.min}`
+			: null
 	};
+}
+
+/** Carried brief items first (all of them), then the best window events in the slots left. */
+function snapshotItems(
+	pool: BriefCandidate[],
+	max: number,
+	windowEnd: string
+): ReturnType<typeof rankBriefCandidates> {
+	const carried = pool.filter((candidate) => candidate.in_day_briefs);
+	const others = pool.filter((candidate) => !candidate.in_day_briefs);
+	return [
+		...rankBriefCandidates(carried, { max: carried.length, windowEnd }),
+		...rankBriefCandidates(others, { max: Math.max(0, max - carried.length), windowEnd })
+	].map((item, index) => ({ ...item, rank: index + 1 }));
 }
 
 /**

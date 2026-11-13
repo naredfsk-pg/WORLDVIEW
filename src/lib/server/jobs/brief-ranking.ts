@@ -3,7 +3,9 @@
  * measure of truth:
  *
  *   score = 3·impact_breadth + 3·thailand_relevance        (0–3 each, from the summary)
- *         + 2·recency          (1 at the window end, 0 for evidence a day older)
+ *         + 2·recency          (newest evidence inside the window: 1 at the window end, 0 a day
+ *                                 earlier; later reports never count, so a forced rerun of a past
+ *                                 day ranks as it would have at the time)
  *         + 1.5·continuing     (has updates or a published relation to an older event)
  *         + diversity          (distinct publishers − 1, capped at 3)
  *
@@ -39,7 +41,7 @@ export function rankBriefCandidates(
 		.sort(
 			(a, b) =>
 				b.score - a.score ||
-				b.candidate.last_updated_at.localeCompare(a.candidate.last_updated_at) ||
+				b.evidenceMs - a.evidenceMs ||
 				a.candidate.id.localeCompare(b.candidate.id)
 		);
 
@@ -78,15 +80,21 @@ export function rankBriefCandidates(
 function scoreCandidate(
 	candidate: BriefCandidate,
 	windowEnd: IsoUtc
-): { score: number; recency: number } {
+): { score: number; recency: number; evidenceMs: number } {
 	const impact = candidate.signals?.impact_breadth ?? 0;
 	const thailand = candidate.signals?.thailand_relevance ?? 0;
-	const ageMs = Math.max(0, Date.parse(windowEnd) - Date.parse(candidate.last_updated_at));
+	const windowEndMs = Date.parse(windowEnd);
+	// An event carried in by a brief may have no evidence inside the window: use what it had by then.
+	const evidenceMs = Math.min(
+		windowEndMs,
+		Date.parse(candidate.window_evidence_at ?? candidate.last_updated_at)
+	);
+	const ageMs = windowEndMs - evidenceMs;
 	const recency = Math.max(0, 1 - ageMs / RECENCY_HORIZON_MS);
 	const diversity = Math.min(Math.max(candidate.source_count, 1), 4) - 1;
 	const score =
 		3 * impact + 3 * thailand + 2 * recency + (candidate.is_continuing ? 1.5 : 0) + diversity;
-	return { score, recency };
+	return { score, recency, evidenceMs };
 }
 
 function quotaRegions(candidate: BriefCandidate): RegionSlug[] {

@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { openDb } from '#lib/server/db/client.js';
-import { events } from '#lib/server/db/schema.js';
+import { events, jobRuns } from '#lib/server/db/schema.js';
 import { runJobByType } from './registry';
 
 const MIGRATIONS = fileURLToPath(new URL('../../../../migrations', import.meta.url));
@@ -77,16 +77,39 @@ describe('runJobByType', () => {
 			{ status: 'pending_review', reasons: ['llm_failed'] }
 		]);
 
+		// No published event: the brief is a draft and the run partial (exit 2).
 		const brief = await runJobByType('brief_morning', { date: '2026-11-13' });
-		expect(brief).toMatchObject({ status: 'succeeded', counters: { brief_events: 0 } });
+		expect(brief).toMatchObject({ status: 'partial', exitCode: 2, counters: { brief_events: 0 } });
 		expect(await runJobByType('brief_morning', { date: '2026-11-13' })).toEqual({
 			status: 'skipped',
 			exitCode: 0,
-			counters: {}
+			counters: {},
+			reason: 'already_done'
 		});
 		expect(await runJobByType('archive_snapshot', { date: '2026-11-12' })).toMatchObject({
-			status: 'succeeded',
-			exitCode: 0
+			status: 'partial',
+			exitCode: 2
 		});
 	});
+
+	it.each(['brief_morning', 'brief_evening', 'archive_snapshot'] as const)(
+		'refuses %s before its window closes, without claiming the slot',
+		async (type) => {
+			expect(await runJobByType(type, { date: '2099-01-01' })).toEqual({
+				status: 'skipped',
+				exitCode: 0,
+				counters: {},
+				reason: 'window_open'
+			});
+			const db = openDb(databaseUrl);
+			const runs = db.select().from(jobRuns).all();
+			db.$client.close();
+			expect(runs.some((run) => run.idempotency_key === `${type}:2099-01-01`)).toBe(false);
+
+			// --force builds it anyway (an explicit, manual decision).
+			expect(await runJobByType(type, { date: '2099-01-01', force: true })).toMatchObject({
+				status: 'partial'
+			});
+		}
+	);
 });
