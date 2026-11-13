@@ -24,7 +24,8 @@ const source: SourceDefinition = {
 	license_notes: 'test',
 	allow_excerpt: true,
 	is_demo: true,
-	enabled: true
+	enabled: true,
+	link_hosts: ['wire-a.example']
 };
 
 const raw = (overrides: Partial<RawFeedItem> = {}): RawFeedItem => ({

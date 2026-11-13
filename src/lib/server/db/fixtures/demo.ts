@@ -33,6 +33,7 @@ export const DEMO_SOURCES: SourceDefinition[] = ['a', 'b', 'c'].map((letter, ind
 	kind: 'rss',
 	homepage_url: `${DEMO_URL_BASE}/wire-${letter}`,
 	feed_url: `${DEMO_URL_BASE}/wire-${letter}/feed.xml`,
+	link_hosts: ['example.com'],
 	license_notes: 'Fictional demo source for development and UI previews. Not real news.',
 	allow_excerpt: false,
 	is_demo: true,

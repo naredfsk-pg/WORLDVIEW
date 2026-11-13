@@ -8,7 +8,14 @@ import type { Article, EventStatus, IsoUtc, Source, Tag } from './domain';
 export type SourceDefinition = Omit<
 	Source,
 	'last_success_at' | 'last_error_at' | 'last_error' | 'etag' | 'last_modified'
->;
+> & {
+	// CONTRACT-CHANGE (security wave): the hosts this source's items may link to, as exact
+	// lower-case hosts (`www.bbc.co.uk`) or `*.domain` (the domain and every subdomain). An item
+	// whose canonical link host is not listed is dropped at ingest, so one feed can never cite
+	// (and take the dedup slot of) another source's articles or an attacker's site. Registry only:
+	// not stored in `sources`.
+	link_hosts: readonly string[];
+};
 
 // CONTRACT-CHANGE: added (Wave 2) for conditional GET. Values are opaque header strings.
 export interface FeedValidators {

@@ -110,8 +110,17 @@ function buildDemoRows(lessonIds: Set<string>) {
 	const sourceById = new Map(DEMO_SOURCES.map((source) => [source.id, source]));
 	const refs = (ids: string[]) => ids.map((article_id) => ({ article_id }));
 
+	// Columns only: `link_hosts` is registry-only.
 	const sourceRows: (typeof sources.$inferInsert)[] = DEMO_SOURCES.map((source) => ({
-		...source,
+		id: source.id,
+		name: source.name,
+		kind: source.kind,
+		homepage_url: source.homepage_url,
+		feed_url: source.feed_url,
+		license_notes: source.license_notes,
+		allow_excerpt: source.allow_excerpt,
+		is_demo: source.is_demo,
+		enabled: source.enabled,
 		last_success_at: null,
 		last_error_at: null,
 		last_error: null

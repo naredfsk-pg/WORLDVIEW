@@ -17,7 +17,8 @@ const source: SourceDefinition = {
 	license_notes: 'test',
 	allow_excerpt: true,
 	is_demo: true,
-	enabled: true
+	enabled: true,
+	link_hosts: ['example.com']
 };
 
 const article = (overrides: Partial<NormalizedArticle> = {}): NormalizedArticle => ({

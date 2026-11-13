@@ -17,6 +17,7 @@ const source = (overrides: Partial<SourceDefinition>): SourceDefinition => ({
 	allow_excerpt: true,
 	is_demo: true,
 	enabled: true,
+	link_hosts: [],
 	...overrides
 });
 

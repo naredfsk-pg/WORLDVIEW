@@ -19,6 +19,12 @@
  *   2026-11-13; WHO stays off until a working global feed exists.
  * - `imf-news`: disabled. The imf.org RSS paths tried answer 404, and `mediacenter.imf.org/Rss`
  *   works but its newest item is 2026-10-17 (27 days old).
+ *
+ * `link_hosts` (security wave): the item link hosts seen in the stored feed snapshots of
+ * 2026-11-13 (scratchpad `feeds/*.xml`, not fetched again): UN News `news.un.org` (30 of 30
+ * items), BBC `www.bbc.co.uk` (33 of 33; `www.bbc.com` is the same outlet's other host and its
+ * homepage), Guardian `www.theguardian.com` (45 of 45), Al Jazeera `www.aljazeera.com` (25 of 25).
+ * The disabled WHO AFRO and IMF entries use their homepage hosts. Any other host is dropped.
  */
 import type { SourceDefinition } from '#lib/types/news.js';
 
@@ -33,6 +39,7 @@ export const NEWS_SOURCES: readonly SourceDefinition[] = [
 		kind: 'rss',
 		homepage_url: 'https://news.un.org/en/',
 		feed_url: 'https://news.un.org/feed/subscribe/en/news/all/rss.xml',
+		link_hosts: ['news.un.org'],
 		license_notes: OWNER_APPROVAL,
 		allow_excerpt: true,
 		is_demo: false,
@@ -44,6 +51,7 @@ export const NEWS_SOURCES: readonly SourceDefinition[] = [
 		kind: 'rss',
 		homepage_url: 'https://www.afro.who.int/media-centre',
 		feed_url: 'https://www.afro.who.int/rss/featured-news.xml',
+		link_hosts: ['www.afro.who.int'],
 		license_notes: OWNER_APPROVAL,
 		allow_excerpt: true,
 		is_demo: false,
@@ -55,6 +63,7 @@ export const NEWS_SOURCES: readonly SourceDefinition[] = [
 		kind: 'rss',
 		homepage_url: 'https://www.imf.org/en/News',
 		feed_url: 'https://www.imf.org/en/News/rss?language=eng',
+		link_hosts: ['www.imf.org'],
 		license_notes: OWNER_APPROVAL,
 		allow_excerpt: true,
 		is_demo: false,
@@ -66,6 +75,7 @@ export const NEWS_SOURCES: readonly SourceDefinition[] = [
 		kind: 'rss',
 		homepage_url: 'https://www.bbc.com/news/world',
 		feed_url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
+		link_hosts: ['www.bbc.co.uk', 'www.bbc.com'],
 		license_notes: OWNER_APPROVAL,
 		allow_excerpt: true,
 		is_demo: false,
@@ -77,6 +87,7 @@ export const NEWS_SOURCES: readonly SourceDefinition[] = [
 		kind: 'rss',
 		homepage_url: 'https://www.theguardian.com/world',
 		feed_url: 'https://www.theguardian.com/world/rss',
+		link_hosts: ['www.theguardian.com'],
 		license_notes: OWNER_APPROVAL,
 		allow_excerpt: true,
 		is_demo: false,
@@ -88,6 +99,7 @@ export const NEWS_SOURCES: readonly SourceDefinition[] = [
 		kind: 'rss',
 		homepage_url: 'https://www.aljazeera.com/',
 		feed_url: 'https://www.aljazeera.com/xml/rss/all.xml',
+		link_hosts: ['www.aljazeera.com'],
 		license_notes: OWNER_APPROVAL,
 		allow_excerpt: true,
 		is_demo: false,
@@ -121,6 +133,7 @@ function fixtureSource(letter: string, name: string, allowExcerpt: boolean): Sou
 		kind: 'fixture',
 		homepage_url: `https://fixtures.worldview.invalid/wire-${letter}`,
 		feed_url: `tests/fixtures/feeds/wire-${letter}.xml`,
+		link_hosts: ['fixtures.worldview.invalid'],
 		license_notes: 'Fictional test fixture; not real news.',
 		allow_excerpt: allowExcerpt,
 		is_demo: true,
