@@ -1,23 +1,34 @@
 /**
  * Rule-based grouping of articles into event candidates (ARCHITECTURE §9). Pure; no LLM yet.
+ * Product rule: a wrong merge is worse than a duplicate, so every signal here errs towards "new".
  *
- * Similarity = title-token Jaccard (best match over the event's titles)
- *            + KEYWORD_WEIGHT × keyword Jaccard (feed categories, event tags, title entities).
- * Title tokens work for both scripts: Latin/digit words become (lightly stemmed) word tokens,
- * Thai runs (no spaces between words) become character trigrams.
+ * score = mean title-token Jaccard against the cluster's article titles (not the best single
+ *         title, so a cluster cannot drift one similar headline at a time)
+ *       + entityWeight × Jaccard of named entities.
+ * Conflict guard: when both sides name entities but share none (Japan vs Chile), or both name
+ * event types but share none (flood vs heatwave), the score is capped just below the join
+ * threshold, so the pair is at most "ambiguous".
+ * Feed categories are not used: one feed tags every item "World" or "Business".
  *
- * Verdicts: ≥ join → join; ≥ ambiguous → `ambiguous` (would go to LLM `clustering`; until that
- * exists it becomes a new event, because wrong merges are worse than duplicates); else new event.
+ * Title tokens work for both scripts: Latin words become lightly stemmed word tokens, Thai runs
+ * (no spaces between words) become character trigrams, and number-only tokens are dropped.
+ *
+ * Verdicts: ≥ join → join; ≥ ambiguous → counted as ambiguous (LLM `clustering` in Wave 2; for
+ * now a new event); else new event.
  */
 import type { IsoUtc } from '#lib/types/domain.js';
 import type { EventMatchCandidate } from '#lib/types/news.js';
+import { EVENT_TYPES, PLACES } from './grouping-vocabulary.js';
 
 export interface GroupingConfig {
 	joinThreshold: number;
 	ambiguousThreshold: number;
 	/** An article may join a cluster whose time span, widened by this much, contains it. */
 	timeWindowMs: number;
-	keywordWeight: number;
+	/** Weight of the named-entity Jaccard added to the title score. */
+	entityWeight: number;
+	/** How far below `joinThreshold` a conflicting pair is capped. */
+	conflictMargin: number;
 }
 
 /** Named, tunable constants (data-scientist may tune them on fixtures). */
@@ -25,7 +36,8 @@ export const GROUPING_CONFIG: GroupingConfig = {
 	joinThreshold: 0.6,
 	ambiguousThreshold: 0.3,
 	timeWindowMs: 72 * 60 * 60 * 1000,
-	keywordWeight: 0.25
+	entityWeight: 0.15,
+	conflictMargin: 0.01
 };
 
 export interface GroupableArticle {
@@ -33,8 +45,6 @@ export interface GroupableArticle {
 	title: string;
 	published_at: IsoUtc | null;
 	ingested_at: IsoUtc;
-	/** Feed categories (raw_metadata.categories). */
-	categories: string[];
 }
 
 export interface GroupingPlan {
@@ -56,18 +66,22 @@ export function planGrouping(
 	events: readonly EventMatchCandidate[],
 	config: GroupingConfig = GROUPING_CONFIG
 ): GroupingPlan {
-	const clusters: Cluster[] = events.map((event) => ({
-		event_id: event.event_id,
-		titleTokenSets: uniqueTitles([event.title, ...event.article_titles]).map(titleTokens),
-		keywords: new Set([
-			...event.tags.map(normalizeText),
-			...[event.title, ...event.article_titles].flatMap(titleEntities)
-		]),
-		startMs: Date.parse(event.first_seen_at),
-		endMs: Date.parse(event.last_updated_at),
-		article_ids: [],
-		confidence: 1
-	}));
+	const clusters: Cluster[] = events.map((event) => {
+		// Article titles are the evidence; `title` (maybe a Thai summary title) is the fallback.
+		const titles = uniqueTitles(
+			event.article_titles.length > 0 ? event.article_titles : [event.title]
+		);
+		return {
+			event_id: event.event_id,
+			titleTokenSets: titles.map(titleTokens),
+			entities: new Set(titles.flatMap((title) => [...titleEntities(title)])),
+			eventTypes: new Set(titles.flatMap((title) => [...eventTypesOf(title)])),
+			startMs: Date.parse(event.first_seen_at),
+			endMs: Date.parse(event.last_updated_at),
+			article_ids: [],
+			confidence: 1
+		};
+	});
 	let ambiguousCount = 0;
 
 	const ordered = [...articles].sort(
@@ -104,14 +118,17 @@ interface ArticleProfile {
 	id: string;
 	timeMs: number;
 	tokens: Set<string>;
-	keywords: Set<string>;
+	entities: Set<string>;
+	eventTypes: Set<string>;
 }
 
 interface Cluster {
 	/** null = a new cluster created in this batch. */
 	event_id: string | null;
+	/** One token set per article title. */
 	titleTokenSets: Set<string>[];
-	keywords: Set<string>;
+	entities: Set<string>;
+	eventTypes: Set<string>;
 	startMs: number;
 	endMs: number;
 	/** Articles from this batch assigned to the cluster. */
@@ -133,18 +150,32 @@ function bestMatch(
 			profile.timeMs <= cluster.endMs + config.timeWindowMs;
 		if (!inWindow) continue;
 
-		const titleScore = Math.max(
-			0,
-			...cluster.titleTokenSets.map((tokens) => jaccard(profile.tokens, tokens))
-		);
-		const score = combineScores(titleScore, jaccard(profile.keywords, cluster.keywords), config);
-		if (!best || score > best.score) best = { cluster, score };
+		const clusterScore = scoreAgainstCluster(profile, cluster, config);
+		if (!best || clusterScore > best.score) best = { cluster, score: clusterScore };
 	}
 	return best;
 }
 
-function combineScores(titleScore: number, keywordScore: number, config: GroupingConfig): number {
-	return Math.min(1, titleScore + config.keywordWeight * keywordScore);
+function scoreAgainstCluster(
+	profile: ArticleProfile,
+	cluster: Cluster,
+	config: GroupingConfig
+): number {
+	const titleScores = cluster.titleTokenSets.map((tokens) => jaccard(profile.tokens, tokens));
+	const meanTitleScore = titleScores.reduce((sum, value) => sum + value, 0) / titleScores.length;
+	const entityScore = jaccard(profile.entities, cluster.entities);
+	const score = Math.min(1, meanTitleScore + config.entityWeight * entityScore);
+
+	const conflicts =
+		disjointWhenBothPresent(profile.entities, cluster.entities) ||
+		disjointWhenBothPresent(profile.eventTypes, cluster.eventTypes);
+	return conflicts ? Math.min(score, config.joinThreshold - config.conflictMargin) : score;
+}
+
+function disjointWhenBothPresent(a: Set<string>, b: Set<string>): boolean {
+	if (a.size === 0 || b.size === 0) return false;
+	for (const value of a) if (b.has(value)) return false;
+	return true;
 }
 
 function articleProfile(article: GroupableArticle): ArticleProfile {
@@ -152,7 +183,8 @@ function articleProfile(article: GroupableArticle): ArticleProfile {
 		id: article.id,
 		timeMs: articleTime(article),
 		tokens: titleTokens(article.title),
-		keywords: new Set([...article.categories.map(normalizeText), ...titleEntities(article.title)])
+		entities: titleEntities(article.title),
+		eventTypes: eventTypesOf(article.title)
 	};
 }
 
@@ -164,7 +196,8 @@ function newCluster(profile: ArticleProfile): Cluster {
 	return {
 		event_id: null,
 		titleTokenSets: [profile.tokens],
-		keywords: new Set(profile.keywords),
+		entities: new Set(profile.entities),
+		eventTypes: new Set(profile.eventTypes),
 		startMs: profile.timeMs,
 		endMs: profile.timeMs,
 		article_ids: [profile.id],
@@ -172,31 +205,40 @@ function newCluster(profile: ArticleProfile): Cluster {
 	};
 }
 
-function addToCluster(cluster: Cluster, profile: ArticleProfile, score: number): void {
+function addToCluster(cluster: Cluster, profile: ArticleProfile, joinScore: number): void {
 	cluster.titleTokenSets.push(profile.tokens);
-	for (const keyword of profile.keywords) cluster.keywords.add(keyword);
+	for (const entity of profile.entities) cluster.entities.add(entity);
+	for (const eventType of profile.eventTypes) cluster.eventTypes.add(eventType);
 	cluster.startMs = Math.min(cluster.startMs, profile.timeMs);
 	cluster.endMs = Math.max(cluster.endMs, profile.timeMs);
 	cluster.article_ids.push(profile.id);
-	cluster.confidence = Math.min(cluster.confidence, Math.round(score * 1000) / 1000);
+	cluster.confidence = Math.min(cluster.confidence, Math.round(joinScore * 1000) / 1000);
 }
 
 // ---------------------------------------------------------------------------
-// Tokens
+// Tokens, entities, event types
 // ---------------------------------------------------------------------------
 
 const THAI_CHAR = /[฀-๿]/;
+const NUMBER_ONLY = /^\p{N}+$/u;
 const ENGLISH_STOPWORDS = new Set(
-	'a an and are as at be by for from has have in into is it its of on or over says said than that the their this to was were will with after amid new'.split(
+	'a an and are as at be by for from has have in into is it its of off on or over says said than that the their this to was were will with after amid new'.split(
 		' '
 	)
 );
+/**
+ * From this share of capitalized (non-stopword) words a title is in Title Case, so capitals carry
+ * no signal. High on purpose: short sentence-case headlines are often mostly names.
+ */
+const TITLE_CASE_RATIO = 0.9;
+/** Above this share of all-caps words a title is shouting, so acronyms carry no signal. */
+const ALL_CAPS_RATIO = 0.6;
 
 /** Title tokens: Thai runs → character trigrams; other words → lower-cased, lightly stemmed words. */
 export function titleTokens(title: string): Set<string> {
 	const tokens = new Set<string>();
 	for (const word of normalizeText(title).split(' ')) {
-		if (!word) continue;
+		if (!word || NUMBER_ONLY.test(word)) continue;
 		if (THAI_CHAR.test(word)) {
 			for (const gram of characterTrigrams(word)) tokens.add(gram);
 			continue;
@@ -207,16 +249,49 @@ export function titleTokens(title: string): Set<string> {
 	return tokens;
 }
 
-/** Capitalized Latin words (names, places, acronyms) after the first word of the title. */
-function titleEntities(title: string): string[] {
+/**
+ * Named entities of a title: known places (English or Thai), acronyms (UN, ASEAN), and, in
+ * sentence-case titles, capitalized words after the first one (proper nouns).
+ */
+export function titleEntities(title: string): Set<string> {
+	const entities = new Set(matchVocabulary(title, PLACES));
 	const words = title
 		.normalize('NFKC')
 		.split(/[^\p{L}\p{M}\p{N}]+/u)
-		.filter(Boolean);
-	return words
-		.slice(1)
-		.filter((word) => /^\p{Lu}/u.test(word) && !ENGLISH_STOPWORDS.has(word.toLowerCase()))
-		.map((word) => stem(word.toLowerCase()));
+		.filter((word) => /^[A-Za-z]+$/.test(word) && !ENGLISH_STOPWORDS.has(word.toLowerCase()));
+	if (words.length === 0) return entities;
+
+	const shareOf = (pattern: RegExp) =>
+		words.filter((word) => pattern.test(word)).length / words.length;
+	const isAllCaps = shareOf(/^[A-Z]+$/) > ALL_CAPS_RATIO;
+	const isTitleCase = shareOf(/^[A-Z]/) >= TITLE_CASE_RATIO;
+	for (const [index, word] of words.entries()) {
+		const isAcronym = !isAllCaps && /^[A-Z]{2,6}$/.test(word);
+		const isProperNoun = !isTitleCase && index > 0 && /^[A-Z][a-z]/.test(word);
+		if (isAcronym || isProperNoun) entities.add(word.toLowerCase());
+	}
+	return entities;
+}
+
+/** Canonical event types named in a title (flood, heatwave, …). */
+export function eventTypesOf(title: string): Set<string> {
+	return new Set(matchVocabulary(title, EVENT_TYPES));
+}
+
+/**
+ * Canonical ids (first element) of the entries whose canonical name or any alias occurs:
+ * whole words for English, substrings for Thai.
+ */
+function matchVocabulary(title: string, vocabulary: readonly (readonly string[])[]): string[] {
+	const normalized = normalizeText(title);
+	const padded = ` ${normalized} `;
+	return vocabulary
+		.filter((names) =>
+			names.some((alias) =>
+				THAI_CHAR.test(alias) ? normalized.includes(alias) : padded.includes(` ${alias} `)
+			)
+		)
+		.map(([canonical]) => canonical!);
 }
 
 /** NFKC, lower-case, keep letters/marks/digits (Thai vowels and tone marks are marks), collapse spaces. */
@@ -232,8 +307,9 @@ function characterTrigrams(word: string): string[] {
 	const chars = Array.from(word);
 	if (chars.length < 3) return [word];
 	const grams: string[] = [];
-	for (let index = 0; index + 3 <= chars.length; index++)
+	for (let index = 0; index + 3 <= chars.length; index++) {
 		grams.push(chars.slice(index, index + 3).join(''));
+	}
 	return grams;
 }
 
@@ -241,8 +317,9 @@ function characterTrigrams(word: string): string[] {
 function stem(word: string): string {
 	if (word.length < 5 || !/^[a-z]+$/.test(word)) return word;
 	for (const suffix of ['ing', 'ed', 'es', 's']) {
-		if (word.endsWith(suffix) && word.length - suffix.length >= 4)
+		if (word.endsWith(suffix) && word.length - suffix.length >= 4) {
 			return word.slice(0, -suffix.length);
+		}
 	}
 	return word;
 }

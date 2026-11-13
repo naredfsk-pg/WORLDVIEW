@@ -1,0 +1,71 @@
+{
+	"_comment": "Grouping regression cases (fictional or generic headlines). mustNotMerge: every title must end up in its own event. mustMerge: all titles must form one event. Titles are published one hour apart in the given order.",
+	"mustNotMerge": [
+		{
+			"name": "same template, different countries (generic feed category used to add +0.25)",
+			"titles": [
+				"Thailand central bank holds rate at 2.5%",
+				"Philippines central bank holds rate at 6%"
+			]
+		},
+		{
+			"name": "earthquake off different coasts (numbers used to be tokens)",
+			"titles": [
+				"Magnitude 6.1 earthquake strikes off Japan coast",
+				"Magnitude 6.1 earthquake strikes off Chile coast"
+			]
+		},
+		{
+			"name": "earthquake off different coasts, Title Case",
+			"titles": [
+				"Magnitude 6.1 Earthquake Strikes Off Japan Coast",
+				"Magnitude 6.1 Earthquake Strikes Off Chile Coast"
+			]
+		},
+		{
+			"name": "same city, different event types",
+			"titles": ["Bangkok floods: death toll rises", "Bangkok death toll from heatwave rises"]
+		},
+		{
+			"name": "single-linkage chain: floods drifting into heatwave",
+			"titles": [
+				"Bangkok floods kill 12 people",
+				"Bangkok floods: death toll rises",
+				"Bangkok death toll from heatwave rises",
+				"Bangkok heatwave prompts school closures"
+			]
+		},
+		{
+			"name": "Thai: same agency, different warnings and regions",
+			"titles": ["กรมอุตุนิยมวิทยาเตือนพายุฤดูร้อนภาคเหนือ", "กรมอุตุนิยมวิทยาเตือนคลื่นลมแรงอ่าวไทย"]
+		},
+		{
+			"name": "Thai: PM visits, different disasters and provinces",
+			"titles": ["นายกรัฐมนตรีลงพื้นที่ตรวจน้ำท่วมเชียงใหม่", "นายกรัฐมนตรีลงพื้นที่ตรวจไฟป่าเชียงราย"]
+		}
+	],
+	"mustMerge": [
+		{
+			"name": "acceptance #3 fixture story from three wires",
+			"titles": [
+				"Avalor and Meridia sign Kessel River water-sharing accord",
+				"Kessel River water-sharing accord signed by Avalor and Meridia",
+				"Avalor and Meridia agree water-sharing deal for Kessel River"
+			]
+		},
+		{
+			"name": "English rewording of one vote",
+			"titles": [
+				"UN Security Council votes on Gaza ceasefire resolution",
+				"Security Council adopts Gaza ceasefire resolution"
+			]
+		},
+		{
+			"name": "Thai rewording of one rate decision",
+			"titles": [
+				"ธนาคารกลางนอร์ทแลนด์คงอัตราดอกเบี้ยนโยบายที่ 3.5%",
+				"ธนาคารกลางนอร์ทแลนด์ คงอัตราดอกเบี้ยนโยบาย 3.5%"
+			]
+		}
+	]
+}

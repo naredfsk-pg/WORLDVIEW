@@ -4,10 +4,9 @@
  * fresh articles become event candidates; digest (Wave 2) can call it again after tagging.
  * Idempotent: only unassigned articles are considered and `article_id` is UNIQUE in event_articles.
  */
-import type { ArticleWithSource } from '#lib/types/news.js';
 import type { JobContext } from '#lib/types/jobs.js';
 import type { DigestRepository } from '#lib/types/repositories.js';
-import { GROUPING_CONFIG, planGrouping, type GroupableArticle } from '../news/grouping.js';
+import { GROUPING_CONFIG, planGrouping } from '../news/grouping.js';
 
 /** ARCHITECTURE §9 digest step 1: unassigned articles from the last 72 h, at most 200 per run. */
 export const GROUPING_LOOKBACK_MS = GROUPING_CONFIG.timeWindowMs;
@@ -26,7 +25,8 @@ export async function groupUnassignedArticles(
 	if (articles.length === 0) return { articles_grouped: 0, events_created: 0, events_updated: 0 };
 
 	const events = await digest.listMatchableEvents(since);
-	const plan = planGrouping(articles.map(toGroupableArticle), events);
+	// Only title and times are used; feed categories are deliberately ignored (see grouping.ts).
+	const plan = planGrouping(articles, events);
 	const nowIso = now.toISOString();
 	for (const join of plan.joins) {
 		await digest.linkArticles(join.event_id, join.article_ids, join.confidence, nowIso);
@@ -49,18 +49,5 @@ export async function groupUnassignedArticles(
 		articles_grouped: grouped,
 		events_created: plan.new_events.length,
 		events_updated: plan.joins.length
-	};
-}
-
-function toGroupableArticle(article: ArticleWithSource): GroupableArticle {
-	const categories = article.raw_metadata['categories'];
-	return {
-		id: article.id,
-		title: article.title,
-		published_at: article.published_at,
-		ingested_at: article.ingested_at,
-		categories: Array.isArray(categories)
-			? categories.filter((category): category is string => typeof category === 'string')
-			: []
 	};
 }
