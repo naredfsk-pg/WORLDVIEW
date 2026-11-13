@@ -156,6 +156,9 @@ export const REVIEW_REASONS = [
 	'llm_failed',
 	/** LLM output failed Zod validation or referenced unknown article refs. */
 	'invalid_llm_output',
+	// CONTRACT-CHANGE: added. The LLM request cannot succeed as built (input too large or empty,
+	// HTTP 400/401/403). Not auto-retried: it needs a human or a config fix.
+	'llm_request_rejected',
 	/** A fact or claim has no evidence ref. */
 	'unsupported_claim',
 	/** Generated text contains a URL (URLs must come from stored articles only). */

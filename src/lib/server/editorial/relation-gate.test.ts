@@ -67,17 +67,34 @@ describe('evaluateRelation', () => {
 });
 
 describe('selectLessonLinks', () => {
+	const rationale = 'บทเรียนนี้ให้พื้นฐานของเหตุการณ์';
+	const existing = new Set(['w1-d01', 'w1-d02', 'w1-d03', 'w2-d08', 'w3-d15', 'w4-d22']);
+
 	it('keeps at most 3 unique links with a Thai rationale and no URL', () => {
-		const rationale = 'บทเรียนนี้ให้พื้นฐานของเหตุการณ์';
-		const links = selectLessonLinks([
-			{ lesson_id: 'w1-d01', rationale_th: rationale },
-			{ lesson_id: 'w1-d01', rationale_th: rationale },
-			{ lesson_id: 'w1-d02', rationale_th: 'English only' },
-			{ lesson_id: 'w1-d03', rationale_th: 'อ่านเพิ่ม www.example.com' },
-			{ lesson_id: 'w2-d08', rationale_th: rationale },
-			{ lesson_id: 'w3-d15', rationale_th: rationale },
-			{ lesson_id: 'w4-d22', rationale_th: rationale }
-		]);
+		const links = selectLessonLinks(
+			[
+				{ lesson_id: 'w1-d01', rationale_th: rationale },
+				{ lesson_id: 'w1-d01', rationale_th: rationale },
+				{ lesson_id: 'w1-d02', rationale_th: 'English only' },
+				{ lesson_id: 'w1-d03', rationale_th: 'อ่านเพิ่ม www.example.com' },
+				{ lesson_id: 'w2-d08', rationale_th: rationale },
+				{ lesson_id: 'w3-d15', rationale_th: rationale },
+				{ lesson_id: 'w4-d22', rationale_th: rationale }
+			],
+			existing
+		);
 		expect(links.map((link) => link.lesson_id)).toEqual(['w1-d01', 'w2-d08', 'w3-d15']);
+	});
+
+	it('drops lesson ids that are not in the allowed set', () => {
+		const links = selectLessonLinks(
+			[
+				{ lesson_id: 'w9-d99', rationale_th: rationale },
+				{ lesson_id: 'constructor', rationale_th: rationale },
+				{ lesson_id: 'w2-d08', rationale_th: rationale }
+			],
+			existing
+		);
+		expect(links.map((link) => link.lesson_id)).toEqual(['w2-d08']);
 	});
 });

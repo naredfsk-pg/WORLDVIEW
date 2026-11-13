@@ -98,11 +98,6 @@ describe('evaluateEventForPublish (auto)', () => {
 
 		const foreign = gateInput({ ref_to_article_id: { a1: 'art-1', a2: 'art-from-another-event' } });
 		expect(evaluateEventForPublish(foreign).review_reasons).toEqual(['invalid_llm_output']);
-
-		const prototypeRef = { ...VALID_SUMMARY, cited_refs: ['constructor'] };
-		expect(evaluateEventForPublish(gateInput({ summary: prototypeRef })).review_reasons).toEqual([
-			'invalid_llm_output'
-		]);
 	});
 
 	it('G5: flags facts, claims or citations without evidence as unsupported', () => {
@@ -136,6 +131,69 @@ describe('evaluateEventForPublish (auto)', () => {
 				.review_reasons
 		).toEqual(['sensitive_single_source']);
 		expect(evaluateEventForPublish(gateInput({ signals: sensitive })).status).toBe('published');
+	});
+
+	it('G6: a fresh sensitive extraction wins over stale non-sensitive signals', () => {
+		const staleSignals = {
+			impact_breadth: 1 as const,
+			thailand_relevance: 0 as const,
+			sensitive: false
+		};
+		const singleSource = [
+			LINKED_ARTICLES[0]!,
+			makeArticle({ id: 'art-2', canonical_url: 'https://news.example.org/a/2' })
+		];
+
+		expect(
+			evaluateEventForPublish(
+				gateInput({
+					signals: staleSignals,
+					extraction: { ...VALID_EXTRACTION, sensitive: true },
+					articles: singleSource
+				})
+			).review_reasons
+		).toEqual(['sensitive_single_source']);
+	});
+
+	it('never auto-publishes a hidden event: keep_hidden', () => {
+		expect(evaluateEventForPublish(gateInput({ current_status: 'hidden' }))).toEqual({
+			status: 'keep_hidden',
+			review_reasons: []
+		});
+		expect(evaluateEventForPublish(gateInput({ current_status: 'hidden', summary: null }))).toEqual(
+			{ status: 'keep_hidden', review_reasons: ['llm_failed'] }
+		);
+	});
+
+	it('keeps an admin manual_flag: never auto-published, and not eligible for the llm_failed retry', () => {
+		const flagged = { current_review_reasons: ['manual_flag' as const] };
+
+		expect(
+			evaluateEventForPublish(gateInput({ ...flagged, current_status: 'pending_review' }))
+		).toEqual({ status: 'pending_review', review_reasons: ['manual_flag'] });
+		expect(
+			evaluateEventForPublish(
+				gateInput({ ...flagged, current_status: 'pending_review', summary: null })
+			)
+		).toEqual({ status: 'pending_review', review_reasons: ['llm_failed', 'manual_flag'] });
+		expect(evaluateEventForPublish(gateInput({ ...flagged, current_status: 'published' }))).toEqual(
+			{ status: 'keep_published', review_reasons: ['manual_flag'] }
+		);
+		// Other stored reasons are recomputed, not carried over.
+		expect(
+			evaluateEventForPublish(
+				gateInput({ current_review_reasons: ['llm_failed'], current_status: 'pending_review' })
+			).status
+		).toBe('published');
+	});
+
+	it('routes deterministic LLM failures to a human, not to the automatic retry', () => {
+		for (const kind of ['invalid_request', 'input_too_large'] as const) {
+			expect(evaluateEventForPublish(gateInput({ summary: null, llm_error_kind: kind }))).toEqual({
+				status: 'pending_review',
+				review_reasons: ['llm_request_rejected']
+			});
+		}
 	});
 
 	it('publishes a non-sensitive single-source event, which the UI labels via source_count', () => {
@@ -215,9 +273,26 @@ describe('helpers', () => {
 		expect(mapRefsToArticleIds([], REF_TO_ARTICLE_ID)).toEqual([]);
 	});
 
-	it('reviewReasonForLlmError separates invalid output from retryable failures', () => {
+	it('mapRefsToArticleIds never resolves a ref through the object prototype', () => {
+		// Without the own-property check, `{}['constructor']` would resolve to a function.
+		expect(mapRefsToArticleIds(['constructor'], {})).toBeNull();
+		expect(mapRefsToArticleIds(['toString'], {})).toBeNull();
+		expect(mapRefsToArticleIds(['__proto__'], {})).toBeNull();
+	});
+
+	it('reviewReasonForLlmError separates human-review failures from retryable ones', () => {
 		expect(reviewReasonForLlmError('invalid_output')).toBe('invalid_llm_output');
-		expect(reviewReasonForLlmError('timeout')).toBe('llm_failed');
-		expect(reviewReasonForLlmError(undefined)).toBe('llm_failed');
+		expect(reviewReasonForLlmError('invalid_request')).toBe('llm_request_rejected');
+		expect(reviewReasonForLlmError('input_too_large')).toBe('llm_request_rejected');
+		for (const kind of [
+			'timeout',
+			'rate_limited',
+			'http_error',
+			'budget_exceeded',
+			'not_configured',
+			undefined
+		] as const) {
+			expect(reviewReasonForLlmError(kind)).toBe('llm_failed');
+		}
 	});
 });

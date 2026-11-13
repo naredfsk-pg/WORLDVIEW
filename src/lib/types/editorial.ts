@@ -33,13 +33,19 @@ export interface EventGateInput {
 	// from `invalid_llm_output` (needs a human). Pass the `error.kind` of the failed extraction or
 	// summary call; omitted or null with a missing output → `llm_failed`.
 	llm_error_kind?: LlmErrorKind | null;
+	// CONTRACT-CHANGE: added (optional). The event's stored review_reasons, so the auto gate
+	// keeps an admin `manual_flag` (ARCHITECTURE §6: only an admin clears it). Omitted → [].
+	current_review_reasons?: ReviewReason[];
 }
 
 export type EventGateDecision =
 	| { status: 'published'; review_reasons: [] }
 	| { status: 'pending_review'; review_reasons: ReviewReason[] }
 	/** Re-summary of an already-published event failed: keep the previous published text unchanged. */
-	| { status: 'keep_published'; review_reasons: ReviewReason[] };
+	| { status: 'keep_published'; review_reasons: ReviewReason[] }
+	// CONTRACT-CHANGE: added. Auto mode never changes a `hidden` event (only an admin republishes
+	// it): the caller writes nothing. `review_reasons` are informational.
+	| { status: 'keep_hidden'; review_reasons: ReviewReason[] };
 
 export interface RelationGateInput {
 	relation_type: RelationType;

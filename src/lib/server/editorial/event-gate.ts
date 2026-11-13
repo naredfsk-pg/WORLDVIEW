@@ -11,17 +11,29 @@ import { containsUrl, isHttpUrl, isThaiText } from './text';
 
 export function evaluateEventForPublish(input: EventGateInput): EventGateDecision {
 	const reasons = input.mode === 'admin' ? adminGateReasons(input) : autoGateReasons(input);
-	if (reasons.size === 0) return { status: 'published', review_reasons: [] };
+	// ARCHITECTURE §6: only an admin clears a manual flag or republishes a hidden event.
+	if (input.mode === 'auto' && input.current_review_reasons?.includes('manual_flag')) {
+		reasons.add('manual_flag');
+	}
 
 	// Stable order (the enum order) so stored reasons and the "exactly [llm_failed]" retry check are deterministic.
 	const review_reasons = REVIEW_REASONS.filter((reason) => reasons.has(reason));
+	if (input.mode === 'auto' && input.current_status === 'hidden') {
+		return { status: 'keep_hidden', review_reasons };
+	}
+	if (review_reasons.length === 0) return { status: 'published', review_reasons: [] };
 	if (input.current_status === 'published') return { status: 'keep_published', review_reasons };
 	return { status: 'pending_review', review_reasons };
 }
 
-/** `invalid_output` needs a human; every other provider failure is retried by the next digest. */
+/**
+ * `llm_failed` is retried by the next digest, so only transient failures map to it. Output that
+ * failed validation, and requests that can never succeed as built, need a human.
+ */
 export function reviewReasonForLlmError(kind: LlmErrorKind | null | undefined): ReviewReason {
-	return kind === 'invalid_output' ? 'invalid_llm_output' : 'llm_failed';
+	if (kind === 'invalid_output') return 'invalid_llm_output';
+	if (kind === 'invalid_request' || kind === 'input_too_large') return 'llm_request_rejected';
+	return 'llm_failed';
 }
 
 /** Distinct `publisher_name` count: the `source_count` behind the single-source label and G6. */
@@ -87,8 +99,8 @@ function autoGateReasons(input: EventGateInput): Set<ReviewReason> {
 		if (ids === null || ids.some((id) => !storedIds.has(id))) reasons.add('invalid_llm_output');
 	}
 
-	// G6 (PRD §4.3 #6)
-	const sensitive = input.signals?.sensitive ?? extraction.sensitive;
+	// G6 (PRD §4.3 #6). Either source marking it sensitive is enough: stored signals may be stale.
+	const sensitive = (input.signals?.sensitive ?? false) || extraction.sensitive;
 	if (sensitive && countDistinctPublishers(input.articles) < 2) {
 		reasons.add('sensitive_single_source');
 	}
