@@ -21,6 +21,12 @@ import { sanitizeError } from './runner.js';
 
 /** Sources fetched at the same time. */
 export const SOURCE_CONCURRENCY = 3;
+/**
+ * Items published longer ago than this are dropped (counted in `items_dropped`), so a first
+ * ingest does not turn a feed's whole back catalogue into past-dated draft events. Matches the
+ * 72 h grouping window. Items without a timestamp are kept (their age is unknown).
+ */
+export const MAX_ITEM_AGE_HOURS = 72;
 
 export interface IngestDeps {
 	ingest: IngestRepository;
@@ -35,6 +41,8 @@ export interface IngestDeps {
 	/** Tests inject `sleep`/`random` so backoff runs instantly and deterministically. */
 	retry?: Pick<RetryOptions, 'sleep' | 'random'>;
 	concurrency?: number;
+	/** Defaults to `MAX_ITEM_AGE_HOURS`; null disables the check (the fixed-date fixture feeds). */
+	maxItemAgeHours?: number | null;
 }
 
 export async function runIngest(deps: IngestDeps, ctx: JobContext): Promise<JobOutcome> {
@@ -47,7 +55,13 @@ export async function runIngest(deps: IngestDeps, ctx: JobContext): Promise<JobO
 	}
 
 	const failures: string[] = [];
+	const notAttempted: string[] = [];
 	await forEachWithConcurrency(sources, deps.concurrency ?? SOURCE_CONCURRENCY, async (source) => {
+		// After the 20-minute abort, remaining sources are skipped, not blamed.
+		if (ctx.signal.aborted) {
+			notAttempted.push(source.id);
+			return;
+		}
 		try {
 			const fetched = await fetchAndNormalize(source, deps, ctx);
 			counters.items_fetched += fetched.items_fetched;
@@ -66,6 +80,11 @@ export async function runIngest(deps: IngestDeps, ctx: JobContext): Promise<JobO
 			const message = describeSourceError(error);
 			counters.sources_failed++;
 			failures.push(`${source.id} (${message})`);
+			if (ctx.signal.aborted) {
+				// Cut off by the job timeout: not the source's fault, so its health row is left alone.
+				ctx.logger.warn('source aborted', { source_id: source.id });
+				return;
+			}
 			await deps.ingest.recordSourceFetch(source.id, {
 				ok: false,
 				at: ctx.now().toISOString(),
@@ -75,22 +94,26 @@ export async function runIngest(deps: IngestDeps, ctx: JobContext): Promise<JobO
 		}
 	});
 
+	// Aborted: skip grouping; the next run groups whatever was inserted.
 	let groupingError: string | null = null;
-	try {
-		Object.assign(counters, await groupUnassignedArticles(deps.digest, ctx));
-	} catch (error) {
-		// Articles stay unassigned; the next ingest (or digest) groups them.
-		groupingError = sanitizeError(error);
-		ctx.logger.error('grouping failed', { error: groupingError });
+	if (ctx.signal.aborted) {
+		ctx.logger.warn('ingest aborted; grouping skipped', { sources_not_attempted: notAttempted });
+	} else {
+		try {
+			Object.assign(counters, await groupUnassignedArticles(deps.digest, ctx));
+		} catch (error) {
+			// Articles stay unassigned; the next ingest (or digest) groups them.
+			groupingError = sanitizeError(error);
+			ctx.logger.error('grouping failed', { error: groupingError });
+		}
 	}
 
-	const status =
-		counters.sources_ok === 0
-			? 'failed'
-			: failures.length > 0 || groupingError
-				? 'partial'
-				: 'succeeded';
+	const isIncomplete = failures.length > 0 || notAttempted.length > 0 || groupingError !== null;
+	const status = counters.sources_ok === 0 ? 'failed' : isIncomplete ? 'partial' : 'succeeded';
 	const errors = [
+		ctx.signal.aborted
+			? `aborted by the job time limit; ${notAttempted.length} sources not attempted, grouping skipped`
+			: null,
 		failures.length > 0
 			? `${failures.length} of ${sources.length} sources failed: ${failures.join(', ')}`
 			: null,
@@ -104,7 +127,10 @@ export async function runIngest(deps: IngestDeps, ctx: JobContext): Promise<JobO
  * database (no claim, no source sync, no inserts, no grouping).
  */
 export async function previewIngest(
-	deps: Pick<IngestDeps, 'registry' | 'adapters' | 'safeFetch' | 'retry' | 'concurrency'>,
+	deps: Pick<
+		IngestDeps,
+		'registry' | 'adapters' | 'safeFetch' | 'retry' | 'concurrency' | 'maxItemAgeHours'
+	>,
 	ctx: { now: () => Date; logger: Logger; signal: AbortSignal }
 ): Promise<JobOutcome> {
 	const counters = { sources_ok: 0, sources_failed: 0, items_fetched: 0, items_dropped: 0 };
@@ -153,7 +179,7 @@ function emptyIngestCounters() {
 
 async function fetchAndNormalize(
 	source: SourceDefinition,
-	deps: Pick<IngestDeps, 'adapters' | 'safeFetch' | 'retry'>,
+	deps: Pick<IngestDeps, 'adapters' | 'safeFetch' | 'retry' | 'maxItemAgeHours'>,
 	ctx: { now: () => Date; logger: Logger; signal: AbortSignal }
 ): Promise<{
 	articles: NormalizedArticle[];
@@ -191,7 +217,17 @@ async function fetchAndNormalize(
 	);
 
 	const now = ctx.now();
-	const articles = result.items.flatMap((item) => normalizeFeedItem(source, item, now) ?? []);
+	const maxAgeHours =
+		deps.maxItemAgeHours === undefined ? MAX_ITEM_AGE_HOURS : deps.maxItemAgeHours;
+	const oldestAllowedMs =
+		maxAgeHours === null ? -Infinity : now.getTime() - maxAgeHours * 60 * 60 * 1000;
+	const articles = result.items.flatMap((item) => {
+		const article = normalizeFeedItem(source, item, now);
+		if (!article) return [];
+		const isTooOld =
+			article.published_at !== null && Date.parse(article.published_at) < oldestAllowedMs;
+		return isTooOld ? [] : [article];
+	});
 	return {
 		articles,
 		items_fetched: result.items.length,

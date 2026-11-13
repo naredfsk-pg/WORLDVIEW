@@ -315,6 +315,79 @@ describe('ingest job failures', () => {
 		expect((await repositories.jobs.listRecent(1))[0]!.error).toBe('no enabled sources');
 	});
 
+	it('after the job time limit, skips the remaining sources without blaming them, and skips grouping', async () => {
+		const controller = new AbortController();
+		const fixtureAdapter = createFixtureAdapter(REPO_ROOT);
+		const abortAfterFirst: NewsSourceAdapter = {
+			kind: 'fixture',
+			async fetch(source, ctx) {
+				const result = await fixtureAdapter.fetch(source, ctx);
+				controller.abort(); // the 20-minute limit hits while wire A is being stored
+				return result;
+			}
+		};
+		const result = await runJob(
+			{ jobs: repositories.jobs, logger: logger(), now: () => clock },
+			{ job_type: 'ingest', ...hourlyJobSlot('ingest', NOW), trigger: 'cron', force: false },
+			(ctx) =>
+				runIngest(deps({ adapters: { fixture: abortAfterFirst }, concurrency: 1 }), {
+					...ctx,
+					signal: controller.signal
+				})
+		);
+
+		expect(result).toMatchObject({
+			status: 'partial',
+			counters: { sources_ok: 1, sources_failed: 0, articles_inserted: 2 }
+		});
+		if (result.status === 'skipped') throw new Error('expected a run');
+		expect(result.counters).not.toHaveProperty('articles_grouped');
+		expect(rowCounts()).toMatchObject({ articles: 2, events: 0, event_articles: 0 });
+
+		const sourceRows = new Map(
+			db
+				.select()
+				.from(sources)
+				.all()
+				.map((row) => [row.id, row])
+		);
+		for (const id of ['fixture-wire-b', 'fixture-wire-c']) {
+			expect(sourceRows.get(id)).toMatchObject({
+				last_success_at: null,
+				last_error_at: null,
+				last_error: null
+			});
+		}
+		expect((await repositories.jobs.listRecent(1))[0]!.error).toContain('2 sources not attempted');
+	});
+
+	it('drops items older than the max item age, keeps undated ones, and counts the drop', async () => {
+		const hoursAgo = (hours: number) =>
+			new Date(NOW.getTime() - hours * 60 * 60 * 1000).toUTCString();
+		const xml = `<rss><channel>
+			<item><title>Archive item from last week</title><link>https://age.example/old</link><pubDate>${hoursAgo(73)}</pubDate></item>
+			<item><title>Fresh item from this morning</title><link>https://age.example/new</link><pubDate>${hoursAgo(1)}</pubDate></item>
+			<item><title>Undated item</title><link>https://age.example/undated</link></item>
+		</channel></rss>`;
+		const registry: SourceDefinition[] = [{ ...FIXTURE_SOURCES[0]!, id: 'age-wire' }];
+		const result = await runIngestJob({
+			deps: deps({ registry, adapters: { fixture: inlineAdapter({ 'age-wire': xml }) } })
+		});
+
+		expect(result).toMatchObject({
+			status: 'succeeded',
+			counters: { items_fetched: 3, items_dropped: 1, articles_inserted: 2 }
+		});
+		expect(
+			db
+				.select()
+				.from(articles)
+				.all()
+				.map((row) => row.title)
+				.sort()
+		).toEqual(['Fresh item from this morning', 'Undated item']);
+	});
+
 	it('a run whose claim was reclaimed as stale cannot overwrite the newer run', async () => {
 		let reclaimed: unknown;
 		const result = await runJob(

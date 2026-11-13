@@ -28,4 +28,12 @@ describe('hourSlot / hourlyJobSlot (Asia/Bangkok, ARCHITECTURE §8)', () => {
 		expect(last).toEqual(first);
 		expect(first.idempotency_key).toBe('digest:2026-11-13T06');
 	});
+
+	it('namespaces a fixtures run so it never takes the real slot', () => {
+		const now = new Date('2026-11-12T23:00:00.000Z');
+		expect(hourlyJobSlot('ingest', now, 'fixtures')).toEqual({
+			idempotency_key: 'ingest:fixtures:2026-11-13T06',
+			scheduled_for: hourlyJobSlot('ingest', now).scheduled_for
+		});
+	});
 });

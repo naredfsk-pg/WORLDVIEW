@@ -11,9 +11,14 @@ export function hourSlot(instant: Date): string {
 	return `${year}-${month}-${day}T${hour}`;
 }
 
+/**
+ * `variant` namespaces a non-production run (`ingest:fixtures:{hour}`), so a fixture run can
+ * never consume the real `ingest:{hour}` slot.
+ */
 export function hourlyJobSlot(
 	jobType: 'ingest' | 'digest',
-	now: Date
+	now: Date,
+	variant: 'fixtures' | null = null
 ): { idempotency_key: string; scheduled_for: string } {
 	const parts = bangkokParts(now);
 	// Wall-clock time read as if it were UTC, minus the real instant = the zone offset.
@@ -33,7 +38,9 @@ export function hourlyJobSlot(
 		Number(parts.hour)
 	);
 	return {
-		idempotency_key: `${jobType}:${hourSlot(now)}`,
+		idempotency_key: variant
+			? `${jobType}:${variant}:${hourSlot(now)}`
+			: `${jobType}:${hourSlot(now)}`,
 		scheduled_for: new Date(hourStartWallMs - offsetMs).toISOString()
 	};
 }

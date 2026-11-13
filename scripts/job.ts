@@ -34,7 +34,12 @@ import {
 	USAGE,
 	type JobCliOptions
 } from '#lib/server/jobs/cli-args.js';
-import { previewIngest, runIngest, type IngestDeps } from '#lib/server/jobs/ingest.js';
+import {
+	MAX_ITEM_AGE_HOURS,
+	previewIngest,
+	runIngest,
+	type IngestDeps
+} from '#lib/server/jobs/ingest.js';
 import { hourlyJobSlot } from '#lib/server/jobs/job-slots.js';
 import { createJsonLogger } from '#lib/server/jobs/logger.js';
 import {
@@ -74,7 +79,8 @@ async function main(options: JobCliOptions, logger: Logger): Promise<number> {
 		return options.strict ? 1 : 0;
 	}
 
-	// Fixture runs share the `ingest:{hour}` key and the database: never mix them into production.
+	// Fixture runs use their own slot key, but they still write the same database: never into
+	// production data.
 	if (options.fixtures && !options.dry_run && getConfig().nodeEnv === 'production') {
 		logger.error('--fixtures is refused when NODE_ENV=production (use --dry-run)');
 		return EXIT_USAGE;
@@ -99,7 +105,7 @@ async function main(options: JobCliOptions, logger: Logger): Promise<number> {
 			{ jobs: repositories.jobs, logger, now },
 			{
 				job_type: 'ingest',
-				...hourlyJobSlot('ingest', now()),
+				...hourlyJobSlot('ingest', now(), options.fixtures ? 'fixtures' : null),
 				trigger: options.trigger,
 				force: options.force
 			},
@@ -115,10 +121,12 @@ async function main(options: JobCliOptions, logger: Logger): Promise<number> {
 /** Registry, SafeFetch (allowlist from the enabled registry hosts) and the adapters for this mode. */
 function buildSourceDeps(
 	fixtures: boolean
-): Pick<IngestDeps, 'registry' | 'adapters' | 'safeFetch'> {
+): Pick<IngestDeps, 'registry' | 'adapters' | 'safeFetch' | 'maxItemAgeHours'> {
 	const registry = sourceRegistryFor(fixtures ? 'fixtures' : 'production');
 	return {
 		registry,
+		// The fixture feeds have fixed dates, so the max item age would drop them all after 3 days.
+		maxItemAgeHours: fixtures ? null : MAX_ITEM_AGE_HOURS,
 		safeFetch: createSafeFetch({ allowedHosts: allowedHostsFromRegistry(registry) }),
 		// The fixture adapter reads local files, so it exists only in --fixtures mode.
 		adapters: fixtures
