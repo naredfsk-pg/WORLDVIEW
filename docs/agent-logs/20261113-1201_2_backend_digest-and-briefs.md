@@ -156,3 +156,75 @@
 - e2e ผูกกับข้อมูล demo seed: Wave 3 ควรรัน e2e กับ DB ที่ seed แยก หรือทำ test ให้ไม่ขึ้นกับข้อมูล
 - screenshot full-page ที่ 1440 พื้นหลัง sidebar สิ้นสุดที่ความสูง viewport (frontend)
 - Admin lane: เรียก `runJobByType(type, { date, force: true, manual: true, signal })` ได้โดยตรง; ฟังก์ชันไม่ throw และเปิด/ปิด DB connection ของตัวเอง; log เป็น JSON บน stdout
+
+## รอบแก้ตาม review
+
+| Field | Value |
+|---|---|
+| Started | 2026-11-13 13:04:47 (Asia/Bangkok) |
+| Finished | 2026-11-13 13:18:00 (Asia/Bangkok) |
+| Input | `C:\Project\WORLDVIEW\docs\agent-logs\20261113-1250_2_reviewer_digest-and-briefs.md` + probe `scratchpad\probe-digest\probe1.mts` + ข้อความจาก coordinator (findings 1–13 + prompt fix) |
+| Status | done — แก้ครบ 13 ข้อและ prompt fix; ยังไม่ rebase (รอ coordinator แจ้งหลัง `feature/admin` merge) |
+
+### ขั้นตอน (ตามเวลา)
+
+1. 13:04 — อ่าน review และ probe (scenario A: keep_published วนซ้ำ, B: merge throw ทำให้ทั้ง run ล้ม, C: merge ลบ draft ที่ admin แก้)
+2. 13:06 — prompt fix: `llm/tasks/summary.ts` บังคับให้ title/summary ระบุเฉพาะข้อเท็จจริงที่ทุกแหล่งตรงกัน ถ้อยคำของสำนักเดียวหรือที่ขัดกันต้อง attribute ("ตามรายงานของ BBC …") หรือไม่ใส่ในหัวข้อ; bump เป็น `summary@2`; test ใหม่ตรวจ system prompt ที่ส่งจริงผ่าน mock transport (ข้อยกเว้น lane ที่ coordinator อนุมัติ แตะเฉพาะไฟล์นี้)
+3. 13:07 — #9 `LlmCallRepository.usageForJobRun` แล้ว digest ใช้แทน `usageSince(started_at)`; commit `57d690e`, `0dc1c19`
+4. 13:08–13:11 — digest (#1, #2, #3, #6, #7, #8, #13): แยก try/catch ให้ grouping, tagging แต่ละ batch และ merge แต่ละคู่; ตัด published + `manual_flag` ออกจาก `listEventsNeedingContent`; `markContentChecked` ใหม่สำหรับ `keep_published` ที่ไม่ใช่ `[llm_failed]`; `summarized_at` = เวลาที่ list; `mergeDraftEvent` คืน false เมื่อ draft มี admin revision และ throw เมื่อ demo/real ปนกัน; `saveEventContent` คืนแถวที่บันทึกจริงให้ขั้น links; เก็บ tagging error ต่อ article; tie-break ด้วย id
+5. 13:11 — regression tests จาก probe A/B/C + EntityNotFoundError + "already linked" + #6/#7/#8 (digest.test 11 → 22 ข้อ) และ repo tests; รวมทั้งหมด 425 server tests ผ่าน
+6. 13:12 — #10 `syncSources` ล้าง validators เมื่อ `feed_url` เปลี่ยน, #11 ลบ `content-length` หลัง inflate; commit `468aa66`, `66cf76d`
+7. 13:13–13:15 — briefs (#4, #5, #12): registry ปฏิเสธ brief/snapshot ก่อน window ปิดโดยไม่ claim slot (`reason: 'window_open'`); snapshot เก็บ event จาก brief ของวันนั้นครบทุกตัวนอก cap/quota แล้วเติม event จาก window ให้ถึง MAX; recency ใช้ `window_evidence_at`; ต่ำกว่า MIN หรือ 0 item → `partial`; draft ไม่ทับ brief ที่ published; tests ใหม่ 9 ข้อ
+8. 13:16 — ARCHITECTURE §8/§9 + comment ใน `scripts/job.ts`; commit `124fb32`, `2a75139`
+9. 13:16 — `npm run db:reset` (dev DB ใหม่ ข้อมูล smoke เดิมถูกลบตามคำสั่ง "fresh db:reset") แล้วรัน gates ครบ
+
+### ผลต่อ finding
+
+| # | ระดับ | สถานะ | แก้อย่างไร |
+|---|---|---|---|
+| 1 | high | fixed | grouping, tagging batch, merge pair, event, links แยก try/catch → ข้ามหน่วยที่ล้ม บันทึกใน `job_runs.error` และ run เป็น `partial`; tests: probe B (target ถูก hide ระหว่าง list กับ merge), EntityNotFoundError (draft ถูกลบโดย job อื่น), "already linked" จาก grouping |
+| 2 | medium | fixed | published + `manual_flag` ไม่ถูก list (ไม่เรียก LLM เลย); `keep_published` อื่นที่ไม่ใช่ `[llm_failed]` → `markContentChecked` จึงกลับมาเมื่อมีหลักฐานใหม่เท่านั้น; `[llm_failed]` ยัง retry ทุก run; tests: probe A (3 runs ไม่มี LLM call), url-in-text ถูกเช็กครั้งเดียว, timeout ถูก retry |
+| 3 | medium | fixed | `mergeDraftEvent` ตรวจใน transaction: draft ที่มี revision ของ admin → คืน false ไม่เปลี่ยนอะไร; demo/real ปน → throw; test: probe C (title ของ admin อยู่ครบ ไม่มี revision กำพร้า) + repo test |
+| 4 | medium | fixed | `runJobByType` ตรวจ window ก่อน claim: ยังไม่ปิดและไม่มี `--force` → `skipped`, `reason: 'window_open'`, exit 0, ไม่มีแถว `job_runs`; ใช้กับ archive_snapshot ด้วย; tests 3 ข้อ (`--date 2099-01-01`) |
+| 5 | medium | fixed | ตาม decision ของ coordinator: event จาก brief เช้า/เย็นที่ published ของวันนั้นอยู่ใน snapshot ทุกตัว (นอก cap/quota) แล้วจัดอันดับ event จาก window ลงช่องที่เหลือถึง MAX; recency ใช้หลักฐานล่าสุดภายใน window; tests: carried 4 ตัวเกิน MAX 3 ยังอยู่ครบ, forced rerun ไม่ถูก late report ดันลำดับ |
+| 6 | medium | fixed | `saveEventContent` คืน `event` ที่บันทึกจริง ขั้น relations/academy ใช้แถวนั้น; test: admin แก้ category/tags แล้ว academy_linking เห็นค่าของ admin |
+| 7 | low | fixed | `summarized_at` = เวลาที่ list events (ก่อนเรียก LLM); test: article ที่ link ระหว่าง summary ทำให้ event กลับมาใน list |
+| 8 | low | fixed | tagging error เก็บต่อ article; เฉพาะ `invalid_request`/`input_too_large` ส่งให้คน (`llm_request_rejected`) นอกนั้น → `llm_failed`; tests 2 ข้อ |
+| 9 | low | fixed | `usageForJobRun(job_run_id)`; repo test |
+| 10 | low | fixed | upsert ใช้ `CASE WHEN feed_url เดิม = ใหม่ THEN ค่าเดิม ELSE NULL`; repo test |
+| 11 | low | fixed | ลบ `content-length` พร้อม `content-encoding`; test ตรวจ header |
+| 12 | low | fixed | 0 item หรือ < MIN → `partial` (exit 2) พร้อมข้อความ; `saveBrief` ไม่ให้ draft ทับ brief ที่ published; tests 3 ข้อ |
+| 13 | suspicion | done | `listEventsNeedingContent` เรียง `last_updated_at desc, id asc`; repo test |
+| prompt | — | done | `summary@2` (cache เดิมใช้ไม่ได้), test ตรวจข้อความ instruction ที่ส่งจริง; ไม่ได้รัน live smoke ตามคำสั่ง |
+
+### Decisions รอบนี้
+
+- **#3 เลือก "refuse"** แทนการสลับทิศ merge: ถ้าสลับ draft ที่ไม่มี admin edit จะถูกลบแทน แต่ target อาจเป็น event ที่ published แล้วซึ่งลบไม่ได้; refuse ง่ายและปลอดภัยกว่า ทั้งสองยังแยกกันอยู่ให้ admin ตัดสินใจ
+- **#2 marker ใช้ `summarized_at` เดิม** (ไม่เพิ่มคอลัมน์ `content_checked_at`) เพื่อไม่ต้องเพิ่ม migration ก่อน rebase; ความหมายใน §9: "หลักฐานที่ link ถึงเวลานี้ถูกพิจารณาแล้ว"
+- **#7 ใช้เวลาที่ list** ตามตัวเลือกที่ coordinator ให้ เพราะ `ArticleWithSource` ไม่มี `linked_at`
+- **#4 ครอบคลุม archive_snapshot ด้วย** (snapshot ของวัน D ก่อน D+1 00:00 ICT ก็ claim slot ก่อนเวลาได้เหมือนกัน)
+
+### Commands run & results (รอบนี้)
+
+| Time | Command | Result |
+|---|---|---|
+| 13:07 | `npx vitest run …llm-calls.test.ts src/lib/server/llm/tasks` | 5 passed |
+| 13:11 | `npx vitest run src/lib/server/jobs/digest.test.ts` | 22 passed |
+| 13:12 | `npx vitest run src/lib/server` | 425 passed |
+| 13:15 | `npx vitest run src/lib/server/jobs` | 82 passed / 2 failed → แก้ test (ดู Errors) → ผ่าน |
+| 13:16 | `npx vitest run` · `npx eslint src scripts` · `npm run check` | 47 files / 571 passed · exit 0 · 0 errors |
+| 13:16 | `npm run db:reset` แล้ว `check` · `lint` · `test` · `build` · `test:e2e` | 0 errors · exit 0 · 571 passed · exit 0 · 57 passed |
+
+### Errors & problems (รอบนี้)
+
+| # | Time | Where | Error | Cause | Resolution |
+|---|---|---|---|---|---|
+| R1 | 13:14 | `briefs.test.ts`, `registry.test.ts` | 2 tests fail: คาด `succeeded` แต่ได้ `partial` | พฤติกรรมใหม่ของ #12 (0 item → partial) ตามที่ตั้งใจ | อัปเดต expectation ของ test เดิม |
+| R2 | 13:14 | Python edit script ของ `briefs.test.ts` | `AssertionError` หา string ไม่เจอ | Prettier จัดบรรทัด `runBrief(...)` ใหม่ ข้อความจึงไม่ตรง | เปลี่ยน target ให้สั้นลง (`target: { min: 1, … }`) แล้วรันใหม่ |
+| R3 | 13:15 | `registry.test.ts` "refuses brief_evening/archive_snapshot…" | `expected true to be false` | เช็ก `endsWith('2099-01-01')` ไปเจอแถวที่ case ก่อนหน้าสร้างด้วย `--force` | เช็ก key เต็ม `${type}:2099-01-01` |
+
+### หมายเหตุสำหรับ rebase (รอ coordinator)
+
+- ยังไม่ rebase ตามคำสั่ง; เมื่อ `feature/admin` merge แล้ว: ลบ `migrations/0002_source_validators.sql` + snapshot/journal entry ของมัน, rebase บน `main`, แล้ว `npm run db:generate` ให้ได้ `0003`
+- จุดที่น่าจะ conflict: `schema.ts` (sources columns), `types/repositories.ts` (DigestRepository / BriefRepository / LlmCallRepository), `repositories/digest.ts` (`saveEventContent` + admin check ควรใช้ `admin_actions` หรือ `content_revisions` ตามที่ admin lane บันทึกจริง)
+- dev DB ถูก reset แล้ว (ข้อมูล live smoke เดิมหาย); screenshot ใน `docs/screenshots/wave2/` ยังเป็นหลักฐานของ smoke
