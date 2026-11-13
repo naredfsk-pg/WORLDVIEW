@@ -204,16 +204,40 @@ describe('feed boilerplate in excerpts (Guardian-shaped samples)', () => {
 		);
 	});
 
-	it('drops "Full report: … Analysis: … Explainer: …" items, labelled inside or outside the link', () => {
+	it('drops "Full report: … Analysis: … Explainer: …" items labelled inside the link', () => {
 		const summary =
 			'<p>Rescue teams reach the flooded valley.</p><ul>' +
 			`<li><a href="${GU}/world/a">Full report: Floods cut off mountain towns</a></li>` +
-			`<li>Analysis: <a href="${GU}/world/b">Why the valley floods every decade</a></li>` +
-			`<li><p><a href="${GU}/world/c">Explainer: How flood warnings work</a></p></li></ul>` +
+			`<li><p><a href="${GU}/world/b">Analysis: Why the valley floods every decade</a></p></li>` +
+			`<li><p><a href="${GU}/world/c">Explainer: How flood warnings work</a></p></li>` +
+			`<li><a href="${GU}/world/d">Floods – live</a></li></ul>` +
 			'<p>Officials said 40 villages were cut off.</p>';
 		expect(excerptOf(summary)).toBe(
 			'Rescue teams reach the flooded valley. Officials said 40 villages were cut off.'
 		);
+	});
+
+	it('keeps link-only headlines (English or Thai) and a label outside a link to a sentence (review L10)', () => {
+		const summary =
+			`<ul><li><a href="${GU}/x">Thailand floods kill 12 in Chiang Mai</a></li>` +
+			`<li><a href="${GU}/y">สรุปข่าวน้ำท่วมภาคเหนือ</a></li>` +
+			`<li>Analysis: <a href="${GU}/z">Why the valley floods every decade</a></li></ul>` +
+			`<p>Analysis: <a href="${GU}/w">The ceasefire held overnight, officials said</a></p>` +
+			`<p><a href="${GU}/v">Read more</a> about the summit: leaders agreed a deal.</p>`;
+		expect(excerptOf(summary)).toBe(
+			'Thailand floods kill 12 in Chiang Mai สรุปข่าวน้ำท่วมภาคเหนือ ' +
+				'Analysis: Why the valley floods every decade ' +
+				'Analysis: The ceasefire held overnight, officials said ' +
+				'Read more about the summit: leaders agreed a deal.'
+		);
+	});
+
+	it('drops a "Sign up for the … email" link item and a "See also:" paragraph', () => {
+		const summary =
+			'<p>This live blog is now closed.</p>' +
+			`<ul><li><p><a href="${GU}/a">Sign up for the Breaking News US email</a></p></li></ul>` +
+			`<p>See also: <a href="${GU}/b">Earlier story</a></p><p>Body text.</p>`;
+		expect(excerptOf(summary)).toBe('This live blog is now closed. Body text.');
 	});
 
 	it('drops the newsletter promo item and a "Related:" paragraph', () => {
