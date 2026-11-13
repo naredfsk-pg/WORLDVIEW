@@ -95,7 +95,9 @@
 									{cell.day}
 								</a>
 							{:else if cell}
-								<span class="grid h-[37px] place-items-center text-muted-foreground/40">
+								<!-- No brief: the faint colour still meets 4.5:1 (BUG-QA-002); the missing
+								     dot and link are the non-colour cue, as the legend below explains. -->
+								<span class="grid h-[37px] place-items-center text-faint">
 									{cell.day}
 								</span>
 							{/if}

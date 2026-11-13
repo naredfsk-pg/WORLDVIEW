@@ -39,27 +39,31 @@
 		<p class="mb-3 text-[15px] leading-[1.9] text-muted-foreground">{event.summary_th}</p>
 		<EventLabels isDemo={event.is_demo} sourceCount={event.source_count} />
 
-		<dl class="mt-4 grid gap-x-6 gap-y-2 rounded-2xl border bg-card p-4 text-xs sm:grid-cols-2">
-			<div>
-				<dt class="text-muted-foreground">เวลาเกิดเหตุ</dt>
-				<dd class="font-semibold">
-					{event.occurred_at ? formatThaiDateTimeShort(event.occurred_at) : UNKNOWN_OCCURRED_AT}
-				</dd>
-			</div>
-			<div>
-				<dt class="text-muted-foreground">วันที่ของเหตุการณ์ (วันที่พบข่าวครั้งแรก)</dt>
-				<dd class="font-semibold">{formatThaiDate(event.event_date, 'long')}</dd>
-			</div>
-			<div>
-				<dt class="text-muted-foreground">หลักฐานล่าสุด</dt>
-				<dd class="font-semibold">{formatThaiDateTimeShort(event.last_updated_at)}</dd>
-			</div>
-			<div>
-				<dt class="text-muted-foreground">เผยแพร่บน Worldview</dt>
-				<dd class="font-semibold">{formatThaiDateTimeShort(event.published_at)}</dd>
-			</div>
-			<p class="m-0 text-[11px] text-faint sm:col-span-2">เวลาทั้งหมดเป็น{TIMEZONE_LABEL}</p>
-		</dl>
+		<!-- The note sits after the <dl>, inside the same box: a <dl> may only hold dt/dd groups
+		     (BUG-QA-004). -->
+		<div class="mt-4 rounded-2xl border bg-card p-4 text-xs">
+			<dl class="m-0 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+				<div>
+					<dt class="text-muted-foreground">เวลาเกิดเหตุ</dt>
+					<dd class="font-semibold">
+						{event.occurred_at ? formatThaiDateTimeShort(event.occurred_at) : UNKNOWN_OCCURRED_AT}
+					</dd>
+				</div>
+				<div>
+					<dt class="text-muted-foreground">วันที่ของเหตุการณ์ (วันที่พบข่าวครั้งแรก)</dt>
+					<dd class="font-semibold">{formatThaiDate(event.event_date, 'long')}</dd>
+				</div>
+				<div>
+					<dt class="text-muted-foreground">หลักฐานล่าสุด</dt>
+					<dd class="font-semibold">{formatThaiDateTimeShort(event.last_updated_at)}</dd>
+				</div>
+				<div>
+					<dt class="text-muted-foreground">เผยแพร่บน Worldview</dt>
+					<dd class="font-semibold">{formatThaiDateTimeShort(event.published_at)}</dd>
+				</div>
+			</dl>
+			<p class="mt-2 mb-0 text-[11px] text-faint">เวลาทั้งหมดเป็น{TIMEZONE_LABEL}</p>
+		</div>
 	</header>
 
 	{#if event.corrections.length > 0}

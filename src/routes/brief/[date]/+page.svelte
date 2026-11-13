@@ -85,12 +85,16 @@
 	keep={{ edition: page.url.searchParams.get('edition') }}
 />
 
-{#if events.length === 0}
-	<EmptyState message="ไม่มีข่าวในหมวดนี้ในสรุปข่าวฉบับนี้" />
-{:else}
-	<div class="grid max-w-[900px] gap-2.5">
-		{#each events as event (event.id)}
-			<StoryCard {event} />
-		{/each}
-	</div>
-{/if}
+<section aria-labelledby="brief-stories">
+	<!-- Story cards are <h3>; this keeps the outline h1 → h2 → h3 (BUG-QA-008). -->
+	<h2 id="brief-stories" class="sr-only">ข่าวในสรุปฉบับนี้</h2>
+	{#if events.length === 0}
+		<EmptyState message="ไม่มีข่าวในหมวดนี้ในสรุปข่าวฉบับนี้" />
+	{:else}
+		<div class="grid max-w-[900px] gap-2.5">
+			{#each events as event (event.id)}
+				<StoryCard {event} />
+			{/each}
+		</div>
+	{/if}
+</section>

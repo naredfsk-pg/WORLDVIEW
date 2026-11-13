@@ -127,7 +127,12 @@
 			{@render brandMark('sidebar')}
 			<span>
 				<span class="block text-[19px] leading-[1.1] font-bold tracking-[-0.05em]">worldview</span>
-				<span class="mt-0.5 block text-[9px] tracking-[0.04em] text-muted-foreground">
+				<!-- Decorative tagline, hidden so the link name contains all of its exposed visible
+				     text (WCAG 2.5.3 Label in Name). -->
+				<span
+					class="mt-0.5 block text-[9px] tracking-[0.04em] text-muted-foreground"
+					aria-hidden="true"
+				>
 					MAKE SENSE OF THE WORLD
 				</span>
 			</span>
