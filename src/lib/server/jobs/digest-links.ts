@@ -121,7 +121,7 @@ export async function linkRelatedEvents(published: PublishedEvent, deps: LinksDe
 			continue;
 		}
 
-		await deps.digest.upsertRelation({
+		const stored = await deps.digest.upsertRelation({
 			from_event_id: eventIsFrom ? event.id : candidate.event.id,
 			to_event_id: eventIsFrom ? candidate.event.id : event.id,
 			relation_type: relation.relation_type,
@@ -130,6 +130,11 @@ export async function linkRelatedEvents(published: PublishedEvent, deps: LinksDe
 			status: decision.status,
 			confidence: relation.confidence
 		});
+		if (!stored) {
+			// An admin rejected this pair before, or already reviewed this relation.
+			deps.counters.relations_dropped++;
+			continue;
+		}
 		if (decision.status === 'published') deps.counters.relations_published++;
 		else deps.counters.relations_pending_review++;
 	}

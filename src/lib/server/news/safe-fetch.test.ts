@@ -470,6 +470,7 @@ describe('allowedHostsFromRegistry', () => {
 		allow_excerpt: false,
 		is_demo: false,
 		enabled: true,
+		link_hosts: [],
 		...overrides
 	});
 

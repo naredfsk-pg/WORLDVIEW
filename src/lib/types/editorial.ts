@@ -16,6 +16,13 @@ import type { SummaryOutput, ExtractionOutput, LlmErrorKind } from './llm';
 /** `auto` = digest job; `admin` = human publish (soft gates are the admin's judgement). */
 export type GateMode = 'auto' | 'admin';
 
+// CONTRACT-CHANGE (security wave): `EDITORIAL_AUTO_PUBLISH`. What the digest may publish on its
+// own: `all` = anything that passes the gates; `multi_source` = only events reported by at least
+// two registry sources; `off` = nothing (every event waits for an admin). In `multi_source` and
+// `off` a published event's text is never rewritten automatically. Admin publish is unaffected.
+export const AUTO_PUBLISH_POLICIES = ['all', 'multi_source', 'off'] as const;
+export type AutoPublishPolicy = (typeof AUTO_PUBLISH_POLICIES)[number];
+
 export interface EventGateInput {
 	mode: GateMode;
 	/** Linked stored articles — the ONLY source of citable URLs. */
@@ -36,6 +43,10 @@ export interface EventGateInput {
 	// CONTRACT-CHANGE: added (optional). The event's stored review_reasons, so the auto gate
 	// keeps an admin `manual_flag` (ARCHITECTURE §6: only an admin clears it). Omitted → [].
 	current_review_reasons?: ReviewReason[];
+	// CONTRACT-CHANGE (security wave): required in `auto` mode (ignored by admin publish). An
+	// event that passes every gate is `published` only when the policy allows it, otherwise
+	// `pending_review` with `auto_publish_disabled`.
+	auto_publish?: AutoPublishPolicy;
 }
 
 export type EventGateDecision =

@@ -271,8 +271,15 @@ export interface SearchQuery {
 	offset: number;
 }
 
+/**
+ * Search totals stop counting past this, so a total above it only means "more than the cap" (the
+ * page shows "1000+"). Equals the deepest result the route serves (50 pages × 20).
+ */
+export const SEARCH_TOTAL_CAP = 1000;
+
 export interface SearchResults {
 	events: EventSummary[];
+	/** At most SEARCH_TOTAL_CAP + 1; same for `lessons_total`. */
 	events_total: number;
 	lessons: LessonSummary[];
 	lessons_total: number;

@@ -35,6 +35,12 @@ export const SOURCE_CONCURRENCY = 3;
  * 72 h grouping window. Items without a timestamp are kept (their age is unknown).
  */
 export const MAX_ITEM_AGE_HOURS = 72;
+/**
+ * New articles one source may add per run (`INGEST_MAX_NEW_ITEMS_PER_SOURCE`): a feed that
+ * suddenly sends hundreds of items cannot flood grouping and the digest. The rest of its items
+ * are not even looked up (counted in `items_capped`); still in the feed, they come in later runs.
+ */
+export const MAX_NEW_ITEMS_PER_SOURCE = 40;
 
 export interface IngestDeps {
 	ingest: IngestRepository;
@@ -51,6 +57,8 @@ export interface IngestDeps {
 	concurrency?: number;
 	/** Defaults to `MAX_ITEM_AGE_HOURS`; null disables the check (the fixed-date fixture feeds). */
 	maxItemAgeHours?: number | null;
+	/** Defaults to `MAX_NEW_ITEMS_PER_SOURCE`. */
+	maxNewItemsPerSource?: number;
 }
 
 export async function runIngest(deps: IngestDeps, ctx: JobContext): Promise<JobOutcome> {
@@ -62,20 +70,29 @@ export async function runIngest(deps: IngestDeps, ctx: JobContext): Promise<JobO
 		return { status: 'failed', counters, error: 'no enabled sources' };
 	}
 
+	// `link_hosts` lives only in the registry; a row without a registry entry (none: syncSources
+	// disables those) would get no allowed host, so all of its items would be dropped.
+	const linkHostsById = new Map(deps.registry.map((entry) => [entry.id, entry.link_hosts]));
 	const failures: string[] = [];
 	const notAttempted: string[] = [];
-	await forEachWithConcurrency(sources, deps.concurrency ?? SOURCE_CONCURRENCY, async (source) => {
+	await forEachWithConcurrency(sources, deps.concurrency ?? SOURCE_CONCURRENCY, async (row) => {
+		const source: SourceDefinition = { ...row, link_hosts: linkHostsById.get(row.id) ?? [] };
 		// After the 20-minute abort, remaining sources are skipped, not blamed.
 		if (ctx.signal.aborted) {
 			notAttempted.push(source.id);
 			return;
 		}
 		try {
-			const previous = { etag: source.etag, last_modified: source.last_modified };
+			const previous = { etag: row.etag, last_modified: row.last_modified };
 			const fetched = await fetchAndNormalize(source, deps, ctx, previous);
 			counters.items_fetched += fetched.items_fetched;
 			counters.items_dropped += fetched.items_dropped;
-			const inserted = await insertArticles(deps.ingest, fetched.articles, counters);
+			const inserted = await insertArticles(
+				deps.ingest,
+				fetched.articles,
+				deps.maxNewItemsPerSource ?? MAX_NEW_ITEMS_PER_SOURCE,
+				counters
+			);
 			// Validators are stored only after the inserts, so a crash mid-way refetches in full.
 			await deps.ingest.recordSourceFetch(source.id, {
 				ok: true,
@@ -188,7 +205,8 @@ function emptyIngestCounters() {
 		items_dropped: 0,
 		articles_inserted: 0,
 		duplicates_url: 0,
-		duplicates_content: 0
+		duplicates_content: 0,
+		items_capped: 0
 	} satisfies JobCounters;
 }
 
@@ -262,14 +280,23 @@ async function fetchAndNormalize(
 	};
 }
 
-/** Returns how many were inserted; duplicate outcomes go to their counters. */
+/**
+ * Inserts in feed order (newest first in every enabled feed) until `maxNew` were inserted; the
+ * rest count as `items_capped`. Returns how many were inserted; duplicate outcomes go to their
+ * counters.
+ */
 async function insertArticles(
 	ingest: IngestRepository,
 	articles: NormalizedArticle[],
+	maxNew: number,
 	counters: ReturnType<typeof emptyIngestCounters>
 ): Promise<number> {
 	let inserted = 0;
-	for (const article of articles) {
+	for (const [index, article] of articles.entries()) {
+		if (inserted >= maxNew) {
+			counters.items_capped += articles.length - index;
+			break;
+		}
 		const result = await ingest.insertArticleIfNew(article);
 		// Counted per row, so a later failing insert does not hide the committed ones.
 		if (result.outcome === 'inserted') {

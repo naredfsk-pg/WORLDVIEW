@@ -28,12 +28,18 @@ export const JOB_COUNTER_KEYS = [
 	'articles_inserted',
 	'duplicates_url',
 	'duplicates_content',
+	// CONTRACT-CHANGE (security wave): new items left for a later run by the per-source cap.
+	'items_capped',
 	// digest
 	'articles_grouped',
 	'events_created',
 	'events_updated',
 	'events_published',
 	'events_pending_review',
+	// CONTRACT-CHANGE (security wave): published events flagged `new_evidence_pending`, and
+	// events whose save was skipped because the row changed while the LLM worked.
+	'events_new_evidence',
+	'events_skipped',
 	'relations_published',
 	'relations_pending_review',
 	'relations_dropped',

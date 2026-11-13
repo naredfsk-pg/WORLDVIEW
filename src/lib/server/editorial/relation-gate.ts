@@ -1,14 +1,11 @@
 /**
  * Relation gate (ARCHITECTURE §11, PRD §9.2): no relation exists without evidence from the two
- * events' own articles, and causal types always wait for a human.
+ * events' own articles, and every relation waits for a human. MVP decision (security wave): the
+ * model writes `explanation_th`, which can assert cause and effect whatever the type, so no type
+ * or confidence is published automatically any more; an admin approves each one.
  */
-import { CAUSAL_RELATION_TYPES, type RelationType } from '../../types/domain';
 import type { RelationGateDecision, RelationGateInput } from '../../types/editorial';
-import { containsUrl, isThaiText } from './text';
-
-export const RELATION_PUBLISH_MIN_CONFIDENCE = 0.6;
-
-const CAUSAL_TYPES: ReadonlySet<RelationType> = new Set(CAUSAL_RELATION_TYPES);
+import { containsLinkOrContact, isThaiText } from './text';
 
 export function evaluateRelation(input: RelationGateInput): RelationGateDecision {
 	if (input.evidence_article_ids.length === 0) return { action: 'drop', reason: 'no evidence' };
@@ -20,11 +17,8 @@ export function evaluateRelation(input: RelationGateInput): RelationGateDecision
 	if (!isThaiText(input.explanation_th)) {
 		return { action: 'drop', reason: 'explanation is not Thai' };
 	}
-	if (containsUrl(input.explanation_th)) return { action: 'drop', reason: 'URL in explanation' };
-
-	if (CAUSAL_TYPES.has(input.relation_type)) return { action: 'store', status: 'pending_review' };
-	return {
-		action: 'store',
-		status: input.confidence >= RELATION_PUBLISH_MIN_CONFIDENCE ? 'published' : 'pending_review'
-	};
+	if (containsLinkOrContact(input.explanation_th)) {
+		return { action: 'drop', reason: 'URL or contact details in explanation' };
+	}
+	return { action: 'store', status: 'pending_review' };
 }

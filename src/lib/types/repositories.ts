@@ -93,7 +93,8 @@ export interface PublicReadRepository {
 
 export interface IngestRepository {
 	/** Upsert by id; sources missing from the registry are set enabled=false (never deleted). */
-	syncSources(definitions: SourceDefinition[]): Promise<void>;
+	/** `link_hosts` is registry-only (never stored), so it is not needed here. */
+	syncSources(definitions: Omit<SourceDefinition, 'link_hosts'>[]): Promise<void>;
 	listEnabledSources(): Promise<Source[]>;
 	/** Dedup by canonical_url (UNIQUE) then content_hash. Never updates an existing row. */
 	insertArticleIfNew(article: NormalizedArticle): Promise<InsertArticleResult>;
@@ -137,6 +138,10 @@ export interface EventContentWrite {
 	review_reasons: ReviewReason[];
 	/** Appended to the timeline; one whose evidence set equals a stored update's is skipped. */
 	new_updates: Omit<EventUpdate, 'id' | 'event_id' | 'created_at'>[];
+	// CONTRACT-CHANGE (security wave): the row as `listEventsNeedingContent` returned it. When the
+	// stored row differs (an admin flagged, hid or edited it, or an article was linked while the
+	// LLM worked), nothing is written and the save resolves `skipped`.
+	listed: Pick<NewsEvent, 'updated_at' | 'status'>;
 }
 
 export interface DigestRepository {
@@ -158,27 +163,54 @@ export interface DigestRepository {
 	 * or 'published' without `manual_flag` and with an article linked after summarized_at.
 	 * Newest evidence first, id as tie-break.
 	 */
-	listEventsNeedingContent(limit: number): Promise<EventWithArticles[]>;
+	// CONTRACT-CHANGE (security wave): `retryFailedBefore` — an `llm_failed` event is listed only
+	// when its row was last written at or before this instant (retry backoff). The `limit` events
+	// are taken round-robin by the source of each event's first article (fairness between feeds).
+	listEventsNeedingContent(limit: number, retryFailedBefore: IsoUtc): Promise<EventWithArticles[]>;
 	// CONTRACT-CHANGE (Wave 2): content fields an admin ever edited (a `content_revisions` row
 	// for the event whose actor is not "system") are never overwritten. An unpublished event with
 	// admin edits is not auto-published: it stays `pending_review` with `manual_flag`. Resolves to
 	// the status written and the fields kept. Was `Promise<void>`.
+	// CONTRACT-CHANGE (security wave): resolves `skipped` (nothing written) when the row changed
+	// since it was listed (`content.listed`), or when it would publish an event that carries an
+	// admin-only reason (`manual_flag`, `possible_duplicate`).
 	saveEventContent(
 		eventId: string,
 		content: EventContentWrite,
 		now: IsoUtc
-	): Promise<{
-		status: 'published' | 'pending_review';
-		admin_fields_kept: string[];
-		/** The row as stored (admin-kept fields included), for the steps that follow. */
-		event: NewsEvent;
-	}>;
+	): Promise<
+		| {
+				status: 'published' | 'pending_review';
+				admin_fields_kept: string[];
+				/** The row as stored (admin-kept fields included), for the steps that follow. */
+				event: NewsEvent;
+		  }
+		| { status: 'skipped'; reason: 'changed_since_listed' | 'review_reason_present' }
+	>;
 	// CONTRACT-CHANGE: added (Wave 2 review). A published event whose re-summary was rejected by
 	// the gates (not a transient LLM failure) keeps its text; `summarized_at` moves to
 	// `checkedAt` so it returns only when newer evidence is linked. No-op for other statuses.
 	markContentChecked(eventId: string, checkedAt: IsoUtc, now: IsoUtc): Promise<void>;
 	/** LLM/gate failure on a non-published event: status → pending_review with these reasons; text unchanged. */
-	markEventForReview(eventId: string, reasons: ReviewReason[], now: IsoUtc): Promise<void>;
+	// CONTRACT-CHANGE (security wave): only while the row's `updated_at` and `status` still equal
+	// the listed ones; resolves whether it was written.
+	markEventForReview(
+		eventId: string,
+		reasons: ReviewReason[],
+		listed: Pick<NewsEvent, 'updated_at' | 'status'>,
+		now: IsoUtc
+	): Promise<boolean>;
+	// CONTRACT-CHANGE: added (security wave). A published event got new articles while
+	// `EDITORIAL_AUTO_PUBLISH` is not `all`: its text stays, `new_evidence_pending` is added to its
+	// review_reasons (it stays published and appears in the admin review queue) and
+	// `summarized_at` moves to `checkedAt`. Resolves false (nothing written) unless the row is
+	// still published with `updated_at = listedUpdatedAt`.
+	flagNewEvidence(
+		eventId: string,
+		checkedAt: IsoUtc,
+		listedUpdatedAt: IsoUtc,
+		now: IsoUtc
+	): Promise<boolean>;
 	// CONTRACT-CHANGE: added (Wave 2). The LLM `clustering` task said a draft event reports the
 	// same happening as `targetEventId`: move its articles there and delete the draft, in one
 	// transaction. Throws unless the source is a `draft`, the target exists and is not hidden, and
@@ -214,9 +246,11 @@ export interface DigestRepository {
 		limit: number
 	): Promise<EventWithArticles[]>;
 	/** Upsert on (from, to, type). Never downgrades an admin-reviewed relation. */
+	// CONTRACT-CHANGE (security wave): stores nothing when an admin rejected any relation between
+	// the two events (either direction, any type); resolves whether a row was written.
 	upsertRelation(
 		relation: Omit<EventRelation, 'id' | 'created_at' | 'reviewed_at' | 'reviewed_by'>
-	): Promise<void>;
+	): Promise<boolean>;
 	replaceLessonLinks(eventId: string, links: Omit<EventLessonLink, 'created_at'>[]): Promise<void>;
 	listLessonCatalog(): Promise<AcademyLessonRow[]>;
 }
@@ -349,6 +383,9 @@ export interface AdminRepository {
 	 * current row and its linked articles and returns blocking reasons (the admin gate G1–G3);
 	 * any reason leaves the row unchanged.
 	 */
+	// CONTRACT-CHANGE (security wave): also accepts a published event flagged
+	// `new_evidence_pending` ("confirm the published text"): same gate, review_reasons cleared.
+	// `listReviewQueue` / `countReviewQueue` include those published events.
 	publishEvent(
 		id: string,
 		gate: (current: Pick<EventWithArticles, 'event' | 'articles'>) => ReviewReason[],

@@ -2,13 +2,16 @@
  * Event publishing gates G1–G6 (ARCHITECTURE §11). Pure: no DB, network or LLM calls.
  * Citations come only from the stored `articles`; LLM output refs ("a1") must map through
  * `ref_to_article_id` to one of those articles, otherwise the output is rejected.
+ * In `auto` mode an event that passes every gate is published only when the auto-publish policy
+ * (`EDITORIAL_AUTO_PUBLISH`) allows it. A published event never reaches this gate in
+ * `multi_source` / `off` mode: the digest flags `new_evidence_pending` without calling the LLM.
  */
 import { REVIEW_REASONS, type CategorySlug, type ReviewReason } from '../../types/domain';
 import type { EventGateDecision, EventGateInput } from '../../types/editorial';
 import type { LlmErrorKind, SummaryOutput } from '../../types/llm';
 import type { ArticleWithSource } from '../../types/news';
 import { isHttpUrl } from '../../utils/url';
-import { containsUrl, isThaiText } from './text';
+import { containsContact, containsUrl, isThaiText } from './text';
 
 export function evaluateEventForPublish(input: EventGateInput): EventGateDecision {
 	const reasons = input.mode === 'admin' ? adminGateReasons(input) : autoGateReasons(input);
@@ -18,6 +21,9 @@ export function evaluateEventForPublish(input: EventGateInput): EventGateDecisio
 		if (input.mode === 'auto' && input.current_review_reasons?.includes(sticky)) {
 			reasons.add(sticky);
 		}
+	}
+	if (input.mode === 'auto' && reasons.size === 0 && !autoPublishAllowed(input)) {
+		reasons.add('auto_publish_disabled');
 	}
 
 	// Stable order (the enum order) so stored reasons and the "exactly [llm_failed]" retry check are deterministic.
@@ -40,9 +46,13 @@ export function reviewReasonForLlmError(kind: LlmErrorKind | null | undefined): 
 	return 'llm_failed';
 }
 
-/** Distinct `publisher_name` count: the `source_count` behind the single-source label and G6. */
-export function countDistinctPublishers(articles: readonly ArticleWithSource[]): number {
-	return new Set(articles.map((article) => article.publisher_name.trim().toLowerCase())).size;
+/**
+ * Distinct registry sources (`source_id`) among the articles: what G6 and `multi_source` count
+ * (the same rule as `events.source_count`). Not the publisher string, which a feed controls
+ * through its items, and each source may only cite its own `link_hosts` (ARCHITECTURE §9).
+ */
+export function countDistinctSources(articles: readonly ArticleWithSource[]): number {
+	return new Set(articles.map((article) => article.source_id)).size;
 }
 
 /**
@@ -68,7 +78,7 @@ function adminGateReasons(input: EventGateInput): Set<ReviewReason> {
 	const reasons = new Set<ReviewReason>();
 	if (!hasCitableSource(input.articles)) reasons.add('no_source');
 	if (!hasRequiredThaiFields(input.summary, input.category)) reasons.add('missing_thai_fields');
-	if (input.summary && hasUrlInText(input.summary)) reasons.add('url_in_generated_text');
+	if (input.summary) addTextReasons(reasons, generatedTexts(input.summary));
 	return reasons;
 }
 
@@ -88,9 +98,7 @@ function autoGateReasons(input: EventGateInput): Set<ReviewReason> {
 	// G2, G3
 	if (!hasRequiredThaiFields(summary, input.category)) reasons.add('missing_thai_fields');
 	// `update_th` is only used for a published event (its timeline), so only then is it checked.
-	if (hasUrlInText(summary, input.current_status === 'published')) {
-		reasons.add('url_in_generated_text');
-	}
+	addTextReasons(reasons, generatedTexts(summary, input.current_status === 'published'));
 
 	// G5: every evidence list is non-empty and resolves to stored articles.
 	const evidenceLists = [
@@ -108,7 +116,7 @@ function autoGateReasons(input: EventGateInput): Set<ReviewReason> {
 
 	// G6 (PRD §4.3 #6). Either source marking it sensitive is enough: stored signals may be stale.
 	const sensitive = (input.signals?.sensitive ?? false) || extraction.sensitive;
-	if (sensitive && countDistinctPublishers(input.articles) < 2) {
+	if (sensitive && countDistinctSources(input.articles) < 2) {
 		reasons.add('sensitive_single_source');
 	}
 	return reasons;
@@ -131,8 +139,24 @@ function hasRequiredThaiFields(
 	].every(isThaiText);
 }
 
-function hasUrlInText(summary: SummaryOutput, includeUpdate = false): boolean {
-	const fields = [
+/**
+ * `auto_publish` omitted counts as `off`, so a caller that forgets the policy never publishes.
+ * `multi_source` needs at least two registry sources (`countDistinctSources`).
+ */
+function autoPublishAllowed(input: EventGateInput): boolean {
+	const policy = input.auto_publish ?? 'off';
+	if (policy === 'all') return true;
+	return policy === 'multi_source' && countDistinctSources(input.articles) >= 2;
+}
+
+/** G3 on every generated or edited text field: no URL and no contact details. */
+function addTextReasons(reasons: Set<ReviewReason>, texts: (string | null)[]): void {
+	if (texts.some(containsUrl)) reasons.add('url_in_generated_text');
+	if (texts.some(containsContact)) reasons.add('contact_in_generated_text');
+}
+
+function generatedTexts(summary: SummaryOutput, includeUpdate = false): (string | null)[] {
+	return [
 		summary.title_th,
 		summary.summary_th,
 		summary.what_happened_th,
@@ -142,5 +166,4 @@ function hasUrlInText(summary: SummaryOutput, includeUpdate = false): boolean {
 		includeUpdate ? summary.update_th : null,
 		...summary.claims_th.flatMap((claim) => [claim.claimant_th, claim.claim_th])
 	];
-	return fields.some(containsUrl);
 }

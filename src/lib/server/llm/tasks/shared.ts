@@ -8,6 +8,7 @@
  */
 import { z } from 'zod';
 import type { LlmInput, LlmOutput, LlmTask } from '../../../types/llm';
+import { normalizeGeneratedText } from '../../../utils/text';
 import { buildSystemPrompt } from '../prompt';
 
 export interface TaskDefinition<T extends LlmTask> {
@@ -88,8 +89,14 @@ export function unknownRefIssues(
 export const refSchema = z.string().trim().min(1).max(32);
 export const refListSchema = z.array(refSchema).max(24);
 
-/** Generated Thai (or claimant name) text. Thai-script and URL checks are editorial gates. */
-export const textSchema = (max: number) => z.string().trim().max(max);
+/**
+ * Generated Thai (or claimant name) text, stored normalized (`normalizeGeneratedText`: no
+ * zero-width or bidi characters, NFKC) so what the gates check is what is stored and shown.
+ * Thai-script, URL and contact checks are editorial gates. Cached outputs are re-validated, so
+ * they are normalized too.
+ */
+export const textSchema = (max: number) =>
+	z.string().overwrite(normalizeGeneratedText).trim().max(max);
 
 export const confidenceSchema = z.number().min(0).max(1);
 

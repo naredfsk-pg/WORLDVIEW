@@ -89,6 +89,10 @@
 						<Button type="submit" formaction="?/publish" class="min-h-10 px-3">
 							{event.status === 'hidden' ? 'เลิกซ่อนและเผยแพร่' : 'เผยแพร่'}
 						</Button>
+					{:else if event.review_reasons.includes('new_evidence_pending')}
+						<Button type="submit" formaction="?/publish" class="min-h-10 px-3">
+							ยืนยันข้อความที่เผยแพร่อยู่
+						</Button>
 					{/if}
 					{#if event.status !== 'hidden'}
 						<Button type="submit" formaction="?/hide" variant="outline" class="min-h-10 px-3">

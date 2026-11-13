@@ -133,6 +133,50 @@ describe('parseConfig', () => {
 			expect(String(error)).not.toContain(secret);
 		}
 	});
+
+	it.each([
+		'https://llm.example/v1',
+		'https://203.0.113.7:8443/v1',
+		'http://localhost:20128/v1',
+		'http://api.localhost/v1',
+		'http://127.0.0.1:20128/v1',
+		'http://[::1]:20128/v1',
+		'http://10.0.0.5/v1',
+		'http://172.16.0.2/v1',
+		'http://172.31.255.254/v1',
+		'http://192.168.1.20:8080/v1',
+		'http://[fd12:3456::1]/v1',
+		'http://omniroute:20128/v1',
+		'http://host.docker.internal:20128/v1',
+		'http://llm-box.local/v1'
+	])('accepts the LLM endpoint %s', (url) => {
+		expect(parseConfig({ LLM_BASE_URL: url }).llm.baseUrl).toBe(url);
+		expect(parseConfig({ OMNI_API_URL: url }).llm.baseUrl).toBe(url);
+	});
+
+	it.each([
+		'http://llm.example/v1',
+		'http://203.0.113.7/v1',
+		'http://172.32.0.1/v1',
+		'http://192.169.0.1/v1',
+		'http://11.0.0.1/v1',
+		'http://[2001:db8::1]/v1',
+		'http://10.0.0.1.nip.io/v1',
+		'http://localhost.example.com/v1',
+		'ftp://llm.example/v1'
+	])('rejects the LLM endpoint %s, naming the variable but not the value', (url) => {
+		for (const variable of ['LLM_BASE_URL', 'OMNI_API_URL']) {
+			let message = '';
+			try {
+				parseConfig({ [variable]: url });
+			} catch (error) {
+				expect(error).toBeInstanceOf(ConfigError);
+				message = String(error);
+			}
+			expect(message).toContain(`${variable}: must use https`);
+			expect(message).not.toContain(new URL(url).hostname);
+		}
+	});
 });
 
 describe('requireLlmCredentials', () => {

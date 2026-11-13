@@ -56,6 +56,11 @@ x-app-environment: &app-environment # Fixed for production (never taken from .en
   LLM_TEMPERATURE: ${LLM_TEMPERATURE:-}
   LLM_DAILY_MAX_REQUESTS: ${LLM_DAILY_MAX_REQUESTS:-}
   LLM_DAILY_MAX_TOKENS: ${LLM_DAILY_MAX_TOKENS:-}
+  LLM_MAX_REQUESTS_PER_RUN: ${LLM_MAX_REQUESTS_PER_RUN:-}
+  # Editorial policy and ingest fairness (security review). Unset = off (nothing auto-publishes);
+  # the owner runs production with multi_source.
+  EDITORIAL_AUTO_PUBLISH: ${EDITORIAL_AUTO_PUBLISH:-}
+  INGEST_MAX_NEW_ITEMS_PER_SOURCE: ${INGEST_MAX_NEW_ITEMS_PER_SOURCE:-}
   # Proxy variables would bypass SafeFetch's connect-time address check (security review S2), and
   # NODE_OPTIONS could add --inspect. Forced empty, so neither .env nor a Docker Desktop proxy
   # setting can inject them.

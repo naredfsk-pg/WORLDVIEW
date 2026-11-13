@@ -10,6 +10,7 @@
 	import { categoryLabel, queryString } from '#lib/components/format.js';
 	import { academyProgress } from '#lib/stores/progress.svelte.js';
 	import { CATEGORY_SLUGS } from '#lib/types/domain.js';
+	import { SEARCH_TOTAL_CAP } from '#lib/types/views.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -19,11 +20,18 @@
 	const query = $derived(data.query);
 	const results = $derived(data.results);
 	const pageNumber = $derived(query ? query.offset / query.limit + 1 : 1);
+	// Totals stop counting past SEARCH_TOTAL_CAP, which is also the deepest result the route
+	// serves, so a capped total never offers a page past the last one.
 	const hasMore = $derived(
 		query !== null &&
 			results !== null &&
-			Math.max(results.events_total, results.lessons_total) > query.offset + query.limit
+			Math.min(Math.max(results.events_total, results.lessons_total), SEARCH_TOTAL_CAP) >
+				query.offset + query.limit
 	);
+
+	function formatTotal(total: number): string {
+		return total > SEARCH_TOTAL_CAP ? `${SEARCH_TOTAL_CAP}+` : String(total);
+	}
 
 	function pageHref(target: number) {
 		const current = Object.fromEntries(page.url.searchParams);
@@ -91,7 +99,9 @@
 	<EmptyState message="พิมพ์คำที่ต้องการค้นหา เช่น เงินเฟ้อ, AI, ชิป หรือสงครามเย็น" />
 {:else}
 	<p class="mb-4 text-xs text-muted-foreground" role="status">
-		ผลการค้นหา “{query.q}” · ข่าว {results.events_total} รายการ · บทเรียน {results.lessons_total} บท
+		ผลการค้นหา “{query.q}” · ข่าว {formatTotal(results.events_total)} รายการ · บทเรียน {formatTotal(
+			results.lessons_total
+		)} บท
 	</p>
 
 	{#if results.events_total === 0 && results.lessons_total === 0}

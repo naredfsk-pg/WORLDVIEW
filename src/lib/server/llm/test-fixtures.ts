@@ -132,6 +132,7 @@ export const LINKED_ARTICLES: ArticleWithSource[] = [
 	makeArticle(),
 	makeArticle({
 		id: 'art-2',
+		source_id: 'sample-times',
 		canonical_url: 'https://sample.example.com/b/2',
 		source_url: 'https://sample.example.com/b/2',
 		publisher_name: 'Sample Times',

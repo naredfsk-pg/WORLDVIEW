@@ -7,6 +7,14 @@
  *   next digest retries; any other `keep_published` → `markContentChecked`, so the event comes
  *   back only when newer evidence is linked
  * - `keep_hidden` → nothing is written
+ * Auto-publish policy (`EDITORIAL_AUTO_PUBLISH`, ARCHITECTURE §11): the gate turns a would-be
+ * publication into `pending_review [auto_publish_disabled]` unless the policy allows it, and in
+ * `multi_source` / `off` a published event is never re-summarized: `flagNewEvidence` keeps its
+ * text, adds `new_evidence_pending` for an admin, and no LLM call is made.
+ * Every write checks that the row is still as listed; otherwise nothing is written (`skipped`),
+ * so an admin flag or hide during the LLM call always wins. When the LLM budget (daily or per
+ * run) is used up, nothing is written either (`deferred`): the event stays as it is for the next
+ * run instead of being marked failed.
  * A published event re-summarized and published again also gets a timeline entry
  * (`event_updates`) from the summary's `update_th`, with the newly linked articles as evidence.
  * `summarized_at` (and the checked marker) is the time the events were listed, so an article
@@ -22,6 +30,7 @@ import type {
 	ReviewReason,
 	Tag
 } from '#lib/types/domain.js';
+import type { AutoPublishPolicy } from '#lib/types/editorial.js';
 import type { Logger } from '#lib/types/jobs.js';
 import type {
 	ArticleRefInput,
@@ -49,7 +58,10 @@ export const MAX_LLM_ARTICLES = 12;
 export const MAX_EVENT_TAGS = 10;
 
 export interface ContentDeps {
-	digest: Pick<DigestRepository, 'saveEventContent' | 'markEventForReview' | 'markContentChecked'>;
+	digest: Pick<
+		DigestRepository,
+		'saveEventContent' | 'markEventForReview' | 'markContentChecked' | 'flagNewEvidence'
+	>;
 	runTask: RunTask;
 	now: () => Date;
 	logger: Logger;
@@ -60,12 +72,20 @@ export interface ContentDeps {
 	 * be categorized. Null → the gate records `llm_failed` (retried by the next digest).
 	 */
 	taggingErrorKind: LlmErrorKind | null;
+	autoPublish: AutoPublishPolicy;
 }
 
-/** `published` carries the row as stored (admin-kept fields included) for the links step. */
+/**
+ * `published` carries the row as stored (admin-kept fields included) for the links step.
+ * `skipped`: the row changed since it was listed, nothing written. `deferred`: the LLM budget is
+ * used up, nothing written (the caller stops the content step).
+ */
 export type ContentResult =
 	| { outcome: 'published'; event: NewsEvent }
-	| { outcome: 'pending_review' | 'unchanged'; review_reasons: ReviewReason[] };
+	| { outcome: 'pending_review' | 'unchanged'; review_reasons: ReviewReason[] }
+	| { outcome: 'new_evidence_pending' }
+	| { outcome: 'skipped'; reason: 'changed_since_listed' | 'review_reason_present' }
+	| { outcome: 'deferred' };
 
 export interface EventTaxonomy {
 	category: CategorySlug | null;
@@ -79,6 +99,21 @@ export async function generateEventContent(
 	deps: ContentDeps
 ): Promise<ContentResult> {
 	const { event, articles } = item;
+	if (event.status === 'published' && deps.autoPublish !== 'all') {
+		const flagged = await deps.digest.flagNewEvidence(
+			event.id,
+			deps.checkedAt,
+			event.updated_at,
+			deps.now().toISOString()
+		);
+		deps.logger.info(flagged ? 'new evidence flagged for an admin' : 'event changed; skipped', {
+			event_id: event.id
+		});
+		return flagged
+			? { outcome: 'new_evidence_pending' }
+			: { outcome: 'skipped', reason: 'changed_since_listed' };
+	}
+
 	const taxonomy = deriveEventTaxonomy(articles);
 	const refToArticleId: Record<string, string> = {};
 	const inputArticles = articles.slice(-MAX_LLM_ARTICLES).map((article, index) => {
@@ -97,6 +132,10 @@ export async function generateEventContent(
 		taxonomy.category === null
 			? { extraction: null, summary: null, errorKind: deps.taggingErrorKind }
 			: await extractAndSummarize(inputArticles, newRefs, item, deps.runTask);
+	if (generated.errorKind === 'budget_exceeded') {
+		deps.logger.info('event deferred: LLM budget used up', { event_id: event.id });
+		return { outcome: 'deferred' };
+	}
 	const { extraction, summary } = generated;
 	const signals: EditorialSignals | null =
 		extraction && summary
@@ -117,7 +156,8 @@ export async function generateEventContent(
 		category: taxonomy.category,
 		current_status: event.status,
 		llm_error_kind: generated.errorKind,
-		current_review_reasons: event.review_reasons
+		current_review_reasons: event.review_reasons,
+		auto_publish: deps.autoPublish
 	});
 	const logFields = {
 		event_id: event.id,
@@ -137,7 +177,16 @@ export async function generateEventContent(
 
 	const now = deps.now().toISOString();
 	if (!extraction || !summary || !signals || taxonomy.category === null) {
-		await deps.digest.markEventForReview(event.id, decision.review_reasons, now);
+		const marked = await deps.digest.markEventForReview(
+			event.id,
+			decision.review_reasons,
+			{ updated_at: event.updated_at, status: event.status },
+			now
+		);
+		if (!marked) {
+			deps.logger.info('event changed since listed; skipped', logFields);
+			return { outcome: 'skipped', reason: 'changed_since_listed' };
+		}
 		deps.logger.info('event marked for review', logFields);
 		return { outcome: 'pending_review', review_reasons: decision.review_reasons };
 	}
@@ -179,11 +228,16 @@ export async function generateEventContent(
 		summarized_at: deps.checkedAt,
 		status: decision.status,
 		review_reasons: decision.review_reasons,
-		new_updates: timelineUpdate ? [timelineUpdate] : []
+		new_updates: timelineUpdate ? [timelineUpdate] : [],
+		listed: { updated_at: event.updated_at, status: event.status }
 	};
 	// Fields an admin edited are kept by the repository, and an unpublished event an admin edited
 	// waits for the admin, so the written status can differ from the gate's.
 	const saved = await deps.digest.saveEventContent(event.id, content, now);
+	if (saved.status === 'skipped') {
+		deps.logger.info('event content not saved', { ...logFields, skip_reason: saved.reason });
+		return { outcome: 'skipped', reason: saved.reason };
+	}
 	deps.logger.info('event content saved', {
 		...logFields,
 		saved_status: saved.status,

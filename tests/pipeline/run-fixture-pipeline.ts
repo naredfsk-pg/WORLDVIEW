@@ -117,7 +117,9 @@ function digest() {
 				{
 					digest: repositories.digest,
 					llm: createMockLlmProvider(createDefaultMockHandlers()),
-					llmCalls: repositories.llmCalls
+					llmCalls: repositories.llmCalls,
+					// The e2e data set needs published fictional events (the production default is off).
+					autoPublish: 'all'
 				},
 				ctx
 			)

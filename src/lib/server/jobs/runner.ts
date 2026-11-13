@@ -3,6 +3,7 @@
  * `JobContext` (fake-able clock, logger, 20-minute abort signal), then finish with the claim
  * token. Jobs never auto-retry themselves; the next slot or a manual `--force` rerun does.
  */
+import { sanitizeErrorMessage } from '#lib/server/errors.js';
 import type {
 	ClaimJobInput,
 	JobContext,
@@ -107,8 +108,10 @@ export function exitCodeFor(result: RunJobResult): number {
 	return result.status === 'partial' ? 2 : 1;
 }
 
-/** Short, single-line error text for `job_runs.error` and logs (no stacks, no bodies). */
+/**
+ * Short, single-line error text for `job_runs.error` and logs: no stacks, no bodies, and no SQL
+ * text or bound params from query errors (server/errors.ts). Job files import it from here.
+ */
 export function sanitizeError(error: unknown): string {
-	const message = error instanceof Error ? `${error.name}: ${error.message}` : 'unknown error';
-	return message.replace(/\s+/g, ' ').slice(0, MAX_ERROR_LENGTH);
+	return sanitizeErrorMessage(error, MAX_ERROR_LENGTH);
 }

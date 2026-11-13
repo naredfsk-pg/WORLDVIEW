@@ -30,7 +30,7 @@ import type {
 import { createDefaultMockHandlers, createMockLlmProvider, mockLlmError } from '../llm/mock';
 import { createFixtureAdapter } from '../news/adapters';
 import { sourceRegistryFor } from '../news/sources';
-import { runDigest, type DigestDeps } from './digest';
+import { LLM_FAILED_RETRY_DELAY_MS, runDigest, type DigestDeps } from './digest';
 import { runIngest } from './ingest';
 import { hourlyJobSlot } from './job-slots';
 import { createJsonLogger } from './logger';
@@ -131,6 +131,7 @@ async function digest(mock: MockLlmHandlers = handlers(), overrides: Partial<Dig
 					digest: repositories.digest,
 					llm: createMockLlmProvider(mock),
 					llmCalls: repositories.llmCalls,
+					autoPublish: 'all',
 					...overrides
 				},
 				ctx
@@ -265,8 +266,16 @@ describe('digest failures and editorial invariants', () => {
 			summarized_at: before.summarized_at
 		});
 
-		// The next digest retries the llm_failed event automatically.
+		// The llm_failed event is retried automatically, with backoff: not by the next run two
+		// hours later, but by a run at least LLM_FAILED_RETRY_DELAY_MS after the failure.
 		clock = new Date(NOW.getTime() + 2 * 60 * 60 * 1000);
+		await digest();
+		expect(eventById(draftId)).toMatchObject({
+			status: 'pending_review',
+			review_reasons: ['llm_failed']
+		});
+		// The failure was written at NOW + 1 h.
+		clock = new Date(NOW.getTime() + 60 * 60 * 1000 + LLM_FAILED_RETRY_DELAY_MS);
 		await digest();
 		expect(eventById(draftId).status).toBe('published');
 	});
@@ -541,7 +550,8 @@ describe('admin corrections survive the pipeline (PRD FR-06)', () => {
 			NOW.toISOString()
 		);
 
-		clock = new Date(NOW.getTime() + 60 * 60 * 1000);
+		// After the llm_failed retry backoff.
+		clock = new Date(NOW.getTime() + LLM_FAILED_RETRY_DELAY_MS);
 		await digest(resummary);
 
 		expect(eventById(id)).toMatchObject({
@@ -683,7 +693,9 @@ describe('review #2/#7: keep_published is not reprocessed forever', () => {
 			await digest(mock);
 			expect(calls).toEqual({});
 		}
-		expect(await repositories.digest.listEventsNeedingContent(30)).toEqual([]);
+		expect(
+			await repositories.digest.listEventsNeedingContent(30, '9999-12-31T00:00:00.000Z')
+		).toEqual([]);
 		expect(eventById(id).status).toBe('published');
 	});
 
@@ -748,12 +760,14 @@ describe('review #2/#7: keep_published is not reprocessed forever', () => {
 		);
 
 		await digest(handlers({ summary: () => mockLlmError('timeout') }));
-		expect((await repositories.digest.listEventsNeedingContent(30)).map((e) => e.event.id)).toEqual(
-			[id]
-		);
+		expect(
+			(await repositories.digest.listEventsNeedingContent(30, '9999-12-31T00:00:00.000Z')).map(
+				(e) => e.event.id
+			)
+		).toEqual([id]);
 	});
 
-	it('#7: an article linked while the LLM works triggers the next re-summary', async () => {
+	it('#7: an article linked while the LLM works: nothing is saved, and the next run summarizes it', async () => {
 		const id = await repositories.digest.createDraftEvent(
 			[await addArticle('Avalor census results')],
 			1,
@@ -778,12 +792,18 @@ describe('review #2/#7: keep_published is not reprocessed forever', () => {
 			}
 		};
 
-		await digest(handlers(), { llm: slowProvider });
+		const first = await digest(handlers(), { llm: slowProvider });
 
+		// The row changed during the call (security review #4): the stale result is not saved.
+		expect(first.counters.events_skipped).toBe(1);
+		expect(eventById(id)).toMatchObject({ status: 'draft', title_th: '' });
+		expect(
+			(await repositories.digest.listEventsNeedingContent(30, '9999-12-31T00:00:00.000Z')).map(
+				(e) => e.event.id
+			)
+		).toEqual([id]);
+		await digest();
 		expect(eventById(id).status).toBe('published');
-		expect((await repositories.digest.listEventsNeedingContent(30)).map((e) => e.event.id)).toEqual(
-			[id]
-		);
 	});
 });
 

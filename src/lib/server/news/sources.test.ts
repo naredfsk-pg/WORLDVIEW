@@ -37,4 +37,20 @@ describe('source registry', () => {
 		]);
 		expect(enabled('fixtures')).toEqual([]);
 	});
+
+	it('gives every source the article hosts it may cite (security review #5)', () => {
+		expect(
+			Object.fromEntries(NEWS_SOURCES.map((source) => [source.id, source.link_hosts]))
+		).toEqual({
+			'un-news': ['news.un.org'],
+			'who-afro-news': ['www.afro.who.int'],
+			'imf-news': ['www.imf.org'],
+			'bbc-world': ['www.bbc.co.uk', 'www.bbc.com'],
+			'guardian-world': ['www.theguardian.com'],
+			'aljazeera-all': ['www.aljazeera.com']
+		});
+		for (const source of sourceRegistryFor('fixtures')) {
+			expect(source.link_hosts.length).toBeGreaterThan(0);
+		}
+	});
 });

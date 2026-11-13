@@ -31,6 +31,8 @@ export function normalizeFeedItem(
 	if (!link || link.length > MAX_URL_LENGTH) return null;
 	const canonicalUrl = canonicalizeUrl(link);
 	if (!canonicalUrl || hasCredentials(link)) return null;
+	// A source cites only its own sites (ARCHITECTURE §9 `link_hosts`).
+	if (!isAllowedLinkHost(new URL(canonicalUrl).hostname, source.link_hosts)) return null;
 
 	const title = cleanFeedText(raw.title, MAX_TITLE_LENGTH);
 	if (!title) return null;
@@ -54,6 +56,18 @@ export function normalizeFeedItem(
 		content_hash: computeContentHash({ title, excerpt, publisher_name: publisherName }),
 		raw_metadata: buildRawMetadata(raw)
 	};
+}
+
+/**
+ * `host` (lower case, from a parsed URL) is one of `linkHosts`: an exact host, or `*.domain` for
+ * the domain itself and any subdomain. No entry matches by substring.
+ */
+export function isAllowedLinkHost(host: string, linkHosts: readonly string[]): boolean {
+	return linkHosts.some((entry) => {
+		if (!entry.startsWith('*.')) return host === entry;
+		const domain = entry.slice(2);
+		return host === domain || host.endsWith(`.${domain}`);
+	});
 }
 
 /**

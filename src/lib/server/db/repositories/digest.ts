@@ -15,6 +15,7 @@ import {
 	inArray,
 	isNull,
 	lt,
+	lte,
 	max,
 	ne,
 	not,
@@ -48,6 +49,8 @@ import { EntityNotFoundError, isPublicEvent, toJsonObject, type Executor } from 
 
 /** `content_revisions.changed_by` of pipeline changes; every other actor is an admin email. */
 export const SYSTEM_ACTOR = 'system';
+/** Events read before the source round-robin picks `limit` of them (newest evidence first). */
+const CONTENT_CANDIDATE_POOL = 500;
 
 export function createDigestRepository(db: Db): DigestRepository {
 	return {
@@ -156,7 +159,7 @@ export function createDigestRepository(db: Db): DigestRepository {
 			);
 		},
 
-		async listEventsNeedingContent(limit) {
+		async listEventsNeedingContent(limit, retryFailedBefore) {
 			return db.transaction((tx) => {
 				const onlyLlmFailed = sql`json_array_length(${events.review_reasons}) = 1 AND json_extract(${events.review_reasons}, '$[0]') = 'llm_failed'`;
 				const linkedAfterSummary = exists(
@@ -173,20 +176,34 @@ export function createDigestRepository(db: Db): DigestRepository {
 				// An editor's flag on a published event is final for the pipeline (the gate would only
 				// answer keep_published), so it is not even sent to the LLM.
 				const hasManualFlag = sql`EXISTS (SELECT 1 FROM json_each(${events.review_reasons}) WHERE value = 'manual_flag')`;
+				// The source of the event's first linked article: the feed that created it.
+				const firstSource = tx
+					.select({ source_id: articles.source_id })
+					.from(eventArticles)
+					.innerJoin(articles, eq(articles.id, eventArticles.article_id))
+					.where(eq(eventArticles.event_id, events.id))
+					.orderBy(asc(eventArticles.linked_at), asc(articles.id))
+					.limit(1);
+				const firstSourceId = sql<string | null>`(${firstSource})`;
 				const rows = tx
-					.select()
+					.select({ event: events, source_id: firstSourceId })
 					.from(events)
 					.where(
 						or(
 							eq(events.status, 'draft'),
-							and(eq(events.status, 'pending_review'), onlyLlmFailed),
+							// A transient LLM failure is retried, but not on every run (backoff, §8).
+							and(
+								eq(events.status, 'pending_review'),
+								onlyLlmFailed,
+								lte(events.updated_at, retryFailedBefore)
+							),
 							and(eq(events.status, 'published'), linkedAfterSummary, not(hasManualFlag))
 						)
 					)
 					.orderBy(desc(events.last_updated_at), asc(events.id))
-					.limit(limit)
+					.limit(CONTENT_CANDIDATE_POOL)
 					.all();
-				return withArticles(tx, rows);
+				return withArticles(tx, interleaveBySource(rows, limit));
 			});
 		},
 
@@ -195,6 +212,18 @@ export function createDigestRepository(db: Db): DigestRepository {
 				(tx) => {
 					const before = tx.select().from(events).where(eq(events.id, eventId)).get();
 					if (!before) throw new EntityNotFoundError('event', eventId);
+					// The row changed while the LLM was working (an admin flag, hide or edit, a newly
+					// linked article): what the gates decided is stale. Write nothing; the event is
+					// listed again by the next digest.
+					if (
+						before.updated_at !== content.listed.updated_at ||
+						before.status !== content.listed.status
+					) {
+						return { status: 'skipped', reason: 'changed_since_listed' };
+					}
+					if (content.status === 'published' && before.review_reasons.some(isStickyReason)) {
+						return { status: 'skipped', reason: 'review_reason_present' };
+					}
 					if (before.status === 'hidden') {
 						throw new Error(`saveEventContent: event ${eventId} is hidden by an admin`);
 					}
@@ -273,12 +302,50 @@ export function createDigestRepository(db: Db): DigestRepository {
 			);
 		},
 
-		async markEventForReview(eventId: string, reasons: ReviewReason[], now: string) {
-			// Published (and hidden) events are left untouched: never auto-demote.
-			db.update(events)
+		async markEventForReview(eventId, reasons, listed, now) {
+			// Published (and hidden) events are left untouched: never auto-demote. A row changed
+			// since it was listed (e.g. an admin flag meanwhile) is left as it is too.
+			const result = db
+				.update(events)
 				.set({ status: 'pending_review', review_reasons: reasons, updated_at: now })
-				.where(and(eq(events.id, eventId), inArray(events.status, ['draft', 'pending_review'])))
+				.where(
+					and(
+						eq(events.id, eventId),
+						inArray(events.status, ['draft', 'pending_review']),
+						eq(events.status, listed.status),
+						eq(events.updated_at, listed.updated_at)
+					)
+				)
 				.run();
+			return result.changes > 0;
+		},
+
+		async flagNewEvidence(eventId, checkedAt, listedUpdatedAt, now) {
+			return db.transaction(
+				(tx) => {
+					const row = tx.select().from(events).where(eq(events.id, eventId)).get();
+					if (!row || row.status !== 'published' || row.updated_at !== listedUpdatedAt) {
+						return false;
+					}
+					const reasons: ReviewReason[] = row.review_reasons.includes('new_evidence_pending')
+						? row.review_reasons
+						: [...row.review_reasons, 'new_evidence_pending'];
+					tx.update(events)
+						.set({
+							review_reasons: reasons,
+							// Like markContentChecked: the event returns only when newer evidence is linked.
+							summarized_at:
+								row.summarized_at !== null && row.summarized_at > checkedAt
+									? row.summarized_at
+									: checkedAt,
+							updated_at: now
+						})
+						.where(eq(events.id, eventId))
+						.run();
+					return true;
+				},
+				{ behavior: 'immediate' }
+			);
 		},
 
 		async markContentChecked(eventId, checkedAt, now) {
@@ -429,7 +496,7 @@ export function createDigestRepository(db: Db): DigestRepository {
 
 		async upsertRelation(relation) {
 			// CONTRACT-GAP: upsertRelation has no `now` parameter, so the clock is read here.
-			upsertRelationRow(db, relation, new Date().toISOString());
+			return db.transaction((tx) => upsertRelationRow(tx, relation, new Date().toISOString()));
 		},
 
 		async replaceLessonLinks(eventId, links) {
@@ -464,19 +531,25 @@ export function createDigestRepository(db: Db): DigestRepository {
 	};
 }
 
-/** Upsert on (from, to, type); never overwrites an admin decision (`reviewed_at` set). */
+/**
+ * Upsert on (from, to, type); never overwrites an admin decision (`reviewed_at` set), and stores
+ * nothing for a pair of events an admin rejected a relation between, in either direction and of
+ * any type. Returns whether a row was written.
+ */
 function upsertRelationRow(
 	executor: Executor,
 	relation: Omit<EventRelation, 'id' | 'created_at' | 'reviewed_at' | 'reviewed_by'>,
 	createdAt: string
-): void {
+): boolean {
+	if (isRejectedPair(executor, relation.from_event_id, relation.to_event_id)) return false;
+
 	// same_topic is symmetric and stored with from_event_id < to_event_id (types/domain.ts).
 	const swap =
 		relation.relation_type === 'same_topic' && relation.from_event_id > relation.to_event_id;
 	const from_event_id = swap ? relation.to_event_id : relation.from_event_id;
 	const to_event_id = swap ? relation.from_event_id : relation.to_event_id;
 
-	executor
+	const result = executor
 		.insert(eventRelations)
 		.values({
 			...relation,
@@ -502,6 +575,57 @@ function upsertRelationRow(
 			setWhere: isNull(eventRelations.reviewed_at)
 		})
 		.run();
+	return result.changes > 0;
+}
+
+/** An admin rejected a relation between these two events (either direction, any type). */
+function isRejectedPair(executor: Executor, eventA: string, eventB: string): boolean {
+	const row = executor
+		.select({ id: eventRelations.id })
+		.from(eventRelations)
+		.where(
+			and(
+				eq(eventRelations.status, 'rejected'),
+				or(
+					and(eq(eventRelations.from_event_id, eventA), eq(eventRelations.to_event_id, eventB)),
+					and(eq(eventRelations.from_event_id, eventB), eq(eventRelations.to_event_id, eventA))
+				)
+			)
+		)
+		.get();
+	return row !== undefined;
+}
+
+/** Reasons only an admin clears; an event carrying one is never auto-published (§6). */
+function isStickyReason(reason: ReviewReason): boolean {
+	return reason === 'manual_flag' || reason === 'possible_duplicate';
+}
+
+/**
+ * Fairness between feeds (ARCHITECTURE §9): takes events round-robin by the source that created
+ * them, each source's newest first, so one feed sending many new items cannot take every
+ * content slot of a run.
+ */
+function interleaveBySource(
+	rows: { event: typeof events.$inferSelect; source_id: string | null }[],
+	limit: number
+): (typeof events.$inferSelect)[] {
+	const queues = new Map<string, (typeof events.$inferSelect)[]>();
+	for (const row of rows) {
+		const key = row.source_id ?? '';
+		const queue = queues.get(key) ?? [];
+		queue.push(row.event);
+		queues.set(key, queue);
+	}
+	const picked: (typeof events.$inferSelect)[] = [];
+	while (picked.length < limit && queues.size > 0) {
+		for (const [key, queue] of queues) {
+			if (picked.length === limit) break;
+			picked.push(queue.shift()!);
+			if (queue.length === 0) queues.delete(key);
+		}
+	}
+	return picked;
 }
 
 /** `column` (a JSON array) contains any of `values`; undefined when `values` is empty. */
@@ -515,7 +639,7 @@ export function deriveEventFacts(
 	linked: {
 		published_at: string | null;
 		ingested_at: string;
-		publisher_name: string;
+		source_id: string;
 		is_demo: boolean;
 	}[],
 	updateReportedAts: string[]
@@ -536,7 +660,8 @@ export function deriveEventFacts(
 		first_seen_at: firstSeenAt,
 		event_date: toBriefDate(firstSeenAt),
 		last_updated_at: evidenceTimes[evidenceTimes.length - 1]!,
-		source_count: new Set(linked.map((article) => article.publisher_name)).size,
+		// Registry sources, not publisher names (ARCHITECTURE §9 link_hosts, §11 G6).
+		source_count: new Set(linked.map((article) => article.source_id)).size,
 		is_demo: linked.some((article) => article.is_demo)
 	};
 }
@@ -546,7 +671,7 @@ function recomputeDerivedFields(tx: Executor, eventId: string, now: string): voi
 		.select({
 			published_at: articles.published_at,
 			ingested_at: articles.ingested_at,
-			publisher_name: articles.publisher_name,
+			source_id: articles.source_id,
 			is_demo: sources.is_demo
 		})
 		.from(eventArticles)

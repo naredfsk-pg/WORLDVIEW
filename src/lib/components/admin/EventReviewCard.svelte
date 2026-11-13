@@ -10,6 +10,9 @@
 
 	const title = $derived(event.title_th || event.fallback_title || event.id);
 	const hidden = $derived(event.status === 'hidden');
+	// A published event with new evidence (`new_evidence_pending`) stays public: the admin
+	// confirms its current text (edit it first on the event page if needed) or hides it.
+	const published = $derived(event.status === 'published');
 </script>
 
 <article
@@ -34,12 +37,14 @@
 		<ReasonField id="reason-{event.id}" />
 		<div class="flex flex-wrap gap-2">
 			<Button type="submit" formaction="?/publish" class="min-h-10 px-3">
-				{hidden ? 'เลิกซ่อนและเผยแพร่' : 'เผยแพร่'}
+				{hidden ? 'เลิกซ่อนและเผยแพร่' : published ? 'ยืนยันข้อความที่เผยแพร่อยู่' : 'เผยแพร่'}
 			</Button>
 			{#if !hidden}
 				<Button type="submit" formaction="?/hide" variant="outline" class="min-h-10 px-3"
 					>ซ่อน</Button
 				>
+			{/if}
+			{#if !hidden && !published}
 				<Button type="submit" formaction="?/flag" variant="outline" class="min-h-10 px-3">
 					ทำเครื่องหมายตรวจ
 				</Button>

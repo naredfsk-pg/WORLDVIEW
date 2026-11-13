@@ -42,27 +42,31 @@ describe('evaluateRelation', () => {
 		});
 	});
 
-	it('always sends causal types to human review, whatever the confidence', () => {
-		for (const relation_type of ['response_to', 'potential_impact'] as const) {
-			expect(evaluateRelation(relation({ relation_type, confidence: 0.99 }))).toEqual({
-				action: 'store',
-				status: 'pending_review'
-			});
+	it('drops an explanation with obfuscated links or contact details', () => {
+		for (const explanation_th of [
+			'ดูต่อที่ evil[.]com',
+			'ติดต่อไลน์ @scam เพื่อรับข้อมูล',
+			'โทร 081-234-5678 เพื่อสอบถาม'
+		]) {
+			expect(evaluateRelation(relation({ explanation_th }))).toMatchObject({ action: 'drop' });
 		}
 	});
 
-	it('publishes other types at confidence ≥ 0.6, otherwise review', () => {
-		expect(evaluateRelation(relation({ confidence: 0.6 }))).toEqual({
-			action: 'store',
-			status: 'published'
-		});
-		expect(evaluateRelation(relation({ confidence: 0.59 }))).toEqual({
-			action: 'store',
-			status: 'pending_review'
-		});
-		expect(
-			evaluateRelation(relation({ relation_type: 'same_topic', evidence_article_ids: ['art-9'] }))
-		).toEqual({ action: 'store', status: 'published' });
+	it('sends every type to human review, whatever the confidence (MVP decision)', () => {
+		const types = [
+			'same_topic',
+			'follow_up',
+			'response_to',
+			'background_of',
+			'potential_impact'
+		] as const;
+		for (const relation_type of types) {
+			for (const confidence of [0, 0.6, 0.99, 1]) {
+				expect(
+					evaluateRelation(relation({ relation_type, confidence, evidence_article_ids: ['art-9'] }))
+				).toEqual({ action: 'store', status: 'pending_review' });
+			}
+		}
 	});
 });
 

@@ -398,6 +398,42 @@ describe('LLMProvider daily caps', () => {
 		expect(transport.requests).toHaveLength(0);
 	});
 
+	it('caps the requests of one job run (LLM_MAX_REQUESTS_PER_RUN), not calls of other runs', async () => {
+		const jobs = createJobRunRepository(db);
+		const claimRun = async (key: string) => {
+			const claim = await jobs.claim({
+				job_type: 'digest',
+				idempotency_key: key,
+				scheduled_for: NOW.toISOString(),
+				trigger: 'cron',
+				force: false,
+				now: NOW.toISOString()
+			});
+			if (!claim.claimed) throw new Error('expected a claim');
+			return claim.run.id;
+		};
+		const first = await claimRun('digest:2026-11-13T06');
+		const second = await claimRun('digest:2026-11-13T12');
+		const { provider, transport } = providerWith([taggingJson, taggingJson, taggingJson], {
+			maxRequestsPerRun: 2
+		});
+
+		const results = [];
+		for (const n of [1, 2, 3]) {
+			results.push(await provider.run('tagging', taggingInput(n), { job_run_id: first }));
+		}
+		expect(results.map((result) => result.ok)).toEqual([true, true, false]);
+		expect(results[2]).toMatchObject({
+			ok: false,
+			error: { kind: 'budget_exceeded', message: 'per-run request cap reached' }
+		});
+		expect(transport.requests).toHaveLength(2);
+
+		// Another run starts with its own allowance.
+		const other = await provider.run('tagging', taggingInput(4), { job_run_id: second });
+		expect(other.ok).toBe(true);
+	});
+
 	it('stops mid-run when the cap is hit between the first call and the repair turn', async () => {
 		const { provider, transport } = providerWith([schemaInvalid, summaryJson()], {
 			dailyMaxRequests: 1

@@ -112,6 +112,7 @@ describe('ingest job on fixture feeds', () => {
 			articles_inserted: 6,
 			duplicates_url: 1,
 			duplicates_content: 0,
+			items_capped: 0,
 			articles_grouped: 6,
 			events_created: 4,
 			events_updated: 0
@@ -214,7 +215,9 @@ describe('ingest job on fixture feeds', () => {
 	});
 
 	it('acceptance #5: event_date follows Asia/Bangkok around midnight (16:59:59Z vs 17:00:00Z)', async () => {
-		const registry: SourceDefinition[] = [{ ...FIXTURE_SOURCES[0]!, id: 'tz-wire' }];
+		const registry: SourceDefinition[] = [
+			{ ...FIXTURE_SOURCES[0]!, id: 'tz-wire', link_hosts: ['tz.example'] }
+		];
 		const xml = `<rss><channel>
 			<item><title>Late night market closes in Port Selene</title><link>https://tz.example/1</link><pubDate>Thu, 12 Nov 2026 16:59:59 GMT</pubDate></item>
 			<item><title>Northland parliament opens its winter session</title><link>https://tz.example/2</link><pubDate>Thu, 12 Nov 2026 17:00:00 GMT</pubDate></item>
@@ -242,7 +245,8 @@ describe('ingest job on fixture feeds', () => {
 		const realSource: SourceDefinition = {
 			...FIXTURE_SOURCES[0]!,
 			id: 'real-wire',
-			is_demo: false
+			is_demo: false,
+			link_hosts: ['real.example']
 		};
 		const sameStory = `<rss><channel><item>
 			<title>Avalor and Meridia sign Kessel River water-sharing accord</title>
@@ -268,7 +272,8 @@ describe('conditional GET', () => {
 			...FIXTURE_SOURCES[0]!,
 			id: 'rss-wire',
 			kind: 'rss',
-			feed_url: 'https://feeds.example/rss.xml'
+			feed_url: 'https://feeds.example/rss.xml',
+			link_hosts: ['feeds.example']
 		};
 		const sentEtags: (string | undefined)[] = [];
 		const safeFetch: SafeFetch = async (_url, init) => {
@@ -443,7 +448,9 @@ describe('ingest job failures', () => {
 			<item><title>Fresh item from this morning</title><link>https://age.example/new</link><pubDate>${hoursAgo(1)}</pubDate></item>
 			<item><title>Undated item</title><link>https://age.example/undated</link></item>
 		</channel></rss>`;
-		const registry: SourceDefinition[] = [{ ...FIXTURE_SOURCES[0]!, id: 'age-wire' }];
+		const registry: SourceDefinition[] = [
+			{ ...FIXTURE_SOURCES[0]!, id: 'age-wire', link_hosts: ['age.example'] }
+		];
 		const result = await runIngestJob({
 			deps: deps({ registry, adapters: { fixture: inlineAdapter({ 'age-wire': xml }) } })
 		});
@@ -525,5 +532,107 @@ describe('previewIngest (--dry-run)', () => {
 		expect(rowCounts()).toEqual({ articles: 0, events: 0, event_articles: 0 });
 		expect(db.select().from(sources).all()).toHaveLength(0);
 		expect(await repositories.jobs.listRecent(1)).toHaveLength(0);
+	});
+});
+
+describe('per-source link hosts and caps (security review #5, #6)', () => {
+	const wire = (id: string, host: string): SourceDefinition => ({
+		...FIXTURE_SOURCES[0]!,
+		id,
+		name: id,
+		is_demo: false,
+		link_hosts: [host]
+	});
+	const item = (title: string, link: string) =>
+		`<item><title>${title}</title><link>${link}</link><pubDate>Thu, 12 Nov 2026 22:00:00 GMT</pubDate></item>`;
+	const feed = (...items: string[]) => `<rss><channel>${items.join('')}</channel></rss>`;
+	const storedArticles = () => db.select().from(articles).all();
+
+	it("drops an item citing another source's article or an attacker's domain", async () => {
+		const result = await runIngestJob({
+			deps: deps({
+				registry: [wire('wire-x', 'x.example'), wire('bbc', 'www.bbc.co.uk')],
+				adapters: {
+					fixture: inlineAdapter({
+						'wire-x': feed(
+							item('Own story', 'https://x.example/own'),
+							item('Borrowed BBC story', 'https://www.bbc.co.uk/news/articles/c1'),
+							item('Scam site', 'https://evil.example/win'),
+							item('Look-alike host', 'https://x.example.evil.example/a'),
+							item('Suffix trick', 'https://evilx.example/a')
+						)
+					})
+				}
+			})
+		});
+
+		if (result.status === 'skipped') throw new Error('expected a run');
+		expect(result.counters).toMatchObject({
+			items_fetched: 5,
+			items_dropped: 4,
+			articles_inserted: 1
+		});
+		expect(storedArticles().map((article) => article.canonical_url)).toEqual([
+			'https://x.example/own'
+		]);
+	});
+
+	it("a feed cannot take another source's URL first (duplicate-URL hijack)", async () => {
+		const bbcUrl = 'https://www.bbc.co.uk/news/articles/c2';
+		const compromised = feed(item('BBC story, as told by wire-x', bbcUrl));
+		const bbcFeed = feed(item('The real BBC story', bbcUrl));
+		// wire-x is fetched first (sources run in id order with concurrency 1).
+		const result = await runIngestJob({
+			deps: deps({
+				registry: [wire('a-wire-x', 'x.example'), wire('bbc', 'www.bbc.co.uk')],
+				adapters: { fixture: inlineAdapter({ 'a-wire-x': compromised, bbc: bbcFeed }) },
+				concurrency: 1
+			})
+		});
+
+		if (result.status === 'skipped') throw new Error('expected a run');
+		expect(result.counters).toMatchObject({ duplicates_url: 0, articles_inserted: 1 });
+		expect(storedArticles()).toMatchObject([
+			{ canonical_url: bbcUrl, source_id: 'bbc', title: 'The real BBC story' }
+		]);
+	});
+
+	it('accepts subdomains only through a *.domain entry', async () => {
+		const registry = [{ ...wire('wire-y', 'y.example'), link_hosts: ['*.y.example'] }];
+		const result = await runIngestJob({
+			deps: deps({
+				registry,
+				adapters: {
+					fixture: inlineAdapter({
+						'wire-y': feed(
+							item('Apex', 'https://y.example/1'),
+							item('Sub', 'https://news.y.example/2'),
+							item('Other', 'https://y.example.org/3')
+						)
+					})
+				}
+			})
+		});
+		if (result.status === 'skipped') throw new Error('expected a run');
+		expect(result.counters).toMatchObject({ items_dropped: 1, articles_inserted: 2 });
+	});
+
+	it('inserts at most maxNewItemsPerSource new items per source and run', async () => {
+		const items = Array.from({ length: 6 }, (_, index) =>
+			item(
+				`Distinct headline number ${index} about topic ${index * 7}`,
+				`https://x.example/${index}`
+			)
+		);
+		const result = await runIngestJob({
+			deps: deps({
+				registry: [wire('wire-x', 'x.example')],
+				adapters: { fixture: inlineAdapter({ 'wire-x': feed(...items) }) },
+				maxNewItemsPerSource: 4
+			})
+		});
+		if (result.status === 'skipped') throw new Error('expected a run');
+		expect(result.counters).toMatchObject({ articles_inserted: 4, items_capped: 2 });
+		expect(storedArticles()).toHaveLength(4);
 	});
 });
