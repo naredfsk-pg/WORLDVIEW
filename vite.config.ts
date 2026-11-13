@@ -3,6 +3,7 @@ import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
 import adapter from '@sveltejs/adapter-node';
 import { sveltekit } from '@sveltejs/kit/vite';
+import { CSP_DIRECTIVES } from './src/lib/server/auth/csp.ts';
 
 export default defineConfig({
 	plugins: [
@@ -23,7 +24,10 @@ export default defineConfig({
 				runes: ({ filename }) =>
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
-			adapter: adapter()
+			adapter: adapter(),
+			// Hash mode: SvelteKit adds the sha256 of each page's inline hydration script to the
+			// header; the app.html theme script hash is in CSP_DIRECTIVES (checked by csp.test.ts).
+			csp: { mode: 'hash', directives: CSP_DIRECTIVES }
 		})
 	],
 	test: {

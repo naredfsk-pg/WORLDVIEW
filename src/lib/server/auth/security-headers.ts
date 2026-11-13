@@ -1,18 +1,28 @@
 /**
- * Security headers for every response (ARCHITECTURE §4).
+ * Security headers for every response that passes through `handle` (ARCHITECTURE §4,
+ * "Security headers & CSP").
  *
- * The CSP has no `script-src`/`style-src` on purpose: SvelteKit's per-page inline hydration
- * script and the no-flash theme script in `app.html` would need `kit.csp` (hash mode) configured
- * in the SvelteKit config. These directives do not touch scripts or styles, so they cannot break
- * the page.
+ * CSP: rendered pages already carry SvelteKit's policy (`csp` in vite.config.ts, hash mode, with
+ * this page's hydration-script hash), which is kept. Every other response gets `FALLBACK_CSP`,
+ * the same directives without per-page hashes.
+ *
+ * HTTPS-only extras (HSTS, `upgrade-insecure-requests`) are added when `isHttpsRequest` says the
+ * visitor used HTTPS. Browsers ignore HSTS received over plain HTTP, so a wrong "yes" is harmless.
  */
+import { FALLBACK_CSP } from './csp.js';
+
 const SECURITY_HEADERS: Record<string, string> = {
 	'x-content-type-options': 'nosniff',
 	'referrer-policy': 'strict-origin-when-cross-origin',
 	'x-frame-options': 'DENY',
 	'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
-	'content-security-policy':
-		"frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+	'cross-origin-opener-policy': 'same-origin',
+	'cross-origin-resource-policy': 'same-origin'
+};
+
+/** 180 days, this host only, no `preload` (that list is hard to leave). */
+const HTTPS_HEADERS: Record<string, string> = {
+	'strict-transport-security': 'max-age=15552000'
 };
 
 const ADMIN_HEADERS: Record<string, string> = {
@@ -20,8 +30,16 @@ const ADMIN_HEADERS: Record<string, string> = {
 	'x-robots-tag': 'noindex, nofollow'
 };
 
-export function withSecurityHeaders(response: Response, options: { admin: boolean }): Response {
-	const headers = { ...SECURITY_HEADERS, ...(options.admin ? ADMIN_HEADERS : {}) };
+export function withSecurityHeaders(
+	response: Response,
+	options: { admin: boolean; https: boolean }
+): Response {
+	const headers = {
+		...SECURITY_HEADERS,
+		...(options.https ? HTTPS_HEADERS : {}),
+		...(options.admin ? ADMIN_HEADERS : {}),
+		'content-security-policy': contentSecurityPolicy(response, options.https)
+	};
 	try {
 		for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
 		return response;
@@ -31,4 +49,21 @@ export function withSecurityHeaders(response: Response, options: { admin: boolea
 		for (const [name, value] of Object.entries(headers)) copy.headers.set(name, value);
 		return copy;
 	}
+}
+
+/**
+ * Cloudflare terminates TLS and cloudflared reaches the app over plain HTTP, so the socket says
+ * nothing. The visitor's scheme comes from `X-Forwarded-Proto` (set by Cloudflare/cloudflared;
+ * only cloudflared can reach the container), or from `event.url` when `ORIGIN` is an https URL.
+ */
+export function isHttpsRequest(event: { url: URL; request: Request }): boolean {
+	if (event.url.protocol === 'https:') return true;
+	const forwarded = event.request.headers.get('x-forwarded-proto')?.split(',')[0] ?? '';
+	return forwarded.trim().toLowerCase() === 'https';
+}
+
+/** Keep SvelteKit's page policy, else the fallback; `upgrade-insecure-requests` only over HTTPS. */
+function contentSecurityPolicy(response: Response, https: boolean): string {
+	const policy = response.headers.get('content-security-policy') ?? FALLBACK_CSP;
+	return https ? `${policy}; upgrade-insecure-requests` : policy;
 }

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { RequestEvent } from '@sveltejs/kit';
@@ -189,6 +190,17 @@ describe('admin guard (Cloudflare Access)', () => {
 			expect(body).not.toMatch(/aud|issuer|jwt|token|email/i);
 		});
 	}
+
+	it('the deny page carries a CSP that allows only its own inline style', async () => {
+		const { response } = await run(guardFor(testEnv()), adminEvent());
+		const style = /<style>([\s\S]*?)<\/style>/.exec(await response.text())?.[1] ?? '';
+		const hash = createHash('sha256').update(style).digest('base64');
+
+		expect(style).not.toBe('');
+		expect(response.headers.get('content-security-policy')).toBe(
+			`default-src 'none'; style-src 'sha256-${hash}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+		);
+	});
 
 	it('returns 403 for a token signed by another key', async () => {
 		const other = await generateKeyPair('RS256');

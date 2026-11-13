@@ -1,7 +1,8 @@
 /**
  * Server hooks (ARCHITECTURE §3, §4):
  * - `/admin*` (GET, form POSTs and `__data.json`) goes through the Cloudflare Access gate.
- * - Every response gets the security headers; admin responses also get `no-store`.
+ * - Every response gets the security headers (pages keep SvelteKit's hash-mode CSP, the rest get
+ *   the fallback CSP; HSTS only over HTTPS); admin responses also get `no-store`.
  * - `handleError` logs an error id plus a sanitized message and returns only a Thai message.
  *
  * CSRF stays with SvelteKit's built-in origin check for form actions (it runs before `handle`
@@ -12,7 +13,7 @@ import type { Handle, HandleServerError } from '@sveltejs/kit/hooks';
 import { DrizzleError, DrizzleQueryError } from 'drizzle-orm/errors';
 import { createAdminGuard, isAdminRequest } from '#lib/server/auth/admin-guard.js';
 import { ADMIN_ACTION_RATE_LIMIT, createTokenBucketLimiter } from '#lib/server/auth/rate-limit.js';
-import { withSecurityHeaders } from '#lib/server/auth/security-headers.js';
+import { isHttpsRequest, withSecurityHeaders } from '#lib/server/auth/security-headers.js';
 import { getConfig } from '#lib/server/config.js';
 
 const MAX_LOGGED_MESSAGE_LENGTH = 200;
@@ -30,7 +31,7 @@ const adminGuard = createAdminGuard({
 export const handle: Handle = async ({ event, resolve }) => {
 	const admin = isAdminRequest(event);
 	const response = admin ? await adminGuard({ event, resolve }) : await resolve(event);
-	return withSecurityHeaders(response, { admin });
+	return withSecurityHeaders(response, { admin, https: isHttpsRequest(event) });
 };
 
 export const handleError: HandleServerError = ({ kind, error, event }) => {
