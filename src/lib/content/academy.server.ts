@@ -2,9 +2,75 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AcademyLessonRow, Lesson } from '../types/domain';
-import { markdownToSearchText, parseLessonFile } from './academy';
+import type { AcademyWeek, LessonDetail, LessonSummary } from '../types/views';
+import {
+	ACADEMY_WEEKS,
+	markdownToSearchText,
+	parseLessonFile,
+	renderLessonMarkdown
+} from './academy';
 
 export const DEFAULT_ACADEMY_DIR = 'content/academy';
+const EXPECTED_LESSON_COUNT = 30;
+
+let cachedLessons: Lesson[] | undefined;
+const cachedDetails = new Map<string, LessonDetail>();
+
+/**
+ * Strict loader for the site (memoized per process): all 30 lessons must parse, with unique ids and
+ * days. Throws with every problem listed, so a broken content file fails loudly instead of
+ * silently dropping a lesson.
+ */
+export function loadAllLessons(contentDir: string = DEFAULT_ACADEMY_DIR): Lesson[] {
+	if (cachedLessons && contentDir === DEFAULT_ACADEMY_DIR) return cachedLessons;
+
+	const { lessons, skipped } = readLessonFiles(contentDir);
+	if (skipped.length > 0 || lessons.length !== EXPECTED_LESSON_COUNT) {
+		const problems = skipped.map((problem) => problem.error);
+		throw new Error(
+			`Academy content in ${contentDir}: expected ${EXPECTED_LESSON_COUNT} valid lessons, got ${lessons.length}` +
+				(problems.length > 0 ? `\n- ${problems.join('\n- ')}` : '')
+		);
+	}
+	if (contentDir === DEFAULT_ACADEMY_DIR) cachedLessons = lessons;
+	return lessons;
+}
+
+export function listLessonSummaries(): LessonSummary[] {
+	return loadAllLessons().map(toLessonSummary);
+}
+
+export function getAcademyWeeks(): AcademyWeek[] {
+	const summaries = listLessonSummaries();
+	return ACADEMY_WEEKS.map((week) => ({
+		...week,
+		lessons: summaries.filter((lesson) => lesson.week === week.week)
+	}));
+}
+
+/** `day` is global (1–30) and must belong to `week`; otherwise null (→ 404). */
+export function getLessonDetail(week: number, day: number): LessonDetail | null {
+	const lesson = loadAllLessons().find((item) => item.week === week && item.day === day);
+	if (!lesson) return null;
+
+	const cached = cachedDetails.get(lesson.id);
+	if (cached) return cached;
+
+	const { html, toc } = renderLessonMarkdown(lesson.content_markdown);
+	const detail: LessonDetail = {
+		...toLessonSummary(lesson),
+		learning_objectives: lesson.learning_objectives,
+		glossary: lesson.glossary,
+		key_questions: lesson.key_questions,
+		further_reading: lesson.further_reading,
+		related_tags: lesson.related_tags,
+		last_reviewed_at: lesson.last_reviewed_at,
+		html,
+		toc
+	};
+	cachedDetails.set(lesson.id, detail);
+	return detail;
+}
 
 export interface LessonFileProblem {
 	path: string;
@@ -68,4 +134,16 @@ function listLessonPaths(contentDir: string): string[] {
 			.sort()
 			.map((name) => `${contentDir.replaceAll('\\', '/')}/${weekDir}/${name}`)
 	);
+}
+
+function toLessonSummary(lesson: Lesson): LessonSummary {
+	return {
+		id: lesson.id,
+		week: lesson.week,
+		day: lesson.day,
+		slug: lesson.slug,
+		title: lesson.title,
+		summary: lesson.summary,
+		related_categories: lesson.related_categories
+	};
 }

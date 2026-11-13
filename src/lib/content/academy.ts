@@ -2,9 +2,47 @@
  * Academy lesson files (ARCHITECTURE §13): YAML frontmatter + Thai Markdown body.
  * Pure (no `node:fs`), so the parser runs anywhere; `academy.server.ts` reads the files.
  */
+import MarkdownIt from 'markdown-it';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { CATEGORY_SLUGS, type Lesson } from '../types/domain';
+import type { AcademyWeekMeta, TocItem } from '../types/views';
+
+/** The four weekly themes (PRD FR-01), with the copy from the UI prototype. */
+export const ACADEMY_WEEKS: AcademyWeekMeta[] = [
+	{
+		week: 1,
+		title_th: 'ประวัติศาสตร์และภูมิรัฐศาสตร์',
+		tagline_th: 'เข้าใจโลกที่เราอยู่',
+		description_th: 'กำเนิดระบบระหว่างประเทศ สงคราม และพันธมิตร',
+		first_day: 1,
+		last_day: 7
+	},
+	{
+		week: 2,
+		title_th: 'ระบบเศรษฐกิจโลก',
+		tagline_th: 'รู้ทันเงินและเศรษฐกิจ',
+		description_th: 'เข้าใจเงินเฟ้อ ดอกเบี้ย ค่าเงิน และระบบการค้า',
+		first_day: 8,
+		last_day: 14
+	},
+	{
+		week: 3,
+		title_th: 'ความขัดแย้งและทรัพยากร',
+		tagline_th: 'เหตุการณ์ที่ขับเคลื่อนโลก',
+		description_th: 'ความมั่นคง น้ำมัน ชิป และเส้นทางการค้า',
+		first_day: 15,
+		last_day: 21
+	},
+	{
+		week: 4,
+		title_th: 'อนาคตและการคิดวิเคราะห์',
+		tagline_th: 'มองอนาคตด้วยเหตุผล',
+		description_th: 'AI ภูมิอากาศ ประชากร และทักษะอ่านข่าว',
+		first_day: 22,
+		last_day: 30
+	}
+];
 
 /** Global day ranges per week: 7 / 7 / 7 / 9 (days 1–30). */
 const WEEK_DAY_RANGES = { 1: [1, 7], 2: [8, 14], 3: [15, 21], 4: [22, 30] } as const;
@@ -107,3 +145,42 @@ export function markdownToSearchText(markdown: string): string {
 		.replace(/\s+/g, ' ')
 		.trim();
 }
+
+/**
+ * Lesson Markdown → sanitized HTML + TOC (ARCHITECTURE §13).
+ * - Raw HTML is escaped (`html: false`); images are disabled.
+ * - Links must be `https://` (or an in-page `#anchor`); anything else stays plain text.
+ *   External links get `rel="noopener noreferrer"` and open in a new tab.
+ * - `##` / `###` headings get ids `section-{n}` and form the TOC.
+ * The result is the only HTML the app renders with `{@html}`.
+ */
+export function renderLessonMarkdown(markdown: string): { html: string; toc: TocItem[] } {
+	const tokens = lessonMarkdown.parse(markdown, {});
+	const toc: TocItem[] = [];
+
+	tokens.forEach((token, index) => {
+		if (token.type === 'heading_open' && (token.tag === 'h2' || token.tag === 'h3')) {
+			const id = `section-${toc.length + 1}`;
+			token.attrSet('id', id);
+			const text = (tokens[index + 1]?.children ?? [])
+				.filter((child) => child.type === 'text' || child.type === 'code_inline')
+				.map((child) => child.content)
+				.join('')
+				.trim();
+			toc.push({ id, text, level: token.tag === 'h2' ? 2 : 3 });
+		}
+		for (const child of token.children ?? []) {
+			if (child.type === 'link_open' && child.attrGet('href')?.startsWith('https://')) {
+				child.attrSet('target', '_blank');
+				child.attrSet('rel', 'noopener noreferrer');
+			}
+		}
+	});
+
+	return { html: lessonMarkdown.renderer.render(tokens, lessonMarkdown.options, {}), toc };
+}
+
+const lessonMarkdown = new MarkdownIt({ html: false, linkify: false, typographer: false }).disable(
+	'image'
+);
+lessonMarkdown.validateLink = (url) => /^https:\/\//i.test(url) || /^#[\w-]+$/.test(url);
