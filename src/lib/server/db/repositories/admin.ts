@@ -3,9 +3,14 @@
  * row in the same transaction (audit trail, PRD §9.2). Callers run the admin publish gate first.
  */
 import { randomUUID } from 'node:crypto';
-import { and, asc, count, desc, eq, gte, isNotNull, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
-import type { EventStatus, JsonObject, RevisionEntityType } from '../../../types/domain';
+import type {
+	EventStatus,
+	JsonObject,
+	RelationStatus,
+	RevisionEntityType
+} from '../../../types/domain';
 import type { ArticleWithSource } from '../../../types/news';
 import type {
 	AdminEventPatch,
@@ -13,9 +18,10 @@ import type {
 	AdminTransitionResult,
 	RevisionMeta
 } from '../../../types/repositories';
-import type { AdminEventRow, AdminRelationRow } from '../../../types/views';
+import type { AdminEventRow, AdminRelationEndpoint, AdminRelationRow } from '../../../types/views';
 import type { Db } from '../client';
 import {
+	adminActions,
 	articles,
 	contentRevisions,
 	dailyBriefs,
@@ -31,8 +37,8 @@ import {
 	EntityNotFoundError,
 	evidenceUrls,
 	loadEvidenceUrls,
-	toEventSummary,
 	toJsonObject,
+	type EventRow,
 	type Executor
 } from './shared';
 
@@ -41,7 +47,7 @@ export function createAdminRepository(db: Db): AdminRepository {
 		async listReviewQueue() {
 			return db.transaction((tx) => ({
 				events: selectReviewEvents(tx),
-				relations: selectReviewRelations(tx)
+				relations: selectAdminRelations(tx, 'pending_review')
 			}));
 		},
 
@@ -92,6 +98,24 @@ export function createAdminRepository(db: Db): AdminRepository {
 					.run();
 				const previous = Object.fromEntries(keys.map((key) => [key, before[key]]));
 				appendRevision(tx, 'event', id, meta, now, toJsonObject(previous), toJsonObject(changed));
+			});
+		},
+
+		async updateEventIfCurrent(id, expectedUpdatedAt, patch, meta, now) {
+			return db.transaction((tx): AdminTransitionResult => {
+				const before = tx.select().from(events).where(eq(events.id, id)).get();
+				if (!before) return { ok: false, error: 'not_found' };
+				if (before.updated_at !== expectedUpdatedAt) return { ok: false, error: 'conflict' };
+
+				const keys = Object.keys(patch) as (keyof AdminEventPatch)[];
+				if (keys.length === 0) return { ok: true };
+				tx.update(events)
+					.set({ ...patch, updated_at: now })
+					.where(eq(events.id, id))
+					.run();
+				const previous = Object.fromEntries(keys.map((key) => [key, before[key]]));
+				appendRevision(tx, 'event', id, meta, now, toJsonObject(previous), toJsonObject(patch));
+				return { ok: true };
 			});
 		},
 
@@ -149,6 +173,10 @@ export function createAdminRepository(db: Db): AdminRepository {
 				.from(sources)
 				.orderBy(asc(sources.name))
 				.all();
+		},
+
+		async listPublishedRelations(limit) {
+			return db.transaction((tx) => selectAdminRelations(tx, 'published', limit));
 		},
 
 		async listHiddenEvents(limit) {
@@ -228,7 +256,8 @@ export function createAdminRepository(db: Db): AdminRepository {
 			return db.transaction((tx): AdminTransitionResult => {
 				const before = tx.select().from(eventRelations).where(eq(eventRelations.id, id)).get();
 				if (!before) return { ok: false, error: 'not_found' };
-				if (before.status !== 'pending_review') return { ok: false, error: 'invalid_state' };
+				const allowedFrom = status === 'rejected' ? REJECTABLE_FROM : APPROVABLE_FROM;
+				if (!allowedFrom.includes(before.status)) return { ok: false, error: 'invalid_state' };
 
 				tx.update(eventRelations)
 					.set({ status, reviewed_at: now, reviewed_by: meta.changed_by })
@@ -261,6 +290,22 @@ export function createAdminRepository(db: Db): AdminRepository {
 			});
 		},
 
+		async recordAdminAction(action) {
+			db.insert(adminActions)
+				.values({ ...action, id: randomUUID() })
+				.run();
+		},
+
+		async listRecentAdminActions(action, limit) {
+			return db
+				.select()
+				.from(adminActions)
+				.where(eq(adminActions.action, action))
+				.orderBy(desc(adminActions.created_at))
+				.limit(limit)
+				.all();
+		},
+
 		async llmUsageSince(since) {
 			return db.transaction((tx) => {
 				const calls = tx
@@ -290,6 +335,8 @@ export function createAdminRepository(db: Db): AdminRepository {
 	};
 }
 
+const APPROVABLE_FROM: readonly RelationStatus[] = ['pending_review'];
+const REJECTABLE_FROM: readonly RelationStatus[] = ['pending_review', 'published'];
 const PUBLISHABLE_FROM: readonly EventStatus[] = ['draft', 'pending_review', 'hidden'];
 const FLAGGABLE_FROM: readonly EventStatus[] = ['draft', 'pending_review'];
 
@@ -334,8 +381,15 @@ function selectReviewEvents(
 	}));
 }
 
-/** Pending relations between categorized events (relation candidates are always published events). */
-function selectReviewRelations(tx: Executor): AdminRelationRow[] {
+/**
+ * Relations in `status` with both endpoints, newest first. No category filter: a pending
+ * relation between still-uncategorized events must reach the queue too.
+ */
+function selectAdminRelations(
+	tx: Executor,
+	status: RelationStatus,
+	limit = -1
+): AdminRelationRow[] {
 	const fromEvent = alias(events, 'from_event');
 	const toEvent = alias(events, 'to_event');
 	const rows = tx
@@ -343,14 +397,9 @@ function selectReviewRelations(tx: Executor): AdminRelationRow[] {
 		.from(eventRelations)
 		.innerJoin(fromEvent, eq(fromEvent.id, eventRelations.from_event_id))
 		.innerJoin(toEvent, eq(toEvent.id, eventRelations.to_event_id))
-		.where(
-			and(
-				eq(eventRelations.status, 'pending_review'),
-				isNotNull(fromEvent.category),
-				isNotNull(toEvent.category)
-			)
-		)
+		.where(eq(eventRelations.status, status))
 		.orderBy(desc(eventRelations.created_at))
+		.limit(limit)
 		.all();
 
 	const urls = loadEvidenceUrls(
@@ -366,9 +415,13 @@ function selectReviewRelations(tx: Executor): AdminRelationRow[] {
 		evidence_source_urls: evidenceUrls(relation.evidence_refs, urls),
 		status: relation.status,
 		confidence: relation.confidence,
-		from_event: toEventSummary(from),
-		to_event: toEventSummary(to)
+		from_event: toRelationEndpoint(from),
+		to_event: toRelationEndpoint(to)
 	}));
+}
+
+function toRelationEndpoint(row: EventRow): AdminRelationEndpoint {
+	return { id: row.id, title_th: row.title_th, status: row.status, category: row.category };
 }
 
 function appendRevision(

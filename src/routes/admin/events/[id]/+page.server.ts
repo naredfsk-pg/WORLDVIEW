@@ -45,7 +45,12 @@ export const load: PageServerLoad = async ({ params, locals }): Promise<AdminEve
 export const actions: Actions = {
 	...eventStatusActions,
 
-	/** Saves only the changed fields; `content_revisions` gets before/after (AdminRepository). */
+	/**
+	 * Optimistic concurrency: the form carries the `updated_at` and the field values it was
+	 * rendered with. The patch holds only fields whose submitted value differs from that LOADED
+	 * value (never compared with the current row), and the repository writes it only while
+	 * `updated_at` is unchanged; otherwise 409 and the input is kept.
+	 */
 	save: async ({ request, locals, params }) => {
 		const admin = requireAdmin(locals);
 		const form = await readForm(request);
@@ -54,7 +59,15 @@ export const actions: Actions = {
 				(entry): entry is [string, string] => typeof entry[1] === 'string'
 			)
 		);
+		if (!entityId.safeParse(params.id).success) {
+			return saveFailure(404, params.id, 'ไม่พบเหตุการณ์นี้', {}, values);
+		}
+
 		const parsed = saveForm.safeParse(form);
+		const loaded = loadedForm.safeParse(form);
+		if (!loaded.success) {
+			return saveFailure(400, params.id, RELOAD_MESSAGE, {}, values);
+		}
 		if (!parsed.success) {
 			const fieldErrors: SaveActionData['field_errors'] = {};
 			for (const issue of parsed.error.issues) {
@@ -65,26 +78,26 @@ export const actions: Actions = {
 		}
 
 		const { change_reason, public_note_th, ...fields } = parsed.data;
-		const repo = getRepositories().admin;
-		const current = entityId.safeParse(params.id).success
-			? await repo.getEventForEdit(params.id)
-			: null;
-		if (!current) return saveFailure(404, params.id, 'ไม่พบเหตุการณ์นี้', {}, values);
-
 		const patch: AdminEventPatch = {};
 		for (const field of EDITABLE_FIELDS) {
-			if (fields[field] !== current.event[field]) Object.assign(patch, { [field]: fields[field] });
+			const loadedValue = loaded.data[`original_${field}`];
+			if (fields[field] !== loadedValue) Object.assign(patch, { [field]: fields[field] });
 		}
 		if (Object.keys(patch).length === 0) {
 			return saveFailure(400, params.id, 'ไม่มีข้อมูลที่เปลี่ยนแปลง', {}, values);
 		}
 
-		await repo.updateEvent(
+		const result = await getRepositories().admin.updateEventIfCurrent(
 			params.id,
+			loaded.data.loaded_updated_at,
 			patch,
 			{ changed_by: admin.email, change_reason, public_note_th },
 			new Date().toISOString()
 		);
+		if (!result.ok && result.error === 'conflict') {
+			return saveFailure(409, params.id, CONFLICT_MESSAGE, {}, values);
+		}
+		if (!result.ok) return saveFailure(404, params.id, 'ไม่พบเหตุการณ์นี้', {}, values);
 		return {
 			ok: true,
 			message: 'บันทึกการแก้ไขแล้ว',
@@ -95,6 +108,10 @@ export const actions: Actions = {
 		} satisfies SaveActionData;
 	}
 };
+
+const CONFLICT_MESSAGE =
+	'มีการแก้ไขจากระบบหรือผู้อื่นหลังจากคุณเปิดหน้านี้ — โหลดใหม่ (ข้อความที่คุณพิมพ์ยังอยู่ในฟอร์ม คัดลอกไว้ก่อนโหลดใหม่)';
+const RELOAD_MESSAGE = 'ฟอร์มไม่สมบูรณ์ กรุณาโหลดหน้านี้ใหม่แล้วแก้ไขอีกครั้ง';
 
 function saveFailure(
 	status: number,
@@ -136,6 +153,24 @@ function optionalText(label: string, max: number) {
 		.optional()
 		.transform((value) => (value ? value : null));
 }
+
+/** A loaded value from a hidden field, normalized the way the edit fields are (trim, '' → null). */
+const loadedValue = z
+	.string()
+	.max(10_000)
+	.transform((value) => value.trim() || null);
+
+/** What the form was rendered with: the version token and every editable field's value. */
+const loadedForm = z.object({
+	loaded_updated_at: z.string().min(1).max(40),
+	original_title_th: loadedValue,
+	original_summary_th: loadedValue,
+	original_what_happened_th: loadedValue,
+	original_why_it_matters_th: loadedValue,
+	original_background_th: loadedValue,
+	original_uncertain_th: loadedValue,
+	original_category: loadedValue
+});
 
 const saveForm = z.object({
 	title_th: requiredThai('หัวข้อ', 200),

@@ -12,16 +12,22 @@ import {
 } from '../admin-forms.server';
 import type { Actions, PageServerLoad } from './$types';
 
-/** `/admin/relations`: pending relations with their evidence links. */
+const PUBLISHED_RELATIONS_SHOWN = 50;
+
+/** `/admin/relations`: pending relations and the latest published ones, with evidence links. */
 export const load: PageServerLoad = async ({ locals }) => {
 	requireAdmin(locals);
-	const { relations } = await getRepositories().admin.listReviewQueue();
-	return { relations };
+	const repo = getRepositories().admin;
+	const [{ relations }, published] = await Promise.all([
+		repo.listReviewQueue(),
+		repo.listPublishedRelations(PUBLISHED_RELATIONS_SHOWN)
+	]);
+	return { relations, published_relations: published };
 };
 
 const reviewForm = z.object({ id: entityId, change_reason: changeReason });
 
-/** Approve (→ published) or reject; both write a `content_revisions` row. */
+/** Approve (pending → published) or reject (pending | published → rejected); both write a revision. */
 function reviewAction(status: 'published' | 'rejected', successMessage: string) {
 	return async ({ request, locals }: { request: Request; locals: App.Locals }) => {
 		const admin = requireAdmin(locals);
@@ -47,5 +53,5 @@ function reviewAction(status: 'published' | 'rejected', successMessage: string) 
 
 export const actions: Actions = {
 	approve: reviewAction('published', 'อนุมัติความเชื่อมโยงแล้ว'),
-	reject: reviewAction('rejected', 'ปฏิเสธความเชื่อมโยงแล้ว')
+	reject: reviewAction('rejected', 'ปฏิเสธหรือยกเลิกความเชื่อมโยงแล้ว')
 };

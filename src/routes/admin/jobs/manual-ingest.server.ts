@@ -13,10 +13,15 @@ import { runJob, sanitizeError, type RunJobDeps } from '#lib/server/jobs/runner.
 import { createRssAdapter } from '#lib/server/news/adapters.js';
 import { allowedHostsFromRegistry, createSafeFetch } from '#lib/server/news/safe-fetch.js';
 import { sourceRegistryFor } from '#lib/server/news/sources.js';
-import type { JobContext, JobOutcome } from '#lib/types/jobs.js';
+import type { JobContext, JobOutcome, JobRun } from '#lib/types/jobs.js';
 import type { Repositories } from '#lib/types/repositories.js';
 
-export type ManualStartResult = { status: 'started' } | { status: 'skipped_running' };
+/** Minimum time between two manual reruns (any admin), counted from the last start. */
+export const MANUAL_RERUN_MIN_INTERVAL_MS = 5 * 60 * 1000;
+
+export type ManualStartResult =
+	| { status: 'started'; run: Pick<JobRun, 'id' | 'idempotency_key' | 'attempts'> }
+	| { status: 'skipped'; reason: 'running' | 'already_done' };
 
 export interface ManualIngestDeps extends RunJobDeps {
 	execute: (ctx: JobContext) => Promise<JobOutcome>;
@@ -27,8 +32,8 @@ export interface ManualIngestDeps extends RunJobDeps {
  * decided; the job itself keeps running in the background (20-minute abort from `runJob`).
  */
 export async function startManualIngest(deps: ManualIngestDeps): Promise<ManualStartResult> {
-	let markStarted!: () => void;
-	const started = new Promise<'started'>((resolve) => (markStarted = () => resolve('started')));
+	let markStarted!: (run: JobRun) => void;
+	const started = new Promise<JobRun>((resolve) => (markStarted = resolve));
 
 	const run = runJob(
 		deps,
@@ -39,20 +44,22 @@ export async function startManualIngest(deps: ManualIngestDeps): Promise<ManualS
 			force: true
 		},
 		(ctx) => {
-			markStarted();
+			markStarted(ctx.run);
 			return deps.execute(ctx);
 		}
 	);
 
-	const first = await Promise.race([started, run]);
-	if (first === 'started') {
+	const first = await Promise.race([started.then((claimed) => ({ claimed })), run]);
+	if ('claimed' in first) {
 		run.catch((error: unknown) =>
 			deps.logger.error('manual ingest crashed', { error: sanitizeError(error) })
 		);
-		return { status: 'started' };
+		const { id, idempotency_key, attempts } = first.claimed;
+		return { status: 'started', run: { id, idempotency_key, attempts } };
 	}
-	// `force` never steals a live claim, so the only skip left is "running".
-	return { status: 'skipped_running' };
+	if (first.status === 'skipped') return { status: 'skipped', reason: first.reason };
+	// Unreachable: `runJob` only finishes without calling `execute` when it skipped the claim.
+	throw new Error(`manual ingest finished without starting (${first.status})`);
 }
 
 /** The production ingest composition (registry, SafeFetch allowlist, RSS adapter), as in scripts/job.ts. */

@@ -6,6 +6,8 @@
  */
 import type {
 	AcademyLessonRow,
+	AdminAction,
+	AdminActionType,
 	ArticleTaxonomy,
 	BriefDate,
 	BriefEdition,
@@ -253,6 +255,19 @@ export interface AdminRepository {
 	// CONTRACT-CHANGE (Wave 2 admin, additive): state-checked transitions. Each one reads the row,
 	// checks the allowed source states (and the gate) and writes the change plus its
 	// `content_revisions` row in ONE transaction, so there is no check-then-write race.
+	/**
+	 * Optimistic-concurrency edit: writes `patch` (+ revision) only when the row's `updated_at`
+	 * still equals `expectedUpdatedAt`, the value the editor loaded; otherwise `conflict`.
+	 */
+	updateEventIfCurrent(
+		id: string,
+		expectedUpdatedAt: IsoUtc,
+		patch: AdminEventPatch,
+		meta: RevisionMeta,
+		now: IsoUtc
+	): Promise<AdminTransitionResult>;
+	/** Published relations, newest first (the admin "unpublish" list). */
+	listPublishedRelations(limit: number): Promise<AdminRelationRow[]>;
 	/** Hidden events, most recently updated first (the admin "unhide" list). */
 	listHiddenEvents(limit: number): Promise<AdminEventRow[]>;
 	/**
@@ -270,7 +285,10 @@ export interface AdminRepository {
 	hideEvent(id: string, meta: RevisionMeta, now: IsoUtc): Promise<AdminTransitionResult>;
 	/** draft | pending_review → pending_review with `manual_flag` added (digest never auto-publishes it). */
 	flagEvent(id: string, meta: RevisionMeta, now: IsoUtc): Promise<AdminTransitionResult>;
-	/** pending_review → published | rejected; also sets reviewed_at / reviewed_by. */
+	/**
+	 * pending_review → published; pending_review | published → rejected (unpublish).
+	 * Also sets reviewed_at / reviewed_by.
+	 */
 	reviewRelation(
 		id: string,
 		status: 'published' | 'rejected',
@@ -286,6 +304,10 @@ export interface AdminRepository {
 		meta: RevisionMeta,
 		now: IsoUtc
 	): Promise<AdminTransitionResult>;
+	/** Appends an `admin_actions` audit row (non-content admin operations, e.g. manual reruns). */
+	recordAdminAction(action: Omit<AdminAction, 'id'>): Promise<void>;
+	/** Newest first. */
+	listRecentAdminActions(action: AdminActionType, limit: number): Promise<AdminAction[]>;
 	/**
 	 * LLM usage since `since`: network calls, tokens and failures from `llm_calls`; cache hits
 	 * from the `llm_cache_hits` job counters (cache hits are never written to `llm_calls`).
@@ -297,6 +319,8 @@ export interface AdminRepository {
 export type AdminTransitionResult =
 	| { ok: true }
 	| { ok: false; error: 'not_found' | 'invalid_state' }
+	/** The row changed (`updated_at` moved) since the editor loaded it. */
+	| { ok: false; error: 'conflict' }
 	| { ok: false; error: 'gate_failed'; reasons: ReviewReason[] };
 
 export interface AdminLlmUsage {

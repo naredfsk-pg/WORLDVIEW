@@ -2,6 +2,8 @@
 	import ActionNotice from '#lib/components/admin/ActionNotice.svelte';
 	import { JOB_TYPE_LABEL_TH } from '#lib/components/admin/admin-labels.js';
 	import JobRunList from '#lib/components/admin/JobRunList.svelte';
+	import ReasonField from '#lib/components/admin/ReasonField.svelte';
+	import { formatThaiDateTimeShort } from '#lib/components/format.js';
 	import PageIntro from '#lib/components/PageIntro.svelte';
 	import SeoHead from '#lib/components/SeoHead.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
@@ -19,7 +21,7 @@
 <PageIntro
 	eyebrow="ADMIN · JOBS"
 	title="งานระบบ"
-	description="สั่งรันใหม่แบบบังคับ (--force --manual) ได้อย่างปลอดภัย: ข้อมูลไม่ซ้ำ และงานที่กำลังทำงานอยู่จะไม่ถูกเริ่มซ้ำ"
+	description="สั่งรันใหม่แบบบังคับ (--force --manual) ได้อย่างปลอดภัย: ข้อมูลไม่ซ้ำ งานที่กำลังทำงานอยู่จะไม่ถูกเริ่มซ้ำ และต้องเว้นอย่างน้อย 5 นาทีระหว่างการสั่งรันเอง ทุกครั้งต้องระบุเหตุผล"
 />
 
 <ActionNotice result={form} />
@@ -32,9 +34,23 @@
 			<p class="mt-0 mb-3 text-[12px] text-muted-foreground" data-testid="ingest-state">
 				{data.ingest_running ? 'กำลังทำงานอยู่' : 'พร้อมสั่งรัน'}
 			</p>
-			<Button type="submit" disabled={data.ingest_running} class="min-h-10 px-3">
-				รันดึงข่าวตอนนี้
-			</Button>
+			<div class="flex flex-col gap-2.5">
+				<ReasonField id="rerun-reason" />
+				<div>
+					<Button type="submit" disabled={data.ingest_running} class="min-h-10 px-3">
+						รันดึงข่าวตอนนี้
+					</Button>
+				</div>
+			</div>
+			{#if data.manual_reruns.length > 0}
+				<ul class="mt-3 mb-0 grid list-none gap-1 p-0 text-[11px] text-muted-foreground">
+					{#each data.manual_reruns as rerun (rerun.id)}
+						<li class="break-words">
+							{formatThaiDateTimeShort(rerun.created_at)} · {rerun.actor} · {rerun.reason}
+						</li>
+					{/each}
+				</ul>
+			{/if}
 		</form>
 		{#each LATER_JOBS as jobType (jobType)}
 			<div class="min-w-0 rounded-2xl border border-dashed bg-card p-4 opacity-80">

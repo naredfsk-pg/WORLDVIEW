@@ -97,6 +97,9 @@ export function transitionResponse(
 		return failure(422, id, 'เผยแพร่ไม่ได้ เพราะไม่ผ่านเกณฑ์ G1–G3', result.reasons);
 	}
 	if (result.error === 'not_found') return failure(404, id, 'ไม่พบรายการนี้');
+	if (result.error === 'conflict') {
+		return failure(409, id, 'รายการนี้ถูกแก้ไขหลังจากคุณเปิดหน้านี้ กรุณาโหลดใหม่');
+	}
 	return failure(409, id, 'สถานะปัจจุบันของรายการไม่รองรับการทำรายการนี้');
 }
 

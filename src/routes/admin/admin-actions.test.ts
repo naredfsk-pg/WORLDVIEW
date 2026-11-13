@@ -3,12 +3,18 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Db } from '#lib/server/db/client.js';
 import { createRepositories } from '#lib/server/db/repositories/index.js';
-import { contentRevisions, dailyBriefs, eventArticles, events } from '#lib/server/db/schema.js';
+import {
+	contentRevisions,
+	dailyBriefs,
+	eventArticles,
+	eventRelations,
+	events
+} from '#lib/server/db/schema.js';
 import { seedDatabase } from '#lib/server/db/seed.js';
 import { openTestDb } from '#lib/server/db/test-db.js';
 import { createJobRunRepository } from '#lib/server/db/repositories/job-runs.js';
 import { createJsonLogger } from '#lib/server/jobs/logger.js';
-import type { JobOutcome } from '#lib/types/jobs.js';
+import type { JobContext, JobOutcome } from '#lib/types/jobs.js';
 
 let db: Db;
 let repos: ReturnType<typeof createRepositories>;
@@ -18,11 +24,28 @@ vi.mock('#lib/server/db/repositories/index.js', async (importOriginal) => {
 	return { ...original, getRepositories: () => repos };
 });
 
+/** The rerun action gets fake ingest deps: no network, the test controls when the job ends. */
+let fakeExecute: (ctx: JobContext) => Promise<JobOutcome>;
+vi.mock('./jobs/manual-ingest.server', async (importOriginal) => {
+	const original = await importOriginal<typeof import('./jobs/manual-ingest.server')>();
+	return {
+		...original,
+		productionIngestDeps: () => ({
+			jobs: repos.jobs,
+			logger: createJsonLogger(() => {}),
+			now: () => new Date(),
+			execute: (ctx: JobContext) => fakeExecute(ctx)
+		})
+	};
+});
+
 const { actions: reviewActions } = await import('./review/+page.server');
 const { actions: editActions } = await import('./events/[id]/+page.server');
 const { actions: relationActions } = await import('./relations/+page.server');
 const { actions: briefActions } = await import('./briefs/+page.server');
-const { startManualIngest } = await import('./jobs/manual-ingest.server');
+const { actions: jobActions } = await import('./jobs/+page.server');
+const { MANUAL_RERUN_MIN_INTERVAL_MS, startManualIngest } =
+	await import('./jobs/manual-ingest.server');
 
 const ADMIN = { email: 'editor@example.com' };
 
@@ -177,8 +200,28 @@ describe('event edit (save)', () => {
 		change_reason: 'ปรับถ้อยคำ',
 		public_note_th: 'แก้ไขหัวข้อให้ชัดเจนขึ้น'
 	};
-	const save = (fields: Record<string, string>) =>
-		call(editActions.save, actionEvent(fields, { params: { id: 'demo-evt-13' } }));
+	const EDITABLE = [
+		'title_th',
+		'summary_th',
+		'what_happened_th',
+		'why_it_matters_th',
+		'background_th',
+		'uncertain_th',
+		'category'
+	] as const;
+
+	/** The hidden fields the edit page renders: version token + the values it was loaded with. */
+	function loadedFields(id = 'demo-evt-13'): Record<string, string> {
+		const row = eventRow(id);
+		const fields: Record<string, string> = { loaded_updated_at: row.updated_at };
+		for (const name of EDITABLE) fields[`original_${name}`] = row[name] ?? '';
+		return fields;
+	}
+	const save = (fields: Record<string, string>, loaded = loadedFields()) =>
+		call(
+			editActions.save,
+			actionEvent({ ...loaded, ...fields }, { params: { id: 'demo-evt-13' } })
+		);
 
 	it('saves only changed fields with a before/after revision', async () => {
 		const before = eventRow('demo-evt-13');
@@ -187,8 +230,11 @@ describe('event edit (save)', () => {
 		expect(result).toMatchObject({ ok: true });
 		const after = eventRow('demo-evt-13');
 		expect(after).toMatchObject({ title_th: 'หัวข้อที่แก้ไขแล้ว', background_th: null });
+		expect(after.updated_at).not.toBe(before.updated_at);
 		const revision = revisionsFor('demo-evt-13')[0]!;
 		expect(revision).toMatchObject({
+			entity_type: 'event',
+			entity_id: 'demo-evt-13',
 			changed_by: ADMIN.email,
 			change_reason: 'ปรับถ้อยคำ',
 			public_note_th: 'แก้ไขหัวข้อให้ชัดเจนขึ้น'
@@ -198,6 +244,62 @@ describe('event edit (save)', () => {
 		// Unchanged fields (category, background_th) are not part of the revision.
 		expect(Object.keys(revision.before_after.after ?? {})).not.toContain('category');
 		expect(Object.keys(revision.before_after.after ?? {})).not.toContain('background_th');
+	});
+
+	it('rejects a stale form with 409 when the row changed since it was loaded', async () => {
+		const loaded = loadedFields();
+		// The digest (or another admin) writes after the page was opened: updated_at moves.
+		db.update(events)
+			.set({ summary_th: 'สรุปใหม่จากระบบ', updated_at: '2026-11-13T09:00:00.000Z' })
+			.where(eq(events.id, 'demo-evt-13'))
+			.run();
+
+		const result = await save(validFields, loaded);
+
+		expect(result).toMatchObject({
+			status: 409,
+			data: { ok: false, message: expect.stringContaining('โหลดใหม่') }
+		});
+		expect((result as { data: { values: object } }).data.values).toMatchObject({
+			title_th: validFields.title_th
+		});
+		expect(eventRow('demo-evt-13').summary_th).toBe('สรุปใหม่จากระบบ');
+		expect(revisionsFor('demo-evt-13')).toHaveLength(0);
+	});
+
+	it('never writes a field the editor did not touch, even if the row differs from the form', async () => {
+		const loaded = loadedFields();
+		const original = eventRow('demo-evt-13');
+		// A writer that did not move updated_at (worst case): the patch must still leave it alone.
+		db.update(events)
+			.set({ summary_th: 'สรุปที่ระบบเขียนไว้' })
+			.where(eq(events.id, 'demo-evt-13'))
+			.run();
+
+		const untouched = Object.fromEntries(
+			EDITABLE.map((name) => [name, original[name] ?? ''])
+		) as Record<string, string>;
+		const result = await save(
+			{ ...untouched, title_th: 'หัวข้อใหม่จากผู้ดูแล', change_reason: 'แก้หัวข้อ' },
+			loaded
+		);
+
+		expect(result).toMatchObject({ ok: true });
+		const row = eventRow('demo-evt-13');
+		expect(row.title_th).toBe('หัวข้อใหม่จากผู้ดูแล');
+		expect(row.summary_th).toBe('สรุปที่ระบบเขียนไว้');
+		expect(Object.keys(revisionsFor('demo-evt-13')[0]?.before_after.after ?? {})).toEqual([
+			'title_th'
+		]);
+	});
+
+	it('asks for a reload when the version fields are missing', async () => {
+		const result = await save(validFields, {});
+		expect(result).toMatchObject({
+			status: 400,
+			data: { message: expect.stringContaining('โหลด') }
+		});
+		expect(revisionsFor('demo-evt-13')).toHaveLength(0);
 	});
 
 	it.each([
@@ -247,12 +349,41 @@ describe('relations and briefs', () => {
 		expect(approve).toMatchObject({ ok: true });
 		expect(revisionsFor('demo-rel-06')).toHaveLength(1);
 
-		const again = await call(
-			relationActions.reject,
-			actionEvent({ id: 'demo-rel-06', change_reason: 'เปลี่ยนใจ' })
+		const approveAgain = await call(
+			relationActions.approve,
+			actionEvent({ id: 'demo-rel-06', change_reason: 'ซ้ำ' + 'อีก' })
 		);
-		expect(again).toMatchObject({ status: 409 });
+		expect(approveAgain).toMatchObject({ status: 409 });
 		expect(revisionsFor('demo-rel-06')).toHaveLength(1);
+	});
+
+	it('unpublishes a published relation (published → rejected) with a revision', async () => {
+		expect((await repos.admin.listPublishedRelations(50)).map((row) => row.id)).toContain(
+			'demo-rel-01'
+		);
+		const result = await call(
+			relationActions.reject,
+			actionEvent({ id: 'demo-rel-01', change_reason: 'ความเชื่อมโยงผิด' })
+		);
+
+		expect(result).toMatchObject({ ok: true });
+		expect(
+			db.select().from(eventRelations).where(eq(eventRelations.id, 'demo-rel-01')).get()
+		).toMatchObject({ status: 'rejected', reviewed_by: ADMIN.email });
+		expect(revisionsFor('demo-rel-01')[0]?.before_after).toEqual({
+			before: { status: 'published' },
+			after: { status: 'rejected' }
+		});
+		expect((await repos.admin.listPublishedRelations(50)).map((row) => row.id)).not.toContain(
+			'demo-rel-01'
+		);
+	});
+
+	it('lists pending relations whose events have no category yet', async () => {
+		db.update(events).set({ category: null }).where(eq(events.id, 'demo-evt-05')).run();
+		const { relations } = await repos.admin.listReviewQueue();
+		const row = relations.find((relation) => relation.id === 'demo-rel-06');
+		expect(row?.from_event).toMatchObject({ id: 'demo-evt-05', category: null });
 	});
 
 	it('hides and unhides a brief with a revision', async () => {
@@ -292,25 +423,79 @@ describe('manual ingest rerun', () => {
 			execute
 		};
 
-		expect(await startManualIngest(deps)).toEqual({ status: 'started' });
-		expect(await startManualIngest(deps)).toEqual({ status: 'skipped_running' });
+		expect(await startManualIngest(deps)).toMatchObject({
+			status: 'started',
+			run: { idempotency_key: 'ingest:2026-11-13T12', attempts: 1 }
+		});
+		expect(await startManualIngest(deps)).toEqual({ status: 'skipped', reason: 'running' });
 		expect(execute).toHaveBeenCalledOnce();
 
 		const [run] = await deps.jobs.listRecent(1);
-		expect(run).toMatchObject({
-			job_type: 'ingest',
-			idempotency_key: 'ingest:2026-11-13T12',
-			trigger: 'manual',
-			status: 'running'
-		});
+		expect(run).toMatchObject({ job_type: 'ingest', trigger: 'manual', status: 'running' });
 
 		finishFirst({ status: 'succeeded', counters: { sources_ok: 1 }, error: null });
 		await vi.waitFor(async () =>
 			expect((await deps.jobs.listRecent(1))[0]?.status).toBe('succeeded')
 		);
 		// Finished slot + force → a new attempt of the same slot (idempotent rerun).
-		expect(await startManualIngest(deps)).toEqual({ status: 'started' });
-		expect((await deps.jobs.listRecent(1))[0]?.attempts).toBe(2);
+		expect(await startManualIngest(deps)).toMatchObject({
+			status: 'started',
+			run: { attempts: 2 }
+		});
 		finishFirst({ status: 'succeeded', counters: {}, error: null });
+	});
+
+	describe('?/rerunIngest action', () => {
+		let finish: ((outcome: JobOutcome) => void) | null;
+		beforeEach(() => {
+			finish = null;
+			fakeExecute = () => new Promise<JobOutcome>((resolve) => (finish = resolve));
+		});
+		afterEach(() => finish?.({ status: 'succeeded', counters: {}, error: null }));
+
+		const rerun = (fields: Record<string, string>) =>
+			call(jobActions.rerunIngest, actionEvent(fields));
+
+		it('requires a change_reason', async () => {
+			expect(await rerun({})).toMatchObject({ status: 400 });
+			expect(await repos.admin.listRecentAdminActions('rerun_ingest', 5)).toEqual([]);
+		});
+
+		it('starts the run and records the actor and reason, then enforces the interval', async () => {
+			expect(await rerun({ change_reason: 'ฟีดเพิ่งกลับมา' })).toMatchObject({ ok: true });
+
+			const [audit] = await repos.admin.listRecentAdminActions('rerun_ingest', 5);
+			expect(audit).toMatchObject({
+				action: 'rerun_ingest',
+				actor: ADMIN.email,
+				reason: 'ฟีดเพิ่งกลับมา',
+				target: expect.stringMatching(/^ingest:\d{4}-\d{2}-\d{2}T\d{2}#1$/)
+			});
+
+			finish?.({ status: 'succeeded', counters: {}, error: null });
+			const again = await rerun({ change_reason: 'ลองอีกรอบ' });
+			expect(again).toMatchObject({
+				status: 429,
+				data: { message: expect.stringContaining(`${MANUAL_RERUN_MIN_INTERVAL_MS / 60_000} นาที`) }
+			});
+			expect(await repos.admin.listRecentAdminActions('rerun_ingest', 5)).toHaveLength(1);
+		});
+
+		it('reports the real skip reason when the slot is already running', async () => {
+			// A cron (or CLI) run holds the claim; no manual start is on record.
+			await startManualIngest({
+				jobs: repos.jobs,
+				logger: createJsonLogger(() => {}),
+				now: () => new Date(),
+				execute: fakeExecute
+			});
+
+			const result = await rerun({ change_reason: 'ลองสั่งรัน' });
+			expect(result).toMatchObject({
+				status: 409,
+				data: { message: expect.stringContaining('กำลังทำงานอยู่') }
+			});
+			expect(await repos.admin.listRecentAdminActions('rerun_ingest', 5)).toEqual([]);
+		});
 	});
 });

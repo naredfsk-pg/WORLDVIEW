@@ -33,9 +33,21 @@
 		{ name: 'uncertain_th', label: 'สิ่งที่ยังไม่ชัดเจน (ไม่บังคับ)', max: 1500, rows: 3, required: false }
 	] as const;
 
-	function valueOf(name: (typeof textFields)[number]['name'] | 'category'): string {
+	type EditableName = (typeof textFields)[number]['name'] | 'category';
+	const editableNames: EditableName[] = [...textFields.map((field) => field.name), 'category'];
+
+	function valueOf(name: EditableName): string {
 		return submitted?.[name] ?? event[name] ?? '';
 	}
+
+	/**
+	 * The version the edit started from. After a rejected save the page keeps the ORIGINAL
+	 * version and values (not the reloaded row), so a resubmit cannot overwrite a newer change.
+	 */
+	function loadedValueOf(name: EditableName): string {
+		return submitted?.[`original_${name}`] ?? event[name] ?? '';
+	}
+	const loadedUpdatedAt = $derived(submitted?.loaded_updated_at ?? event.updated_at);
 
 	function preview(value: unknown): string {
 		const text = typeof value === 'string' ? value : JSON.stringify(value ?? null);
@@ -98,6 +110,10 @@
 				ห้ามใส่ URL หรือชื่อโดเมนในข้อความ ลิงก์อ้างอิงมาจากแหล่งข่าวที่บันทึกไว้เท่านั้น · ทุกการบันทึกจะเก็บประวัติก่อน/หลัง
 			</p>
 			<form method="POST" action="?/save" class="flex flex-col gap-4" data-testid="edit-form">
+				<input type="hidden" name="loaded_updated_at" value={loadedUpdatedAt} />
+				{#each editableNames as name (name)}
+					<input type="hidden" name="original_{name}" value={loadedValueOf(name)} />
+				{/each}
 				{#each textFields as field (field.name)}
 					{@const fieldError = fieldErrors[field.name]}
 					<label class="flex flex-col gap-1 text-[13px] font-semibold">

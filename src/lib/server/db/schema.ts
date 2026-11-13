@@ -20,6 +20,7 @@ import {
 	type SQLiteColumn
 } from 'drizzle-orm/sqlite-core';
 import {
+	ADMIN_ACTION_TYPES,
 	BRIEF_EDITIONS,
 	BRIEF_STATUSES,
 	CATEGORY_SLUGS,
@@ -350,6 +351,23 @@ export const contentRevisions = sqliteTable(
 	(t) => [
 		index('content_revisions_entity_idx').on(t.entity_type, t.entity_id, t.changed_at),
 		check('content_revisions_entity_type_check', inList(t.entity_type, REVISION_ENTITY_TYPES))
+	]
+);
+
+/** Admin operations that are not content edits (manual job reruns). Append-only. */
+export const adminActions = sqliteTable(
+	'admin_actions',
+	{
+		id: text().primaryKey(),
+		created_at: text().notNull(),
+		action: text({ enum: ADMIN_ACTION_TYPES }).notNull(),
+		actor: text().notNull(),
+		target: text().notNull(),
+		reason: text().notNull()
+	},
+	(t) => [
+		index('admin_actions_action_created_at_idx').on(t.action, t.created_at),
+		check('admin_actions_action_check', inList(t.action, ADMIN_ACTION_TYPES))
 	]
 );
 
