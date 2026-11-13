@@ -157,6 +157,18 @@ describe('DigestRepository linking', () => {
 		).rejects.toThrow(/already linked/);
 		expect(await repos.digest.listUnassignedArticles('2026-11-12T00:00:00.000Z', 10)).toEqual([]);
 	});
+
+	it('lists matchable events newest first with the id as a deterministic tie-break', async () => {
+		const sameTime = '2026-11-13T00:00:00.000Z';
+		const ids = [];
+		for (let index = 0; index < 3; index++) {
+			ids.push(await repos.digest.createDraftEvent([await addArticle(sameTime)], 1, sameTime));
+		}
+
+		const listed = await repos.digest.listMatchableEvents('2026-11-12T00:00:00.000Z');
+		expect(listed.map((candidate) => candidate.event_id)).toEqual([...ids].sort());
+		expect(listed.every((candidate) => candidate.is_demo === false)).toBe(true);
+	});
 });
 
 describe('DigestRepository content lifecycle', () => {

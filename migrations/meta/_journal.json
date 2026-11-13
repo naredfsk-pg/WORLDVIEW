@@ -22,6 +22,13 @@
       "when": 1794549122668,
       "tag": "0002_admin_actions",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1794550789314,
+      "tag": "0003_source_validators",
+      "breakpoints": true
     }
   ]
 }

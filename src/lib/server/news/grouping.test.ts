@@ -38,6 +38,7 @@ const event = (overrides: Partial<EventMatchCandidate>): EventMatchCandidate => 
 	first_seen_at: '2026-11-12T10:00:00.000Z',
 	last_updated_at: '2026-11-12T12:00:00.000Z',
 	article_titles: [],
+	is_demo: false,
 	...overrides
 });
 

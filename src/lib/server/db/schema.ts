@@ -62,7 +62,10 @@ export const sources = sqliteTable(
 		enabled: integer({ mode: 'boolean' }).notNull(),
 		last_success_at: text(),
 		last_error_at: text(),
-		last_error: text()
+		last_error: text(),
+		/** HTTP validators of the last successful fetch, for conditional GET (Wave 2). */
+		etag: text(),
+		last_modified: text()
 	},
 	(t) => [check('sources_kind_check', inList(t.kind, SOURCE_KINDS))]
 );

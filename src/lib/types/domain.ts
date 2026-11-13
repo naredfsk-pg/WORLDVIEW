@@ -102,6 +102,10 @@ export interface Source {
 	last_error_at: IsoUtc | null;
 	/** Short, sanitized message. Never contains secrets or response bodies. */
 	last_error: string | null;
+	// CONTRACT-CHANGE: added (Wave 2). HTTP validators from the last successful fetch, sent back
+	// as If-None-Match / If-Modified-Since so an unchanged feed answers 304 with no body.
+	etag: string | null;
+	last_modified: string | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@ import type {
 import type {
 	ArticleWithSource,
 	EventMatchCandidate,
+	FeedValidators,
 	InsertArticleResult,
 	NormalizedArticle,
 	SourceDefinition
@@ -95,9 +96,13 @@ export interface IngestRepository {
 	listEnabledSources(): Promise<Source[]>;
 	/** Dedup by canonical_url (UNIQUE) then content_hash. Never updates an existing row. */
 	insertArticleIfNew(article: NormalizedArticle): Promise<InsertArticleResult>;
+	// CONTRACT-CHANGE: the ok variant takes optional `validators` (Wave 2 conditional GET);
+	// when given they replace the stored etag / last_modified.
 	recordSourceFetch(
 		sourceId: string,
-		result: { ok: true; at: IsoUtc } | { ok: false; at: IsoUtc; error: string }
+		result:
+			| { ok: true; at: IsoUtc; validators?: FeedValidators }
+			| { ok: false; at: IsoUtc; error: string }
 	): Promise<void>;
 }
 

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { and, asc, eq, gte, notInArray } from 'drizzle-orm';
 import type { IngestRepository } from '../../../types/repositories';
 import type { InsertArticleResult } from '../../../types/news';
+import { isHttpUrl } from '../../../utils/url';
 import type { Db } from '../client';
 import { articles, sources } from '../schema';
 
@@ -49,6 +50,10 @@ export function createIngestRepository(db: Db): IngestRepository {
 		},
 
 		async insertArticleIfNew(article) {
+			// Boundary check: stored URLs are cited and rendered as links, so only http(s) is accepted.
+			if (!isHttpUrl(article.canonical_url) || !isHttpUrl(article.source_url)) {
+				throw new Error('insertArticleIfNew: canonical_url and source_url must be http(s)');
+			}
 			return db.transaction(
 				(tx): InsertArticleResult => {
 					const sameUrl = tx
@@ -85,7 +90,7 @@ export function createIngestRepository(db: Db): IngestRepository {
 
 		async recordSourceFetch(sourceId, result) {
 			const set = result.ok
-				? { last_success_at: result.at }
+				? { last_success_at: result.at, ...result.validators }
 				: { last_error_at: result.at, last_error: result.error.slice(0, MAX_SOURCE_ERROR_LENGTH) };
 			db.update(sources).set(set).where(eq(sources.id, sourceId)).run();
 		}

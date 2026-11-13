@@ -67,7 +67,8 @@ export function createDigestRepository(db: Db): DigestRepository {
 					.select()
 					.from(events)
 					.where(and(ne(events.status, 'hidden'), gte(events.last_updated_at, since)))
-					.orderBy(desc(events.last_updated_at))
+					// id breaks ties, so grouping sees the same order on every run.
+					.orderBy(desc(events.last_updated_at), asc(events.id))
 					.all();
 				const articlesByEvent = loadArticlesByEvent(
 					tx,
@@ -81,7 +82,8 @@ export function createDigestRepository(db: Db): DigestRepository {
 						tags: row.tags,
 						first_seen_at: row.first_seen_at,
 						last_updated_at: row.last_updated_at,
-						article_titles: titles
+						article_titles: titles,
+						is_demo: row.is_demo
 					};
 				});
 			});
@@ -252,7 +254,7 @@ export function createDigestRepository(db: Db): DigestRepository {
 		async listRelationCandidates(eventId, since, limit) {
 			return db.transaction((tx) => {
 				const source = tx
-					.select({ category: events.category, tags: events.tags })
+					.select({ category: events.category, tags: events.tags, is_demo: events.is_demo })
 					.from(events)
 					.where(eq(events.id, eventId))
 					.get();
@@ -272,6 +274,8 @@ export function createDigestRepository(db: Db): DigestRepository {
 						and(
 							ne(events.id, eventId),
 							isPublicEvent(events),
+							// Real events never relate to fictional demo events (and vice versa).
+							eq(events.is_demo, source.is_demo),
 							gte(events.last_updated_at, since),
 							or(sharesCategory, sharesTag)
 						)
