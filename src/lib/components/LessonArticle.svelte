@@ -1,6 +1,9 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { formatThaiDate, isHttpUrl } from '#lib/components/format.js';
+	import Infographic from '#lib/components/infographic/Infographic.svelte';
+	import LessonTakeaways from '#lib/components/LessonTakeaways.svelte';
+	import { Button } from '#lib/components/ui/button/index.js';
 	import type { AcademyWeekMeta, LessonDetail } from '#lib/types/views.js';
 
 	interface Props {
@@ -13,6 +16,56 @@
 	let { lesson, week, children }: Props = $props();
 
 	const dayLabel = $derived(String(lesson.day).padStart(2, '0'));
+	/** Long section remainders are folded into `<details class="lesson-more">` by the renderer. */
+	const hasFoldedSections = $derived(lesson.html.includes('class="lesson-more"'));
+
+	let root: HTMLElement | undefined = $state();
+	let allOpen = $state(false);
+
+	function toggleAllSections() {
+		allOpen = !allOpen;
+		for (const section of foldedSections()) section.open = allOpen;
+	}
+
+	// In-page links (TOC, `#section-n`) can point into a folded section: open it first so the
+	// browser can scroll to the target. Also keeps the "open all" label in sync with manual toggles.
+	$effect(() => {
+		if (!root) return;
+		const container = root;
+		const onClick = (event: MouseEvent) => {
+			const link = event.target instanceof Element ? event.target.closest('a[href^="#"]') : null;
+			if (link) openSectionOf(link.getAttribute('href') ?? '');
+		};
+		const onHashChange = () => openSectionOf(location.hash);
+		const onToggle = () => {
+			const sections = foldedSections();
+			allOpen = sections.length > 0 && sections.every((section) => section.open);
+		};
+
+		if (openSectionOf(location.hash))
+			document.getElementById(location.hash.slice(1))?.scrollIntoView();
+		container.addEventListener('click', onClick);
+		container.addEventListener('toggle', onToggle, true);
+		window.addEventListener('hashchange', onHashChange);
+		return () => {
+			container.removeEventListener('click', onClick);
+			container.removeEventListener('toggle', onToggle, true);
+			window.removeEventListener('hashchange', onHashChange);
+		};
+	});
+
+	function foldedSections(): HTMLDetailsElement[] {
+		return [...(root?.querySelectorAll<HTMLDetailsElement>('details.lesson-more') ?? [])];
+	}
+
+	/** Opens the folded section holding `#id`; true when it had to be opened. */
+	function openSectionOf(hash: string): boolean {
+		const target = hash.length > 1 ? document.getElementById(hash.slice(1)) : null;
+		const section = target?.closest('details');
+		if (!section || section.open) return false;
+		section.open = true;
+		return true;
+	}
 </script>
 
 {#snippet tocList()}
@@ -30,7 +83,7 @@
 	</ol>
 {/snippet}
 
-<div class="grid items-start gap-8 xl:grid-cols-[minmax(0,760px)_250px]">
+<div class="grid items-start gap-8 xl:grid-cols-[minmax(0,760px)_250px]" bind:this={root}>
 	<article class="min-w-0" data-testid="lesson-article">
 		<header class="mb-6">
 			<p class="text-meta font-bold tracking-[0.07em] text-primary">
@@ -41,6 +94,14 @@
 			</h1>
 			<p class="m-0 text-[15px] leading-[1.9] text-muted-foreground">{lesson.summary}</p>
 		</header>
+
+		<LessonTakeaways takeaways={lesson.takeaways} />
+
+		<div class="mb-6 grid gap-4">
+			{#each lesson.infographics as spec, index (index)}
+				<Infographic {spec} />
+			{/each}
+		</div>
 
 		{#if lesson.learning_objectives.length > 0}
 			<section class="mb-6 rounded-[17px] border bg-card p-5" aria-labelledby="objectives">
@@ -58,6 +119,24 @@
 				<summary class="min-h-6 cursor-pointer text-sm font-bold">สารบัญ</summary>
 				<nav aria-label="สารบัญ (มือถือ)" class="mt-2">{@render tocList()}</nav>
 			</details>
+		{/if}
+
+		{#if hasFoldedSections}
+			<div
+				class="mb-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-[13px] bg-surface-2 px-4 py-2.5"
+			>
+				<p class="m-0 text-meta text-muted-foreground">
+					แต่ละหัวข้อแสดงย่อหน้าแรกไว้ กด “อ่านต่อ” เพื่ออ่านรายละเอียด
+				</p>
+				<Button
+					variant="outline"
+					class="min-h-11 rounded-[11px] text-xs font-bold"
+					data-testid="toggle-all-sections"
+					onclick={toggleAllSections}
+				>
+					{allOpen ? 'ย่อทุกหัวข้อ' : 'เปิดอ่านทุกหัวข้อ'}
+				</Button>
+			</div>
 		{/if}
 
 		<!-- The only {@html} in the app: server-rendered, raw HTML escaped, https-only links. -->

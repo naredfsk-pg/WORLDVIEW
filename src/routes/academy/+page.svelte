@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
+	import AcademyRoadmap from '#lib/components/AcademyRoadmap.svelte';
 	import LessonCard from '#lib/components/LessonCard.svelte';
 	import PageIntro from '#lib/components/PageIntro.svelte';
 	import SeoHead from '#lib/components/SeoHead.svelte';
@@ -52,6 +53,8 @@
 		<span class="text-xs text-muted-foreground">/ {LESSON_TOTAL} บทเรียน</span>
 	</p>
 </section>
+
+<AcademyRoadmap weeks={data.weeks} isCompleted={(id) => academyProgress.has(id)} />
 
 <div class="mt-[23px] mb-3.5 flex items-center justify-between gap-2.5">
 	<h2 class="m-0 text-lg font-bold tracking-[-0.03em] sm:text-[19px]">เลือกเส้นทางการเรียนรู้</h2>
