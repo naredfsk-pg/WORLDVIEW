@@ -445,7 +445,7 @@ export const DEMO_EVENTS: DemoEvent[] = [
 	}
 ];
 
-export type DemoRelation = Omit<EventRelation, 'evidence_refs'> & {
+export type DemoRelation = Omit<EventRelation, 'evidence_refs' | 'origin'> & {
 	evidence_article_ids: string[];
 };
 

@@ -3,7 +3,9 @@
 -- Drizzle's migrator runs every migration inside one transaction, where `PRAGMA foreign_keys` is a
 -- no-op, so foreign keys stay ON here. Dropping `job_runs` would then fire
 -- `llm_calls.job_run_id ON DELETE SET NULL` for every LLM call, so those links are saved first
--- and written back after the rebuild.
+-- and written back after the rebuild. Both steps stay linear: the saved links are keyed by id, and
+-- the new `llm_calls_job_run_id_idx` (also used by the per-run LLM cap) lets the SET NULL find
+-- the calls of each run without scanning the table.
 CREATE TABLE `__new_admin_actions` (
 	`id` text PRIMARY KEY NOT NULL,
 	`created_at` text NOT NULL,
@@ -18,7 +20,9 @@ INSERT INTO `__new_admin_actions`("id", "created_at", "action", "actor", "target
 DROP TABLE `admin_actions`;--> statement-breakpoint
 ALTER TABLE `__new_admin_actions` RENAME TO `admin_actions`;--> statement-breakpoint
 CREATE INDEX `admin_actions_action_created_at_idx` ON `admin_actions` (`action`,`created_at`);--> statement-breakpoint
-CREATE TEMP TABLE `__llm_call_job_runs` AS SELECT `id`, `job_run_id` FROM `llm_calls` WHERE `job_run_id` IS NOT NULL;--> statement-breakpoint
+CREATE INDEX `llm_calls_job_run_id_idx` ON `llm_calls` (`job_run_id`);--> statement-breakpoint
+CREATE TEMP TABLE `__llm_call_job_runs` (`id` text PRIMARY KEY NOT NULL, `job_run_id` text NOT NULL);--> statement-breakpoint
+INSERT INTO `__llm_call_job_runs` (`id`, `job_run_id`) SELECT `id`, `job_run_id` FROM `llm_calls` WHERE `job_run_id` IS NOT NULL;--> statement-breakpoint
 CREATE TABLE `__new_job_runs` (
 	`id` text PRIMARY KEY NOT NULL,
 	`job_type` text NOT NULL,
@@ -41,9 +45,14 @@ ALTER TABLE `__new_job_runs` RENAME TO `job_runs`;--> statement-breakpoint
 CREATE UNIQUE INDEX `job_runs_idempotency_key_unique` ON `job_runs` (`idempotency_key`);--> statement-breakpoint
 CREATE INDEX `job_runs_type_finished_at_idx` ON `job_runs` (`job_type`,`finished_at`);--> statement-breakpoint
 CREATE INDEX `job_runs_started_at_idx` ON `job_runs` (`started_at`);--> statement-breakpoint
-UPDATE `llm_calls` SET `job_run_id` = (SELECT `saved`.`job_run_id` FROM `__llm_call_job_runs` AS `saved` WHERE `saved`.`id` = `llm_calls`.`id`) WHERE `id` IN (SELECT `id` FROM `__llm_call_job_runs`);--> statement-breakpoint
+UPDATE `llm_calls` SET `job_run_id` = `saved`.`job_run_id` FROM `__llm_call_job_runs` AS `saved` WHERE `saved`.`id` = `llm_calls`.`id`;--> statement-breakpoint
 DROP TABLE `__llm_call_job_runs`;--> statement-breakpoint
 -- Added columns, so `events` is not rebuilt (that would drop the FTS triggers of 0001). The CHECK
 -- is inline here and not in schema.ts for the same reason (drizzle-kit would rebuild the table).
 ALTER TABLE `events` ADD `credibility_level` text DEFAULT 'none' NOT NULL CONSTRAINT "events_credibility_level_check" CHECK(`credibility_level` IN ('none', 'unverified', 'disputed', 'possible_misinformation'));--> statement-breakpoint
-ALTER TABLE `events` ADD `credibility_reason_th` text;
+ALTER TABLE `events` ADD `credibility_reason_th` text;--> statement-breakpoint
+-- Who proposed a relation; a possible-duplicate relation of clustering stays for an admin (§11).
+ALTER TABLE `event_relations` ADD `origin` text DEFAULT 'relations' NOT NULL CONSTRAINT "event_relations_origin_check" CHECK(`origin` IN ('relations', 'possible_duplicate'));--> statement-breakpoint
+-- Existing rows: a pending same_topic relation of an event flagged possible_duplicate came from
+-- flagPossibleDuplicate (the relations task only relates published events).
+UPDATE `event_relations` SET `origin` = 'possible_duplicate' WHERE `relation_type` = 'same_topic' AND `status` = 'pending_review' AND EXISTS (SELECT 1 FROM `events`, json_each(`events`.`review_reasons`) WHERE `events`.`id` IN (`event_relations`.`from_event_id`, `event_relations`.`to_event_id`) AND json_each.`value` = 'possible_duplicate');

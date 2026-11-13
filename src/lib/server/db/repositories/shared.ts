@@ -24,6 +24,12 @@ export const SYSTEM_ACTOR = 'system';
  */
 export const POLICY_ACTOR = 'system:policy';
 
+/**
+ * Key in an admin revision's `after` (value `true`) that ends an admin credibility override:
+ * the next re-summary sets the label again (model assessment + floor).
+ */
+export const CREDIBILITY_RELEASE_KEY = 'credibility_release';
+
 /** The revision was written by an admin: `changed_by` is neither `system` nor `system:*`. */
 export function byAdmin(): SQL {
 	return and(

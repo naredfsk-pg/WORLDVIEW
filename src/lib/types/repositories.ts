@@ -252,8 +252,10 @@ export interface DigestRepository {
 	/** Upsert on (from, to, type). Never downgrades an admin-reviewed relation. */
 	// CONTRACT-CHANGE (security wave): stores nothing when an admin rejected any relation between
 	// the two events (either direction, any type); resolves whether a row was written.
+	// CONTRACT-CHANGE (auto-publish wave): stored with origin `relations`; never overwrites a
+	// pending `possible_duplicate` relation of the same edge.
 	upsertRelation(
-		relation: Omit<EventRelation, 'id' | 'created_at' | 'reviewed_at' | 'reviewed_by'>
+		relation: Omit<EventRelation, 'id' | 'created_at' | 'reviewed_at' | 'reviewed_by' | 'origin'>
 	): Promise<boolean>;
 	replaceLessonLinks(eventId: string, links: Omit<EventLessonLink, 'created_at'>[]): Promise<void>;
 	listLessonCatalog(): Promise<AcademyLessonRow[]>;
@@ -267,8 +269,6 @@ export interface PendingRelationForReview {
 	relation: EventRelation;
 	from_article_ids: string[];
 	to_article_ids: string[];
-	/** Either event waits as a possible duplicate: the relation belongs to that review. */
-	endpoint_possible_duplicate: boolean;
 	/** An admin rejected a relation between the two events (either direction, any type). */
 	rejected_pair: boolean;
 }
@@ -280,9 +280,11 @@ export interface ReevaluationRepository {
 	listPublishedWithNewEvidence(): Promise<NewsEvent[]>;
 	/**
 	 * Writes the new status, review_reasons and credibility label while `updated_at` and `status`
-	 * still equal `listed`; resolves false (nothing written) otherwise. A credibility field an
-	 * admin edited is kept. Publishing sets `published_at` once and passes pipeline tags through
-	 * `publicTags` (as admin publish does).
+	 * still equal `listed`; resolves null (nothing written) otherwise, else the status written.
+	 * As in saveEventContent, fields an admin edited are kept, and an unpublished event with any
+	 * admin-edited content field is not published but waits as `pending_review [manual_flag]`.
+	 * Publishing sets `published_at` once and passes pipeline tags through `publicTags` (as admin
+	 * publish does).
 	 */
 	applyEventDecision(
 		eventId: string,
@@ -295,8 +297,10 @@ export interface ReevaluationRepository {
 		listed: Pick<NewsEvent, 'updated_at' | 'status'>,
 		changeReason: string,
 		now: IsoUtc,
-		publicTags: (tags: Tag[]) => Tag[]
-	): Promise<boolean>;
+		publicTags: (tags: Tag[]) => Tag[],
+		/** Decide and resolve the status, but write nothing (the job's `--dry-run`). */
+		options?: { dryRun?: boolean }
+	): Promise<'published' | 'pending_review' | null>;
 	/**
 	 * A published event flagged `new_evidence_pending` under `off` / `multi_source`: removes the
 	 * reason and moves `summarized_at` back to its last content save (the later of `published_at`
@@ -309,8 +313,13 @@ export interface ReevaluationRepository {
 		changeReason: string,
 		now: IsoUtc
 	): Promise<boolean>;
+	/** Pending relations of origin `relations` (a possible-duplicate review is never listed). */
 	listPendingRelations(): Promise<PendingRelationForReview[]>;
-	/** pending_review → published (`reviewed_at` stays null: not an admin decision). */
+	/**
+	 * pending_review → published (`reviewed_at` stays null: not an admin decision). Re-checks in
+	 * the same transaction that it is still a pending `relations` row of a pair no admin rejected;
+	 * resolves false otherwise.
+	 */
 	publishPendingRelation(relationId: string, changeReason: string, now: IsoUtc): Promise<boolean>;
 	/** Deletes a pending relation (as if the gate had dropped it); the revision keeps the row. */
 	dropPendingRelation(relationId: string, changeReason: string, now: IsoUtc): Promise<boolean>;
@@ -436,7 +445,10 @@ export interface AdminRepository {
 		expectedUpdatedAt: IsoUtc,
 		patch: AdminEventPatch,
 		meta: RevisionMeta,
-		now: IsoUtc
+		now: IsoUtc,
+		// CONTRACT-CHANGE (auto-publish wave): `releaseCredibility` ends an admin credibility
+		// override (the editor's "อัตโนมัติ" option); the revision is written even with an empty patch.
+		options?: { releaseCredibility?: boolean }
 	): Promise<AdminTransitionResult>;
 	/** Published relations, newest first (the admin "unpublish" list). */
 	listPublishedRelations(limit: number): Promise<AdminRelationRow[]>;

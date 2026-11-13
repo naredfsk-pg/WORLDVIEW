@@ -333,6 +333,12 @@ export type CausalRelationType = (typeof CAUSAL_RELATION_TYPES)[number];
 export const RELATION_STATUSES = ['pending_review', 'published', 'rejected'] as const;
 export type RelationStatus = (typeof RELATION_STATUSES)[number];
 
+// CONTRACT-CHANGE (auto-publish wave, migration 0005): who proposed the relation. `relations` =
+// the relations task (published by confidence under policy `all`); `possible_duplicate` = the
+// clustering flag of a draft against a published event, which only an admin publishes (§11).
+export const RELATION_ORIGINS = ['relations', 'possible_duplicate'] as const;
+export type RelationOrigin = (typeof RELATION_ORIGINS)[number];
+
 /** UNIQUE(from_event_id, to_event_id, relation_type). INDEX(to_event_id). */
 export interface EventRelation {
 	id: string;
@@ -349,6 +355,7 @@ export interface EventRelation {
 	reviewed_at: IsoUtc | null;
 	/** Admin email. */
 	reviewed_by: string | null;
+	origin: RelationOrigin;
 }
 
 // ---------------------------------------------------------------------------

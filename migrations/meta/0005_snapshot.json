@@ -809,6 +809,14 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'relations'"
         }
       },
       "indexes": {
@@ -1427,6 +1435,13 @@
           "name": "llm_calls_created_at_idx",
           "columns": [
             "created_at"
+          ],
+          "isUnique": false
+        },
+        "llm_calls_job_run_id_idx": {
+          "name": "llm_calls_job_run_id_idx",
+          "columns": [
+            "job_run_id"
           ],
           "isUnique": false
         }

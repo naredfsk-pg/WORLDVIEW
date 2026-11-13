@@ -121,4 +121,43 @@ describe('migration 0005 (credibility + reevaluate_pending)', () => {
 			sqlite.prepare("UPDATE llm_calls SET job_run_id = 'missing' WHERE id = 'call-2'").run()
 		).toThrow(/FOREIGN KEY/);
 	});
+
+	it('restores the links of 20k LLM calls in linear time (start-up migrate, busy_timeout 5 s)', () => {
+		workDir = mkdtempSync(join(tmpdir(), 'worldview-migration-'));
+		db = openDb(`file:${join(workDir, 'large.db')}`);
+		migrate(db, { migrationsFolder: migrationsBefore0005() });
+		const sqlite = db.$client;
+		const run = sqlite.prepare(
+			`INSERT INTO job_runs (id, job_type, idempotency_key, scheduled_for, trigger, attempts, started_at, status, counters)
+			 VALUES (?, 'digest', ?, '2026-11-12T23:00:00.000Z', 'cron', 1, '2026-11-12T23:00:01.000Z', 'succeeded', '{}')`
+		);
+		const call = sqlite.prepare(
+			`INSERT INTO llm_calls (id, created_at, task, model, prompt_version, cache_key, status, tokens_in, tokens_out, latency_ms, job_run_id)
+			 VALUES (?, '2026-11-12T23:01:00.000Z', 'summary', 'cc/model', 'summary@4', ?, 'ok', 1, 1, 1, ?)`
+		);
+		sqlite.transaction(() => {
+			for (let r = 0; r < 200; r++) run.run(`run-${r}`, `digest:${r}`);
+			for (let c = 0; c < 20_000; c++) call.run(`call-${c}`, `key-${c}`, `run-${c % 200}`);
+		})();
+
+		const started = performance.now();
+		migrate(db, { migrationsFolder: MIGRATIONS });
+		const elapsedMs = performance.now() - started;
+
+		expect(
+			sqlite.prepare('SELECT count(*) AS n FROM llm_calls WHERE job_run_id IS NOT NULL').get()
+		).toEqual({ n: 20_000 });
+		expect(sqlite.prepare("SELECT job_run_id FROM llm_calls WHERE id = 'call-401'").get()).toEqual({
+			job_run_id: 'run-1'
+		});
+		expect(
+			sqlite
+				.prepare(
+					"SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'llm_calls_job_run_id_idx'"
+				)
+				.all()
+		).toHaveLength(1);
+		// Was about 9 s with the correlated restore; linear is well under a second here.
+		expect(elapsedMs).toBeLessThan(2500);
+	});
 });

@@ -13,8 +13,10 @@
  *   there as usual, at most 30 events per run).
  * - with policy `all` only, pending relations: the relation gate runs again on the stored row
  *   (evidence, Thai explanation, G3, confidence threshold): published at or above the threshold,
- *   deleted below it or when an admin rejected the pair. Relations of a possible-duplicate review
- *   stay pending.
+ *   deleted below it or when an admin rejected the pair. Relations of origin `possible_duplicate`
+ *   (a clustering flag) are never listed: they stay pending for an admin.
+ * An unpublished event with admin-edited content is never published here: like the digest, it
+ * waits as `pending_review [manual_flag]` for that admin.
  * Idempotent: a second run finds nothing left to change. `dryRun` reads and plans only.
  */
 import type { ReviewReason } from '#lib/types/domain.js';
@@ -93,13 +95,8 @@ async function reevaluateEvents(
 		const unchanged =
 			decision.status === 'pending_review' &&
 			decision.review_reasons.join() === event.review_reasons.join();
-		ctx.logger.info('event re-evaluated', {
-			event_id: event.id,
-			decision: unchanged ? 'unchanged' : decision.status,
-			reasons: decision.review_reasons,
-			dry_run: deps.dryRun
-		});
 		if (unchanged) {
+			logEvent(ctx, event.id, 'unchanged', decision.review_reasons, deps.dryRun);
 			counters.events_pending_review++;
 			continue;
 		}
@@ -109,22 +106,46 @@ async function reevaluateEvents(
 			sensitive: event.signals?.sensitive ?? false,
 			distinct_sources: countDistinctSources(articles)
 		});
-		const written =
-			deps.dryRun ||
-			(await tryWrite(errors, `event ${event.id}`, () =>
-				deps.reevaluation.applyEventDecision(
-					event.id,
-					{ status: decision.status, review_reasons: decision.review_reasons, ...credibility },
-					{ updated_at: event.updated_at, status: event.status },
-					reason,
-					ctx.now().toISOString(),
-					filterAllegationTags
-				)
-			));
-		if (!written) counters.events_skipped++;
-		else if (decision.status === 'published') counters.events_published++;
+		// The dry run asks the repository too (nothing is written), so it reports an admin hold.
+		const written = await tryWrite(errors, `event ${event.id}`, () =>
+			deps.reevaluation.applyEventDecision(
+				event.id,
+				{ status: decision.status, review_reasons: decision.review_reasons, ...credibility },
+				{ updated_at: event.updated_at, status: event.status },
+				reason,
+				ctx.now().toISOString(),
+				filterAllegationTags,
+				{ dryRun: deps.dryRun }
+			)
+		);
+		// The repository may hold an admin-edited event back (manual_flag) instead of publishing it.
+		const held = written === 'pending_review' && decision.status === 'published';
+		logEvent(
+			ctx,
+			event.id,
+			written ?? 'skipped',
+			held ? ['manual_flag'] : decision.review_reasons,
+			deps.dryRun
+		);
+		if (written === null) counters.events_skipped++;
+		else if (written === 'published') counters.events_published++;
 		else counters.events_pending_review++;
 	}
+}
+
+function logEvent(
+	ctx: ReevaluateContext,
+	eventId: string,
+	decision: string,
+	reasons: ReviewReason[],
+	dryRun: boolean
+): void {
+	ctx.logger.info('event re-evaluated', {
+		event_id: eventId,
+		decision,
+		reasons,
+		dry_run: dryRun
+	});
 }
 
 async function requeueNewEvidence(
@@ -168,10 +189,6 @@ async function reevaluateRelations(
 		if (ctx.signal.aborted) return;
 		const { relation } = item;
 		counters.relations_reevaluated++;
-		if (item.endpoint_possible_duplicate) {
-			counters.relations_pending_review++;
-			continue;
-		}
 		const decision = item.rejected_pair
 			? ({ action: 'drop', reason: 'an admin rejected this pair' } as const)
 			: evaluateRelation({
@@ -203,23 +220,26 @@ async function reevaluateRelations(
 					? deps.reevaluation.publishPendingRelation(relation.id, reason, now)
 					: deps.reevaluation.dropPendingRelation(relation.id, reason, now)
 			));
-		if (!written) continue;
+		if (!written) {
+			counters.relations_skipped++;
+			continue;
+		}
 		if (publish) counters.relations_published++;
 		else counters.relations_dropped++;
 	}
 }
 
 /** One unit's write; a failure is recorded and the run goes on (the run becomes `partial`). */
-async function tryWrite(
+async function tryWrite<T>(
 	errors: string[],
 	unit: string,
-	write: () => Promise<boolean>
-): Promise<boolean> {
+	write: () => Promise<T>
+): Promise<T | null> {
 	try {
 		return await write();
 	} catch (error) {
 		errors.push(`${unit}: ${sanitizeError(error)}`);
-		return false;
+		return null;
 	}
 }
 
@@ -235,6 +255,7 @@ function emptyCounters() {
 		relations_reevaluated: 0,
 		relations_published: 0,
 		relations_dropped: 0,
-		relations_pending_review: 0
+		relations_pending_review: 0,
+		relations_skipped: 0
 	} satisfies JobCounters;
 }

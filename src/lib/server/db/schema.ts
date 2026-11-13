@@ -26,6 +26,7 @@ import {
 	CATEGORY_SLUGS,
 	CREDIBILITY_LEVELS,
 	EVENT_STATUSES,
+	RELATION_ORIGINS,
 	RELATION_STATUSES,
 	RELATION_TYPES,
 	REVISION_ENTITY_TYPES,
@@ -131,9 +132,10 @@ export const events = sqliteTable(
 		is_demo: integer({ mode: 'boolean' }).notNull(),
 		created_at: text().notNull(),
 		updated_at: text().notNull(),
-		// Migration 0005 (auto-publish wave). Appended columns, and the CHECK on credibility_level is
-		// written inline in the migration SQL: a table-level check here would make drizzle-kit
-		// rebuild `events`, which would drop the FTS triggers of 0001.
+		// Migration 0005 (auto-publish wave). Appended columns. credibility_level HAS a CHECK
+		// (events_credibility_level_check), defined inline in migrations/0005 only: drizzle's
+		// snapshot does not carry it, and a table-level check here would make drizzle-kit rebuild
+		// `events`, which would drop the FTS triggers of 0001.
 		credibility_level: text({ enum: CREDIBILITY_LEVELS }).notNull().default('none'),
 		credibility_reason_th: text()
 	},
@@ -202,7 +204,10 @@ export const eventRelations = sqliteTable(
 		confidence: real().notNull(),
 		created_at: text().notNull(),
 		reviewed_at: text(),
-		reviewed_by: text()
+		reviewed_by: text(),
+		// Migration 0005, an added column like the events credibility columns: its CHECK is inline
+		// in the migration SQL (drizzle's snapshot does not carry it).
+		origin: text({ enum: RELATION_ORIGINS }).notNull().default('relations')
 	},
 	(t) => [
 		uniqueIndex('event_relations_edge_unique').on(t.from_event_id, t.to_event_id, t.relation_type),
@@ -341,7 +346,10 @@ export const llmCalls = sqliteTable(
 	},
 	(t) => [
 		index('llm_calls_cache_key_status_idx').on(t.cache_key, t.status),
-		index('llm_calls_created_at_idx').on(t.created_at)
+		index('llm_calls_created_at_idx').on(t.created_at),
+		// Migration 0005: the per-run cap and usageForJobRun filter by run; it also keeps the
+		// ON DELETE SET NULL of a job_runs delete from scanning every call.
+		index('llm_calls_job_run_id_idx').on(t.job_run_id)
 	]
 );
 

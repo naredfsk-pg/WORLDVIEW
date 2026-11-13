@@ -47,6 +47,7 @@ import {
 } from '../schema';
 import {
 	byAdmin,
+	CREDIBILITY_RELEASE_KEY,
 	EntityNotFoundError,
 	isPublicEvent,
 	SYSTEM_ACTOR,
@@ -453,7 +454,8 @@ export function createDigestRepository(db: Db): DigestRepository {
 							explanation_th: relation.explanation_th,
 							evidence_refs: relation.evidence_article_ids.map((article_id) => ({ article_id })),
 							status: 'pending_review',
-							confidence: relation.confidence
+							confidence: relation.confidence,
+							origin: 'possible_duplicate'
 						},
 						now
 					);
@@ -502,7 +504,9 @@ export function createDigestRepository(db: Db): DigestRepository {
 
 		async upsertRelation(relation) {
 			// CONTRACT-GAP: upsertRelation has no `now` parameter, so the clock is read here.
-			return db.transaction((tx) => upsertRelationRow(tx, relation, new Date().toISOString()));
+			return db.transaction((tx) =>
+				upsertRelationRow(tx, { ...relation, origin: 'relations' }, new Date().toISOString())
+			);
 		},
 
 		async replaceLessonLinks(eventId, links) {
@@ -540,7 +544,9 @@ export function createDigestRepository(db: Db): DigestRepository {
 /**
  * Upsert on (from, to, type); never overwrites an admin decision (`reviewed_at` set), and stores
  * nothing for a pair of events an admin rejected a relation between, in either direction and of
- * any type. Returns whether a row was written.
+ * any type. A relations-task row never overwrites a pending `possible_duplicate` row of the same
+ * edge (that one waits for an admin); a possible-duplicate flag takes the edge over. Returns
+ * whether a row was written.
  */
 function upsertRelationRow(
 	executor: Executor,
@@ -576,9 +582,13 @@ function upsertRelationRow(
 				explanation_th: relation.explanation_th,
 				evidence_refs: relation.evidence_refs,
 				status: relation.status,
-				confidence: relation.confidence
+				confidence: relation.confidence,
+				origin: relation.origin
 			},
-			setWhere: isNull(eventRelations.reviewed_at)
+			setWhere:
+				relation.origin === 'possible_duplicate'
+					? isNull(eventRelations.reviewed_at)
+					: and(isNull(eventRelations.reviewed_at), ne(eventRelations.origin, 'possible_duplicate'))
 		})
 		.run();
 	return result.changes > 0;
@@ -728,7 +738,8 @@ function insertEventArticles(
  * Content fields an admin ever changed on this event: the `after` keys of every event revision
  * whose actor is not the pipeline. All of them, not only those newer than `summarized_at`: once
  * a re-summary kept an admin field, `summarized_at` moves past the edit, and the next re-summary
- * must still keep it.
+ * must still keep it. In order: a later revision marked `CREDIBILITY_RELEASE_KEY` (the editor's
+ * "อัตโนมัติ" option) hands the credibility label back to the pipeline.
  */
 export function adminEditedContentFields(tx: Executor, eventId: string): Set<string> {
 	const rows = tx
@@ -741,10 +752,16 @@ export function adminEditedContentFields(tx: Executor, eventId: string): Set<str
 				byAdmin()
 			)
 		)
+		.orderBy(asc(contentRevisions.changed_at), asc(contentRevisions.id))
 		.all();
 	const fields = new Set<string>();
 	for (const row of rows) {
-		for (const key of Object.keys(row.before_after.after ?? {})) {
+		const after = row.before_after.after ?? {};
+		if (after[CREDIBILITY_RELEASE_KEY] === true) {
+			fields.delete('credibility_level');
+			fields.delete('credibility_reason_th');
+		}
+		for (const key of Object.keys(after)) {
 			if (CONTENT_FIELD_KEYS.has(key)) fields.add(key);
 		}
 	}

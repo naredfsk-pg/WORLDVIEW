@@ -55,27 +55,35 @@ export function createReevaluationRepository(db: Db): ReevaluationRepository {
 				.all();
 		},
 
-		async applyEventDecision(eventId, write, listed, changeReason, now, publicTags) {
+		async applyEventDecision(eventId, write, listed, changeReason, now, publicTags, options = {}) {
 			return db.transaction(
 				(tx) => {
 					const before = tx.select().from(events).where(eq(events.id, eventId)).get();
-					if (!before || before.updated_at !== listed.updated_at) return false;
-					if (before.status !== listed.status) return false;
+					if (!before || before.updated_at !== listed.updated_at) return null;
+					if (before.status !== listed.status) return null;
 
-					// Admin corrections win, as in saveEventContent.
+					// Admin corrections win, as in saveEventContent: fields an admin edited are kept,
+					// and an unpublished event an admin edited waits for that admin (manual_flag).
 					const adminFields = adminEditedContentFields(tx, eventId);
+					const awaitsAdmin =
+						adminFields.size > 0 && before.status !== 'published' && write.status === 'published';
+					const status = awaitsAdmin ? 'pending_review' : write.status;
+					if (options.dryRun) return status;
 					const credibility = adminFields.has('credibility_level')
 						? {}
 						: {
 								credibility_level: write.credibility_level,
 								credibility_reason_th: write.credibility_reason_th
 							};
-					const publishing = write.status === 'published';
+					const publishing = status === 'published';
 					const tags =
 						publishing && !adminFields.has('tags') ? publicTags(before.tags) : before.tags;
+					let reviewReasons: ReviewReason[] = [];
+					if (awaitsAdmin) reviewReasons = ['manual_flag'];
+					else if (!publishing) reviewReasons = write.review_reasons;
 					const change = {
-						status: write.status,
-						review_reasons: publishing ? [] : write.review_reasons,
+						status,
+						review_reasons: reviewReasons,
 						...credibility,
 						...(tags.length !== before.tags.length ? { tags } : {})
 					};
@@ -96,7 +104,7 @@ export function createReevaluationRepository(db: Db): ReevaluationRepository {
 						pick(before, change),
 						toJsonObject(change)
 					);
-					return true;
+					return status;
 				},
 				{ behavior: 'immediate' }
 			);
@@ -139,16 +147,19 @@ export function createReevaluationRepository(db: Db): ReevaluationRepository {
 				const rows = tx
 					.select()
 					.from(eventRelations)
-					.where(eq(eventRelations.status, 'pending_review'))
+					.where(
+						and(
+							eq(eventRelations.status, 'pending_review'),
+							// A possible-duplicate relation belongs to that admin review (§11).
+							eq(eventRelations.origin, 'relations')
+						)
+					)
 					.orderBy(eventRelations.created_at, eventRelations.id)
 					.all();
 				return rows.map((relation): PendingRelationForReview => ({
 					relation,
 					from_article_ids: linkedArticleIds(tx, relation.from_event_id),
 					to_article_ids: linkedArticleIds(tx, relation.to_event_id),
-					endpoint_possible_duplicate:
-						hasReason(tx, relation.from_event_id, 'possible_duplicate') ||
-						hasReason(tx, relation.to_event_id, 'possible_duplicate'),
 					rejected_pair: isRejectedPair(tx, relation.from_event_id, relation.to_event_id)
 				}));
 			});
@@ -157,14 +168,18 @@ export function createReevaluationRepository(db: Db): ReevaluationRepository {
 		async publishPendingRelation(relationId, changeReason, now) {
 			return db.transaction(
 				(tx) => {
-					const result = tx
-						.update(eventRelations)
+					// Re-checked here: an admin may have rejected the pair since it was listed.
+					const row = tx
+						.select()
+						.from(eventRelations)
+						.where(eq(eventRelations.id, relationId))
+						.get();
+					if (!row || row.status !== 'pending_review' || row.origin !== 'relations') return false;
+					if (isRejectedPair(tx, row.from_event_id, row.to_event_id)) return false;
+					tx.update(eventRelations)
 						.set({ status: 'published' })
-						.where(
-							and(eq(eventRelations.id, relationId), eq(eventRelations.status, 'pending_review'))
-						)
+						.where(eq(eventRelations.id, relationId))
 						.run();
-					if (result.changes === 0) return false;
 					appendPolicyRevision(
 						tx,
 						'event_relation',
@@ -187,7 +202,11 @@ export function createReevaluationRepository(db: Db): ReevaluationRepository {
 						.select()
 						.from(eventRelations)
 						.where(
-							and(eq(eventRelations.id, relationId), eq(eventRelations.status, 'pending_review'))
+							and(
+								eq(eventRelations.id, relationId),
+								eq(eventRelations.status, 'pending_review'),
+								eq(eventRelations.origin, 'relations')
+							)
 						)
 						.get();
 					if (!before) return false;
@@ -247,20 +266,6 @@ function linkedArticleIds(tx: Executor, eventId: string): string[] {
 		.where(eq(eventArticles.event_id, eventId))
 		.all()
 		.map((row) => row.id);
-}
-
-function hasReason(tx: Executor, eventId: string, reason: ReviewReason): boolean {
-	const row = tx
-		.select({ id: events.id })
-		.from(events)
-		.where(
-			and(
-				eq(events.id, eventId),
-				sql`EXISTS (SELECT 1 FROM json_each(${events.review_reasons}) WHERE value = ${reason})`
-			)
-		)
-		.get();
-	return row !== undefined;
 }
 
 function appendPolicyRevision(

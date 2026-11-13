@@ -60,7 +60,8 @@ export const JOB_COUNTER_KEYS = [
 	// events_pending_review, events_skipped and the relations_* keys).
 	'events_reevaluated',
 	'events_requeued',
-	'relations_reevaluated'
+	'relations_reevaluated',
+	'relations_skipped'
 ] as const;
 export type JobCounterKey = (typeof JOB_COUNTER_KEYS)[number];
 export type JobCounters = Partial<Record<JobCounterKey, number>>;

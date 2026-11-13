@@ -295,11 +295,11 @@ describe('reevaluate_pending: events', () => {
 			clock.toISOString(),
 			(tags) => tags
 		);
-		expect(written).toBe(false);
+		expect(written).toBeNull();
 		expect(eventById(backlog.plain).status).toBe('pending_review');
 	});
 
-	it('keeps an admin credibility override, and policy revisions never lock fields', async () => {
+	it('an unpublished event an admin edited waits for that admin (manual_flag), as in the digest', async () => {
 		const backlog = await multiSourceBacklog();
 		const id = backlog.sensitive[0]!;
 		const row = eventById(id);
@@ -310,8 +310,27 @@ describe('reevaluate_pending: events', () => {
 			{ changed_by: 'editor@example.com', change_reason: 'ตั้งป้าย', public_note_th: null },
 			clock.toISOString()
 		);
+
+		const dry = await reevaluate('all', true);
+		expect(dry.counters).toMatchObject({ events_published: 2, events_pending_review: 1 });
+		const outcome = await reevaluate('all');
+
+		expect(outcome.counters).toMatchObject({ events_published: 2, events_pending_review: 1 });
+		expect(eventById(id)).toMatchObject({
+			status: 'pending_review',
+			review_reasons: ['manual_flag'],
+			published_at: null,
+			// The admin's label is kept.
+			credibility_level: 'disputed',
+			credibility_reason_th: 'ตัวเลขยังไม่ตรงกัน'
+		});
+		// manual_flag is not a policy reason: later runs leave it to the admin.
+		expect((await reevaluate('all')).counters.events_reevaluated).toBe(0);
+	});
+
+	it('policy revisions never lock the label against a re-summary', async () => {
+		const backlog = await multiSourceBacklog();
 		await reevaluate('all');
-		expect(eventById(id)).toMatchObject({ status: 'published', credibility_level: 'disputed' });
 
 		// A system:policy revision is a pipeline change: the next re-summary may set the label.
 		const plain = backlog.sensitive[1]!;
@@ -477,24 +496,85 @@ describe('reevaluate_pending: relations', () => {
 		).toBeUndefined();
 	});
 
-	it('keeps the relation of a possible-duplicate review pending, and does nothing in multi_source', async () => {
+	it('does nothing to relations in multi_source / off', async () => {
 		const [a, b] = await publishedEvents();
-		const relation = await pending(a!, b!, 0.95);
+		await pending(a!, b!, 0.95);
 		for (const policy of ['multi_source', 'off'] as const) {
 			expect((await reevaluate(policy)).counters.relations_reevaluated).toBe(0);
 		}
+		expect(db.select().from(eventRelations).all()[0]!.status).toBe('pending_review');
+	});
+
+	it('never publishes a possible-duplicate relation, even after the draft was published', async () => {
+		const [published] = await publishedEvents();
+		const draft = await repositories.digest.createDraftEvent(
+			[await addArticle('fixture-wire-a', 'Duplicate report')],
+			1,
+			clock.toISOString()
+		);
+		const detail = await repositories.read.getPublishedEventDetail(published!);
+		await repositories.digest.flagPossibleDuplicate(
+			draft,
+			published!,
+			{
+				explanation_th: 'น่าจะเป็นเหตุการณ์เดียวกัน',
+				evidence_article_ids: [detail!.sources[0]!.article_id],
+				confidence: 0.99
+			},
+			clock.toISOString()
+		);
+		const duplicate = db.select().from(eventRelations).get()!;
+		expect(duplicate.origin).toBe('possible_duplicate');
+		// The admin published the draft as its own event; the relation still waits.
 		db.update(events)
-			.set({ status: 'pending_review', review_reasons: ['possible_duplicate'] })
-			.where(eq(events.id, a!))
+			.set({ status: 'published', review_reasons: [], published_at: clock.toISOString() })
+			.where(eq(events.id, draft))
 			.run();
 
 		const outcome = await reevaluate('all');
-
-		expect(outcome.counters).toMatchObject({
-			relations_reevaluated: 1,
-			relations_pending_review: 1,
-			relations_published: 0
+		expect(outcome.counters.relations_reevaluated).toBe(0);
+		expect(await repositories.reevaluation.publishPendingRelation(duplicate.id, 'x', 'now')).toBe(
+			false
+		);
+		// The relations task cannot take the edge over either.
+		expect(
+			await repositories.digest.upsertRelation({
+				from_event_id: duplicate.from_event_id,
+				to_event_id: duplicate.to_event_id,
+				relation_type: 'same_topic',
+				explanation_th: 'เรื่องเดียวกัน',
+				evidence_refs: duplicate.evidence_refs,
+				status: 'published',
+				confidence: 0.99
+			})
+		).toBe(false);
+		expect(db.select().from(eventRelations).get()).toMatchObject({
+			id: duplicate.id,
+			status: 'pending_review',
+			origin: 'possible_duplicate'
 		});
+	});
+
+	it('publishPendingRelation re-checks a rejection made after the relation was listed', async () => {
+		const [a, b] = await publishedEvents();
+		const relation = await pending(a!, b!, 0.95);
+		const listed = await repositories.reevaluation.listPendingRelations();
+		expect(listed.map((item) => item.relation.id)).toEqual([relation.id]);
+		// Meanwhile an admin rejects another relation of the same pair.
+		db.insert(eventRelations)
+			.values({
+				...relation,
+				id: 'rejected-sibling',
+				relation_type: 'background_of',
+				status: 'rejected',
+				reviewed_at: clock.toISOString(),
+				reviewed_by: 'editor@example.com'
+			})
+			.run();
+
+		expect(
+			await repositories.reevaluation.publishPendingRelation(relation.id, 'x', clock.toISOString())
+		).toBe(false);
 		expect(
 			db.select().from(eventRelations).where(eq(eventRelations.id, relation.id)).get()!.status
 		).toBe('pending_review');
