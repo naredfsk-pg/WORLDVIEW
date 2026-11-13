@@ -1,6 +1,6 @@
 /** `IngestRepository`: source registry sync, article dedup-insert, source health. */
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, gte, notInArray } from 'drizzle-orm';
+import { and, asc, eq, gte, notInArray, sql } from 'drizzle-orm';
 import type { IngestRepository } from '../../../types/repositories';
 import type { InsertArticleResult } from '../../../types/news';
 import { isHttpUrl } from '../../../utils/url';
@@ -28,7 +28,16 @@ export function createIngestRepository(db: Db): IngestRepository {
 					};
 					tx.insert(sources)
 						.values({ id: definition.id, ...registryFields })
-						.onConflictDoUpdate({ target: sources.id, set: registryFields })
+						.onConflictDoUpdate({
+							target: sources.id,
+							set: {
+								...registryFields,
+								// Validators belong to the old URL; a new feed starts with an unconditional GET.
+								// SQLite evaluates SET against the old row, so feed_url here is the stored one.
+								etag: sql`CASE WHEN ${sources.feed_url} = ${definition.feed_url} THEN ${sources.etag} ELSE NULL END`,
+								last_modified: sql`CASE WHEN ${sources.feed_url} = ${definition.feed_url} THEN ${sources.last_modified} ELSE NULL END`
+							}
+						})
 						.run();
 				}
 				// Sources removed from the registry are disabled, never deleted (articles reference them).

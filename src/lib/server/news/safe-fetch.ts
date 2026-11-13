@@ -105,7 +105,9 @@ export function createSafeFetch(options: SafeFetchOptions): SafeFetch {
 				const raw = await readBodyCapped(response, maxBodyBytes, signal);
 				const body = gunzipIfCompressed(raw, response.headers, maxBodyBytes);
 				const responseHeaders = new Headers(response.headers);
+				// The body may have been inflated: these described the bytes on the wire.
 				responseHeaders.delete('content-encoding');
+				responseHeaders.delete('content-length');
 				return new Response(body, { status: response.status, headers: responseHeaders });
 			}
 		} catch (error) {

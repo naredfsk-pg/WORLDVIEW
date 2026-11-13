@@ -239,7 +239,10 @@ describe('createSafeFetch', () => {
 		const routes = (headers: Record<string, string>) =>
 			fakeTransport({
 				'https://feeds.example.com/rss.xml': () =>
-					new Response(gzipped, { status: 200, headers: { ...FEED_HEADERS, ...headers } })
+					new Response(gzipped, {
+						status: 200,
+						headers: { ...FEED_HEADERS, 'content-length': String(gzipped.length), ...headers }
+					})
 			});
 		const fetchWith = (headers: Record<string, string>, maxBodyBytes?: number) =>
 			createSafeFetch({
@@ -252,6 +255,7 @@ describe('createSafeFetch', () => {
 		const labelled = await fetchWith({ 'content-encoding': 'gzip' });
 		expect(await labelled.text()).toBe(feed);
 		expect(labelled.headers.get('content-encoding')).toBeNull();
+		expect(labelled.headers.get('content-length')).toBeNull();
 		// No header, but the gzip magic bytes give it away.
 		expect(await (await fetchWith({})).text()).toBe(feed);
 		// The inflated size counts against the cap: a decompression bomb fails as too_large.
