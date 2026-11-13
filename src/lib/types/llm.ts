@@ -172,7 +172,11 @@ export const LLM_ERROR_KINDS = [
 	'invalid_output',
 	/** Estimated input tokens exceed LLM_MAX_INPUT_TOKENS; builders must cap inputs first. */
 	'input_too_large',
-	'aborted'
+	'aborted',
+	// CONTRACT-CHANGE: added. The request can never succeed as sent: the endpoint rejected it
+	// (HTTP 400 / 401 / 403) or the input has no articles. Not retried; editorial routes it to a
+	// human (`llm_request_rejected`) instead of the automatic `llm_failed` retry.
+	'invalid_request'
 ] as const;
 export type LlmErrorKind = (typeof LLM_ERROR_KINDS)[number];
 
@@ -234,6 +238,9 @@ export interface ChatRequest {
 	/** Omitted entirely (not sent) for models matching LLM_OMIT_TEMPERATURE_FOR. */
 	temperature?: number;
 	max_tokens: number;
+	// CONTRACT-CHANGE: added. JSON mode is sent by default; the provider retries once without it
+	// when a model answers HTTP 400. Output parsing never depends on it.
+	response_format?: { type: 'json_object' };
 	signal: AbortSignal;
 }
 
