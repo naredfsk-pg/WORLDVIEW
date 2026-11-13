@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import EvidenceLinks from '#lib/components/EvidenceLinks.svelte';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { categoryLabel, formatThaiDate, RELATION_LABEL_TH } from '#lib/components/format.js';
 	import type { EventSummary, RelationView } from '#lib/types/views.js';
@@ -60,17 +61,7 @@
 				</p>
 			{/if}
 			<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-				<span>หลักฐาน:</span>
-				{#each relation.evidence_source_urls as url, index (url)}
-					<a
-						href={url}
-						target="_blank"
-						rel="external noopener noreferrer"
-						class="inline-flex min-h-8 items-center text-primary underline underline-offset-[3px]"
-					>
-						แหล่งที่ {index + 1}<span class="sr-only"> (เปิดในแท็บใหม่)</span>
-					</a>
-				{/each}
+				<EvidenceLinks urls={relation.evidence_source_urls} />
 				{#if relation.reviewed}
 					<Badge
 						variant="outline"

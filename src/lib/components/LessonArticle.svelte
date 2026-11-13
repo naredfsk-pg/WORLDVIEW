@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { formatThaiDate } from '#lib/components/format.js';
+	import { formatThaiDate, isHttpUrl } from '#lib/components/format.js';
 	import type { AcademyWeekMeta, LessonDetail } from '#lib/types/views.js';
 
 	interface Props {
@@ -46,7 +46,7 @@
 			<section class="mb-6 rounded-[17px] border bg-card p-5" aria-labelledby="objectives">
 				<h2 id="objectives" class="mb-2 text-sm font-bold">คุณจะได้เรียนรู้</h2>
 				<ul class="list-disc pl-5 text-[13px] leading-[1.85] text-muted-foreground">
-					{#each lesson.learning_objectives as objective (objective)}
+					{#each lesson.learning_objectives as objective, index (index)}
 						<li>{objective}</li>
 					{/each}
 				</ul>
@@ -70,7 +70,7 @@
 			<section class="mt-10" aria-labelledby="glossary">
 				<h2 id="glossary" class="mb-3 text-[19px] font-bold">อภิธานศัพท์</h2>
 				<dl class="grid gap-2.5">
-					{#each lesson.glossary as entry (entry.term)}
+					{#each lesson.glossary as entry, index (index)}
 						<div class="rounded-[13px] border bg-card px-4 py-3">
 							<dt class="text-sm font-bold">
 								{entry.term}
@@ -89,7 +89,7 @@
 			<section class="mt-10" aria-labelledby="key-questions">
 				<h2 id="key-questions" class="mb-3 text-[19px] font-bold">คำถามชวนคิด</h2>
 				<ol class="list-decimal pl-5 text-[15px] leading-[1.9]">
-					{#each lesson.key_questions as question (question)}
+					{#each lesson.key_questions as question, index (index)}
 						<li>{question}</li>
 					{/each}
 				</ol>
@@ -100,8 +100,8 @@
 			<section class="mt-10" aria-labelledby="further-reading">
 				<h2 id="further-reading" class="mb-3 text-[19px] font-bold">อ่านเพิ่มเติม</h2>
 				<ul class="grid gap-2 text-[13px] leading-[1.8]">
-					{#each lesson.further_reading as reading (reading.title)}
-						{@const unverified = reading.url === null || /TODO/i.test(reading.note ?? '')}
+					{#each lesson.further_reading as reading, index (index)}
+						{@const unverified = !isHttpUrl(reading.url) || /TODO/i.test(reading.note ?? '')}
 						<li data-unverified={unverified}>
 							{#if unverified}
 								<span class="font-semibold">{reading.title}</span>

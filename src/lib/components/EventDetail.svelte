@@ -2,6 +2,7 @@
 	import { resolve } from '$app/paths';
 	import ConnectionList from '#lib/components/ConnectionList.svelte';
 	import EventLabels from '#lib/components/EventLabels.svelte';
+	import EvidenceLinks from '#lib/components/EvidenceLinks.svelte';
 	import LessonCard from '#lib/components/LessonCard.svelte';
 	import SourceList from '#lib/components/SourceList.svelte';
 	import {
@@ -25,23 +26,6 @@
 	<h2 {id} class="mb-2 text-[17px] font-bold">
 		{title} <span class="text-xs font-normal text-muted-foreground">· {subtitle}</span>
 	</h2>
-{/snippet}
-
-{#snippet evidenceLinks(urls: string[])}
-	{#if urls.length > 0}
-		<span class="mt-1 flex flex-wrap gap-x-3 text-[11px]">
-			{#each urls as url, index (url)}
-				<a
-					href={url}
-					target="_blank"
-					rel="external noopener noreferrer"
-					class="text-primary underline underline-offset-[3px]"
-				>
-					หลักฐาน {index + 1}<span class="sr-only"> (เปิดในแท็บใหม่)</span>
-				</a>
-			{/each}
-		</span>
-	{/if}
 {/snippet}
 
 <article class="max-w-[760px]" data-testid="event-detail">
@@ -85,7 +69,7 @@
 		>
 			<p class="m-0 font-bold">มีการแก้ไขข้อมูลในเรื่องนี้</p>
 			<ul class="mt-2 grid gap-1">
-				{#each event.corrections as correction (correction.changed_at)}
+				{#each event.corrections as correction, index (index)}
 					<li>{formatThaiDateTimeShort(correction.changed_at)} — {correction.note_th}</li>
 				{/each}
 			</ul>
@@ -103,7 +87,7 @@
 						<li class="rounded-xl bg-surface-2 px-4 py-3 text-[13px] leading-[1.8]">
 							<span class="font-semibold">{claim.claimant_th}:</span>
 							“{claim.claim_th}”
-							{@render evidenceLinks(claim.evidence_source_urls)}
+							<EvidenceLinks urls={claim.evidence_source_urls} />
 						</li>
 					{/each}
 				</ul>
@@ -157,7 +141,7 @@
 								{/if}
 							</p>
 							<p class="m-0">{update.update_text_th}</p>
-							{@render evidenceLinks(update.evidence_source_urls)}
+							<EvidenceLinks urls={update.evidence_source_urls} />
 						</li>
 					{/each}
 				</ol>
@@ -184,7 +168,7 @@
 		<section class="py-5" aria-labelledby="related-events">
 			{@render sectionHeading('related-events', 'เหตุการณ์ที่เกี่ยวข้อง', 'Related events')}
 			{#if event.relations.length === 0}
-				<p class="text-[13px] text-muted-foreground">ยังไม่มีความเชื่อมโยงที่ตรวจสอบแล้ว</p>
+				<p class="text-[13px] text-muted-foreground">ยังไม่มีความเชื่อมโยงที่เผยแพร่</p>
 			{:else}
 				<ConnectionList relations={event.relations} currentEventId={event.id} />
 			{/if}

@@ -1,5 +1,9 @@
 <script lang="ts">
-	import { formatThaiDateTimeShort, UNKNOWN_PUBLISHED_AT } from '#lib/components/format.js';
+	import {
+		formatThaiDateTimeShort,
+		isHttpUrl,
+		UNKNOWN_PUBLISHED_AT
+	} from '#lib/components/format.js';
 	import type { SourceRef } from '#lib/types/views.js';
 
 	let { sources }: { sources: SourceRef[] } = $props();
@@ -9,7 +13,7 @@
 	{#each sources as source (source.article_id)}
 		<li class="rounded-[13px] border bg-card px-4 py-3">
 			<p class="m-0 text-xs font-bold">{source.source_name}</p>
-			{#if /^https?:\/\//.test(source.url)}
+			{#if isHttpUrl(source.url)}
 				<a
 					href={source.url}
 					target="_blank"
