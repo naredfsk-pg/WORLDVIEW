@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Started | 2026-11-13 10:47:30 (Asia/Bangkok) |
-| Finished | 2026-11-13 11:18:00 (Asia/Bangkok) |
+| Finished | 2026-11-13 11:18:00 (Asia/Bangkok); รอบแก้ตาม review 11:29–11:44 |
 | Status | done |
 | Agent type | backend |
 
@@ -136,3 +136,63 @@ Wave 1 lane "News & Jobs" มีงานดังนี้ ทั้งหม�
 - ทุก real source ยัง disabled จึงทำให้ production cron ingest จบด้วย `failed` (exit 1, "no enabled sources") จนกว่า owner จะอนุมัติ source (PRD §12)
 - `listMatchableEvents` ใน digest repo ควรเพิ่ม `asc(events.id)` เป็น tie-break เพื่อให้ผลลัพธ์ deterministic
 - รัน `--fixtures` แล้ว fixture sources ใน dev DB จะยัง enabled อยู่ การรัน ingest ปกติครั้งถัดไปจะ sync และ disable ให้เอง ส่วน demo seed sources ถูก disable อยู่แล้ว
+
+## รอบแก้ตาม review (2026-11-13 11:29–11:44)
+
+ที่มา: review ฉบับเต็มอยู่ที่ `C:\Project\WORLDVIEW\docs\agent-logs\20261113-1120_1_reviewer_news-ingestion.md` และ probe ที่ใช้คือ `scratchpad\probe-news\group.ts` ส่วน probe ที่ผมเขียนเพิ่มอยู่ใน `scratchpad\probe-backend\`
+
+**Decision (grouping vs tagging):** coordinator เลือก option (a) ingest ยังทำ rule-based grouping ต่อไป ส่วนใน Wave 2 digest จะ tag article ที่ `WHERE taxonomy IS NULL` โดยไม่สนว่า group แล้วหรือยัง และจะใช้ LLM clustering เฉพาะคู่ที่เป็น ambiguous เท่านั้น ไม่มีการแก้โค้ดในรอบนี้
+
+### Steps
+1. 11:29 — อ่าน review และ probe แล้วทดสอบพฤติกรรม runtime ก่อนเริ่มแก้
+   - V8 ยอมรับวันที่ "31 Feb" แล้ว roll ไปเป็น 3 มี.ค. ทั้งใน ISO และ RFC 822
+   - `new Response(<empty>, {status: 204})` throw `TypeError`
+   - `TextDecoder` ตัด BOM ให้เองเมื่อเลือก encoding ถูกตัว
+2. 11:30–11:36 — ออกแบบ grouping ใหม่ (finding 1–2)
+   - เพิ่ม `grouping-vocabulary.ts`: `PLACES` (ประเทศ เมืองใหญ่ ภาคและจังหวัดของไทย) และ `EVENT_TYPES` (flood, heatwave, earthquake, storm, wildfire และอื่น ๆ ทั้ง EN และ TH)
+   - เขียน `grouping.ts` ใหม่
+   - รัน probe ของ reviewer ซ้ำทีละรอบจนทุกคู่ที่ต้องไม่ merge ถูกแยก และคู่ที่เป็นข่าวเดียวกันยัง merge
+   - เพิ่ม `tests/fixtures/grouping/cases.json` แล้ว commit `ff6fe22`
+3. 11:36–11:40 — แก้ finding 3–11 และบันทึก finding 12 เป็นเอกสาร
+   - เพิ่ม test ใหม่ 32 ข้อ (รวมเป็น 325)
+4. 11:41 — รัน gates: `lint`, `check`, `test` (325 passed) และ `build` ผ่านทั้งหมด
+5. 11:41 — `npm run db:reset` แล้วรัน `ingest --fixtures` สามครั้ง
+   - run 1 ใช้ key `ingest:fixtures:2026-11-13T11`: inserted 6, dup_url 1, grouped 6, events_created 4
+   - run 2: skipped `already_done`
+   - run 3 (`--force`): inserted 0, dup_url 7, events_created 0
+   - DB หลังรัน: articles 30, events 17
+6. 11:42 — commit `e691063` (news) และ `12c80de` (jobs)
+
+### Findings: ผลการแก้รายข้อ
+| # | Finding | Status | แก้อย่างไร / เหตุผล |
+|---|---|---|---|
+| 1 | feed categories ทั่วไปเพิ่ม score +0.25 | fixed | เอา categories ออกจาก score ทั้งหมด (และลบ field `categories` ออกจาก `GroupableArticle`) เหลือ entity Jaccard ที่ weight 0.15 ซึ่งใช้เฉพาะ entity ที่แยกแยะข่าวได้ |
+| 2a | token ที่เป็นตัวเลขล้วน | fixed | `titleTokens` ข้าม `^\p{N}+$` (รวมเลขไทย) |
+| 2b | ไม่มี entity/event-type conflict | fixed | ถ้า entity ของสองฝั่งไม่ซ้ำกันเลย หรือ event type ไม่ซ้ำกันเลย score จะถูก cap ที่ `joinThreshold − conflictMargin` (ได้แค่ ambiguous) entity มาจาก `PLACES` (EN ตรงทั้งคำ, TH ตรงแบบ substring), acronym และคำขึ้นต้นตัวใหญ่ในหัวข้อแบบ sentence case (Title Case ตรวจที่ ≥ 90%) |
+| 2c | single-linkage drift | fixed | ใช้ค่าเฉลี่ยของ Jaccard เทียบ article titles ทุกอันของ cluster แทน title ที่ใกล้ที่สุด ส่วน event ที่มีอยู่แล้วเทียบกับ article titles ไม่ใช่ title_th |
+| 3 | `EADDRNOTALLOWED` และ 204/205 | fixed | map เป็น `not_allowed` (ไม่ retry) และใช้ `NO_BODY_STATUSES` = 204/205/304 ร่วมกันทั้ง transport, SafeFetch และ adapter |
+| 4 | error ของ library หลุดออกมา | fixed | ห่อ validate และ parse ด้วย try/catch แล้ว throw เป็น `parse_error: malformed XML` |
+| 5 | DOCTYPE ใน CDATA ถูก reject | fixed (ต่างจากที่เสนอเล็กน้อย) | ตรวจด้วย probe แล้วพบว่า validator ยอมรับ DOCTYPE ที่อยู่หลังหรือใน root element ถ้าตรวจแค่ prolog จะเปิดช่องโหว่ จึงตรวจทั้งไฟล์ยกเว้น CDATA และ comment ด้วยการ scan ทีเดียวแบบ leftmost ซึ่งกันกรณีที่ comment ซ่อน CDATA ไว้ด้วย มี test ครบทุกกรณี |
+| 6 | ลำดับการตรวจ encoding | fixed | ตรวจตามลำดับ BOM → header → XML declaration มี test สำหรับ UTF-8 BOM ที่ header ผิด และ UTF-16LE/BE BOM |
+| 7 | source_url, guid, ตัวอักษร bidi/zero-width | fixed | `source_url = new URL(link).href` ส่วน guid ผ่าน `cleanFeedText` เพิ่ม `stripInvisible` สำหรับ U+061C, U+200B–U+200F (ลบ U+200D ด้วย), U+202A–U+202E, U+2060, U+2066–U+2069 และ U+FEFF โดยภาษาไทยยังคงเดิม |
+| 8 | abort แล้วบันทึก error ให้ source | fixed | source ที่ยังไม่ได้ fetch ถูกข้ามโดยไม่เขียน `last_error` ส่วน source ที่โดน abort กลางทางก็ไม่บันทึกเช่นกัน ข้าม grouping และ run เป็น `partial` (หรือ `failed` ถ้ายังไม่มี source สำเร็จเลย) |
+| 9 | `--fixtures` ใช้ slot จริง | fixed | ใช้ key `ingest:fixtures:{hour}` และยังปฏิเสธเมื่อ `NODE_ENV=production` |
+| 10 | "31 Feb" roll over | fixed | ตรวจวันในปฏิทินและเวลา (ชั่วโมง ≤ 23, นาทีและวินาที ≤ 59) ทั้ง ISO และ RFC 822 |
+| 11 | ไม่มี max item age | fixed | `MAX_ITEM_AGE_HOURS = 72` นับรวมใน `items_dropped` item ที่ไม่มีวันที่จะเก็บไว้ ส่วน `--fixtures` ปิด check นี้ เพราะ fixture มีวันที่ตายตัว และจะถูก drop หมดหลังผ่านไป 3 วัน |
+| 12 | proxy env และ NAT64 | documented | เขียนไว้ใน comment block ของ `safe-fetch.ts` และใน operational notes ด้านล่าง |
+
+### Operational notes (finding 12)
+- **Proxy:** ถ้าตั้ง `HTTPS_PROXY` หรือ `NODE_USE_ENV_PROXY` ไว้ Node จะ connect ไปที่ proxy ทำให้ connect-time check เห็น IP ของ proxy ไม่ใช่ของ feed
+  - pre-flight DNS check ยังทำงาน แต่ rebinding guard จะใช้ไม่ได้
+  - ห้ามตั้ง proxy env ใน container ของ app และ job
+- **NAT64/DNS64:** `64:ff9b::/96` ถูก block ทั้งช่วง ถ้าเป็นโฮสต์ IPv6-only ที่อยู่หลัง DNS64 ทุก fetch จะ fail closed เป็น `not_allowed`
+
+### Errors & problems (รอบนี้)
+| # | Time | Where | Error | Cause | Resolution |
+|---|---|---|---|---|---|
+| R1 | 11:33 | probe `group2.ts` | "Thailand…" และ "Japan…" ไม่ถูกจับเป็น entity | `matchVocabulary` ข้ามชื่อ canonical (เทียบแค่ alias) | ให้เทียบชื่อ canonical ด้วย |
+| R2 | 11:34 | `grouping.test.ts` | ได้ entity `crash` จาก "Market crash" | canonical id ที่เป็นคำทั่วไป (`crash`, `strike`) ถูก match | เปลี่ยนชื่อเป็น `transport crash` และ `labour strike` แล้วเขียนกฎไว้ใน header ของ vocabulary |
+| R3 | 11:34 | `grouping.test.ts` | หัวข่าว sentence case สั้น ๆ ถูกตีเป็น Title Case จน entity หาย | threshold 0.6 ต่ำเกินไป | ปรับ `TITLE_CASE_RATIO = 0.9` และแยก `ALL_CAPS_RATIO = 0.6` |
+| R4 | 11:37 | probe ของ DOCTYPE | validator ยอมรับ DOCTYPE หลังหรือใน root | พฤติกรรมของ fast-xml-parser | ตรวจทั้งไฟล์ยกเว้น CDATA และ comment (ดู #5) |
+| R5 | 11:38 | `normalize.ts:74` และ test 3 ไฟล์ | มีตัวอักษร invisible (U+202A–U+202E, U+2066–U+2069, U+FEFF, U+FFFD) อยู่ใน source จริง | Write และ Bash tool แปลง escape `\uXXXX` ใน input เป็นตัวอักษรจริง (สาเหตุเดียวกับ error #3 ในรอบแรก) | แก้ด้วย script ที่ใช้ `String.fromCharCode` และสร้าง regex จาก code point ใช้ `scan-invisible.mjs` ตรวจแล้วไม่เหลือใน news, jobs, scripts และ fixtures |
+| R6 | 11:39 | Edit test หลายไฟล์ | `File has not been read yet` | session state ไม่มีการอ่านไฟล์เหล่านั้น | Read ไฟล์ก่อนแล้ว Edit ใหม่ |
