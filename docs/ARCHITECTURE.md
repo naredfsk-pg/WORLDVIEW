@@ -329,7 +329,8 @@ To add late reports to a past day, run `archive_snapshot --date D --force`.
 
 ## 9. News ingestion (`types/news.ts`)
 
-- **Sources** (Wave 2): the owner approved the six registry feeds on 2026-11-13 for headline + link only (`allow_excerpt: false`). UN News, BBC World, Guardian World and Al Jazeera are enabled. WHO (stale feed, re-dated 2020 items) and IMF (HTTP 404, no working RSS URL found) stay disabled until a working URL is confirmed.
+- **Sources** (Wave 2.5): the owner approved the six registry feeds on 2026-11-13 for headline + link + excerpt (`allow_excerpt: true`). UN News, BBC World, Guardian World and Al Jazeera are enabled. WHO Regional Office for Africa (`who-afro-news`) replaces `who-news`, because the global who.int feeds are stale, but it is **disabled**: on 2026-11-13 the owner declined a regional-only WHO feed. IMF stays disabled: the imf.org RSS paths return 404, and the IMF Media Center feed is 27 days old. The URLs tried are listed in the `sources.ts` header.
+- **Excerpts are internal only** (PRD §4.2). They are LLM input (every digest task that takes articles: tagging, extraction, summary and relations) and are shown as plain text on `/admin/events/[id]` (`AdminSourceRef`). Public DTOs (`SourceRef`, `EventSummary`, `EventDetail`, search results) and SEO meta never carry them, and FTS does not index them. Tests in `public-read.test.ts` enforce this. Rows ingested before excerpts were allowed keep `excerpt = null` (no backfill).
 - **Conditional GET** (Wave 2): `sources.etag` / `sources.last_modified` (migration 0002) hold the validators of the last successful fetch. The RSS adapter sends `If-None-Match` / `If-Modified-Since`; a 304 ingests nothing; validators are stored only after the inserts commit, and `syncSources` clears them when a source's `feed_url` changes.
 - **`NewsSourceAdapter`** has one adapter per `SourceKind` (`rss` covers RSS and Atom; `fixture` reads a local XML file). An adapter only fetches and parses into `RawFeedItem[]`. It does not normalize or touch the DB.
 - **`SafeFetch`** (SSRF):
@@ -348,7 +349,7 @@ To add late reports to a past day, run `archive_snapshot --date D --force`.
   - `raw_metadata = { guid, author, categories }` only.
 - **Canonical URL** (`utils/url.ts canonicalizeUrl`):
   - lower-case the scheme and host, and drop default ports and the `#fragment`
-  - remove the `utm_*` params, plus `fbclid`, `gclid`, `dclid`, `mc_cid`, `mc_eid`, `igshid`, `ref`, `ref_src`, `cmpid`, `ocid`
+  - remove the `utm_*` and `at_*` (BBC) params, plus `fbclid`, `gclid`, `dclid`, `mc_cid`, `mc_eid`, `igshid`, `ref`, `ref_src`, `cmpid`, `ocid`, `traffic_source` (Al Jazeera)
   - sort the remaining params
   - strip a trailing `/` (except at the root)
   - keep the scheme

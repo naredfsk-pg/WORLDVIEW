@@ -2,21 +2,22 @@ import { describe, expect, it } from 'vitest';
 import { NEWS_SOURCES, sourceRegistryFor } from './sources';
 
 describe('source registry', () => {
-	it('lists only the six owner-approved feeds, headline + link only, over https', () => {
+	it('lists only the six owner-approved feeds, with internal-only excerpts, over https', () => {
 		expect(NEWS_SOURCES.map((source) => source.id).sort()).toEqual([
 			'aljazeera-all',
 			'bbc-world',
 			'guardian-world',
 			'imf-news',
 			'un-news',
-			'who-news'
+			'who-afro-news'
 		]);
 		for (const source of NEWS_SOURCES) {
 			expect(source).toMatchObject({
 				kind: 'rss',
-				allow_excerpt: false,
+				allow_excerpt: true,
 				is_demo: false,
-				license_notes: 'Owner approved 2026-11-13: headline + link only'
+				license_notes:
+					'Owner approved 2026-11-13: headline + link + excerpt (≤500 chars, internal use: LLM input and admin view; not shown publicly)'
 			});
 			expect(new URL(source.feed_url).protocol).toBe('https:');
 		}

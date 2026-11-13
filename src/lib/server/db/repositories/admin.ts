@@ -18,7 +18,12 @@ import type {
 	AdminTransitionResult,
 	RevisionMeta
 } from '../../../types/repositories';
-import type { AdminEventRow, AdminRelationEndpoint, AdminRelationRow } from '../../../types/views';
+import type {
+	AdminEventRow,
+	AdminRelationEndpoint,
+	AdminRelationRow,
+	AdminSourceRef
+} from '../../../types/views';
 import type { Db } from '../client';
 import {
 	adminActions,
@@ -77,7 +82,7 @@ export function createAdminRepository(db: Db): AdminRepository {
 					.where(and(eq(contentRevisions.entity_type, 'event'), eq(contentRevisions.entity_id, id)))
 					.orderBy(desc(contentRevisions.changed_at))
 					.all();
-				return { event, sources: selectEventSources(tx, id), revisions };
+				return { event, sources: selectAdminEventSources(tx, id), revisions };
 			});
 		},
 
@@ -355,6 +360,27 @@ function selectLinkedArticles(tx: Executor, eventId: string): ArticleWithSource[
 			source_name,
 			source_is_demo
 		}));
+}
+
+/**
+ * The public `selectEventSources` rows plus the stored excerpt, in the same order. Admin only:
+ * excerpts are internal (PRD §4.2), so the public query stays without them.
+ */
+function selectAdminEventSources(tx: Executor, eventId: string): AdminSourceRef[] {
+	return tx
+		.select({
+			article_id: articles.id,
+			source_name: articles.publisher_name,
+			title: articles.title,
+			published_at: articles.published_at,
+			url: articles.canonical_url,
+			excerpt: articles.excerpt
+		})
+		.from(eventArticles)
+		.innerJoin(articles, eq(articles.id, eventArticles.article_id))
+		.where(eq(eventArticles.event_id, eventId))
+		.orderBy(sql`${articles.published_at} IS NULL`, asc(articles.published_at), asc(articles.id))
+		.all();
 }
 
 function selectReviewEvents(

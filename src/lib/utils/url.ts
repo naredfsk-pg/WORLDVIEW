@@ -19,14 +19,18 @@ const TRACKING_PARAMS = new Set([
 	'ref',
 	'ref_src',
 	'cmpid',
-	'ocid'
+	'ocid',
+	// Al Jazeera feed links
+	'traffic_source'
 ]);
+/** Name prefixes of tracking params: `utm_*` (Google Analytics), `at_*` (BBC feed links). */
+const TRACKING_PREFIXES = ['utm_', 'at_'];
 
 /**
  * Returns the canonical form of an http(s) URL, or null when the input is not one.
  * - lower-case scheme and host, drop default ports and any `user:pass@` (done by `URL` / below)
  * - drop the `#fragment`
- * - drop `utm_*` and the params in `TRACKING_PARAMS`, then sort the rest by name (stable)
+ * - drop `utm_*`, `at_*` and the params in `TRACKING_PARAMS`, then sort the rest by name (stable)
  * - strip a trailing `/` from the path, except at the root
  */
 export function canonicalizeUrl(raw: string): string | null {
@@ -45,7 +49,10 @@ export function canonicalizeUrl(raw: string): string | null {
 	const kept = new URLSearchParams();
 	for (const [name, value] of url.searchParams) {
 		const lowerName = name.toLowerCase();
-		if (lowerName.startsWith('utm_') || TRACKING_PARAMS.has(lowerName)) continue;
+		const isTracking =
+			TRACKING_PARAMS.has(lowerName) ||
+			TRACKING_PREFIXES.some((prefix) => lowerName.startsWith(prefix));
+		if (isTracking) continue;
 		kept.append(name, value);
 	}
 	kept.sort();

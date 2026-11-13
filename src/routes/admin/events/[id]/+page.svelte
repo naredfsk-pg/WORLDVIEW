@@ -211,6 +211,12 @@
 								? formatThaiDateTimeShort(source.published_at)
 								: UNKNOWN_PUBLISHED_AT}
 						</p>
+						{#if source.excerpt}
+							<!-- Internal only (PRD §4.2): plain text, never on public pages. -->
+							<p class="mt-1.5 mb-0 break-words text-foreground" data-testid="source-excerpt">
+								{source.excerpt}
+							</p>
+						{/if}
 					</li>
 				{:else}
 					<li class="text-[12px] text-muted-foreground">ไม่มีแหล่งข่าวที่เชื่อมไว้</li>

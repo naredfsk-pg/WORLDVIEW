@@ -35,6 +35,14 @@ export interface SourceRef {
 	url: string;
 }
 
+/**
+ * Admin-only: `SourceRef` plus the stored excerpt. Excerpts are internal (LLM input and admin
+ * review, PRD §4.2), so public DTOs use `SourceRef`, which has no excerpt field.
+ */
+export interface AdminSourceRef extends SourceRef {
+	excerpt: string | null;
+}
+
 /** Card-level payload for lists (Today, brief, archive, search, related). */
 export interface EventSummary {
 	id: string;
@@ -370,6 +378,6 @@ export interface AdminReviewData {
 export interface AdminEventEditData {
 	admin: AdminIdentity;
 	event: NewsEvent;
-	sources: SourceRef[];
+	sources: AdminSourceRef[];
 	revisions: ContentRevision[];
 }

@@ -27,6 +27,21 @@ describe('canonicalizeUrl', () => {
 			'https://example.com/a'
 		],
 		[
+			'drops the Al Jazeera traffic_source param',
+			'https://www.aljazeera.com/news/2026/11/13/story?traffic_source=rss',
+			'https://www.aljazeera.com/news/2026/11/13/story'
+		],
+		[
+			'drops the BBC at_* params, in any case',
+			'https://www.bbc.com/news/articles/c1?at_medium=RSS&at_campaign=rss&AT_Link_Origin=x&at_ptr_name=y',
+			'https://www.bbc.com/news/articles/c1'
+		],
+		[
+			'keeps params that only contain "at"',
+			'https://example.com/a?format=x&cat_id=3&at=1',
+			'https://example.com/a?at=1&cat_id=3&format=x'
+		],
+		[
 			'keeps and sorts meaningful params',
 			'https://example.com/a?page=2&id=7&utm_source=x',
 			'https://example.com/a?id=7&page=2'

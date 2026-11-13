@@ -1,7 +1,9 @@
+import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readLessonFiles, toAcademyLessonRows } from '../../../content/academy.server';
 import type { SearchQuery } from '../../../types/views';
 import type { Db } from '../client';
+import { articles } from '../schema';
 import { seedDatabase } from '../seed';
 import { openTestDb } from '../test-db';
 import { createRepositories } from './index';
@@ -204,5 +206,31 @@ describe('search (FTS5 trigram, LIKE fallback under 3 characters)', () => {
 		expect(economy.items.every((lesson) => lesson.related_categories.includes('economy'))).toBe(
 			true
 		);
+	});
+});
+
+describe('excerpts stay internal (PRD §4.2)', () => {
+	const EXCERPT = 'Zyxwv internal excerpt marker for the export-control story.';
+
+	beforeAll(() => {
+		db.update(articles).set({ excerpt: EXCERPT }).where(eq(articles.id, 'demo-art-01a')).run();
+	});
+
+	it('leaves the excerpt out of the public event detail, brief and search results', async () => {
+		const detail = await read.getPublishedEventDetail('demo-evt-01');
+		const brief = await read.getPublishedBrief('2026-11-13', 'morning');
+		const search = await read.searchEvents(query('ชิ'));
+
+		expect(detail?.sources.map((source) => source.article_id)).toContain('demo-art-01a');
+		expect(search.items.map((event) => event.id)).toContain('demo-evt-01');
+		for (const payload of [detail, brief, search]) {
+			const json = JSON.stringify(payload);
+			expect(json).not.toContain('Zyxwv');
+			expect(json).not.toContain('"excerpt"');
+		}
+	});
+
+	it('does not match excerpt-only words in search', async () => {
+		expect(await read.searchEvents(query('Zyxwv'))).toEqual({ items: [], total: 0 });
 	});
 });
