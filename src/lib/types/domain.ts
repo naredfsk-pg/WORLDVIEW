@@ -203,6 +203,26 @@ export interface AttributedClaim {
 	evidence_refs: EvidenceRef[];
 }
 
+// CONTRACT-CHANGE (auto-publish wave): public credibility label of the CLAIMS in an event (never
+// a judgement of the outlet). Set by the summary task (summary@5) plus a deterministic floor
+// (`assessCredibility`: sensitive + fewer than 2 registry sources ⇒ at least `unverified`), or
+// by an admin. Ordered from weakest to strongest; `none` shows no label.
+export const CREDIBILITY_LEVELS = [
+	'none',
+	'unverified',
+	'disputed',
+	'possible_misinformation'
+] as const;
+export type CredibilityLevel = (typeof CREDIBILITY_LEVELS)[number];
+export type ShownCredibilityLevel = Exclude<CredibilityLevel, 'none'>;
+
+/** Public Thai labels. Neutral wording; never "ข่าวปลอม". */
+export const CREDIBILITY_LABEL_TH = {
+	unverified: 'ยังไม่ได้รับการยืนยัน',
+	disputed: 'ข้อมูลขัดแย้งกัน',
+	possible_misinformation: 'อาจเป็นข้อมูลเท็จ'
+} as const satisfies Record<ShownCredibilityLevel, string>;
+
 /** Inputs to brief ranking (PRD §4.4). Produced by the summary task, clamped by editorial. */
 export interface EditorialSignals {
 	impact_breadth: 0 | 1 | 2 | 3;
@@ -253,6 +273,11 @@ export interface NewsEvent {
 	source_count: number;
 	/** True if any linked article comes from an `is_demo` source. */
 	is_demo: boolean;
+	// CONTRACT-CHANGE (auto-publish wave, migration 0005): public credibility label.
+	/** Credibility of the event's claims; `none` → no label. Default 'none'. */
+	credibility_level: CredibilityLevel;
+	/** One neutral Thai sentence on why the label applies (passes G3); null when none. */
+	credibility_reason_th: string | null;
 	created_at: IsoUtc;
 	/** Row modification time (editing), distinct from `last_updated_at`. */
 	updated_at: IsoUtc;
@@ -466,7 +491,9 @@ export const ADMIN_ACTION_TYPES = [
 	'rerun_digest',
 	'rerun_brief_morning',
 	'rerun_brief_evening',
-	'rerun_archive_snapshot'
+	'rerun_archive_snapshot',
+	// CONTRACT-CHANGE (auto-publish wave, migration 0005).
+	'rerun_reevaluate_pending'
 ] as const;
 export type AdminActionType = (typeof ADMIN_ACTION_TYPES)[number];
 

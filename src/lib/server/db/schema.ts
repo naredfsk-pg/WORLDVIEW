@@ -24,6 +24,7 @@ import {
 	BRIEF_EDITIONS,
 	BRIEF_STATUSES,
 	CATEGORY_SLUGS,
+	CREDIBILITY_LEVELS,
 	EVENT_STATUSES,
 	RELATION_STATUSES,
 	RELATION_TYPES,
@@ -129,7 +130,12 @@ export const events = sqliteTable(
 		source_count: integer().notNull(),
 		is_demo: integer({ mode: 'boolean' }).notNull(),
 		created_at: text().notNull(),
-		updated_at: text().notNull()
+		updated_at: text().notNull(),
+		// Migration 0005 (auto-publish wave). Appended columns, and the CHECK on credibility_level is
+		// written inline in the migration SQL: a table-level check here would make drizzle-kit
+		// rebuild `events`, which would drop the FTS triggers of 0001.
+		credibility_level: text({ enum: CREDIBILITY_LEVELS }).notNull().default('none'),
+		credibility_reason_th: text()
 	},
 	(t) => [
 		index('events_status_event_date_idx').on(t.status, t.event_date),

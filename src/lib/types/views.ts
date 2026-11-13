@@ -9,6 +9,7 @@ import type {
 	CategorySlug,
 	ContentRevision,
 	CountryCode,
+	CredibilityLevel,
 	FurtherReading,
 	GlossaryEntry,
 	IsoUtc,
@@ -58,6 +59,11 @@ export interface EventSummary {
 	/** 1 → show single-source label. */
 	source_count: number;
 	is_demo: boolean;
+	// CONTRACT-CHANGE (auto-publish wave): every list and detail shows the credibility badge.
+	/** `none` → no badge; otherwise CREDIBILITY_LABEL_TH[level]. */
+	credibility_level: CredibilityLevel;
+	/** Optional one-sentence Thai reason shown with the badge; null when there is none. */
+	credibility_reason_th: string | null;
 }
 
 export interface ClaimView {
@@ -352,6 +358,8 @@ export interface AdminEventRow {
 	category: CategorySlug | null;
 	source_count: number;
 	last_updated_at: IsoUtc;
+	// CONTRACT-CHANGE (auto-publish wave): shown in the admin queue and lists.
+	credibility_level: CredibilityLevel;
 }
 
 /** Relation as shown in the review queue (may be pending). */

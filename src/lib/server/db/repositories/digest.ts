@@ -45,10 +45,16 @@ import {
 	events,
 	sources
 } from '../schema';
-import { EntityNotFoundError, isPublicEvent, toJsonObject, type Executor } from './shared';
+import {
+	byAdmin,
+	EntityNotFoundError,
+	isPublicEvent,
+	SYSTEM_ACTOR,
+	toJsonObject,
+	type Executor
+} from './shared';
 
-/** `content_revisions.changed_by` of pipeline changes; every other actor is an admin email. */
-export const SYSTEM_ACTOR = 'system';
+export { SYSTEM_ACTOR } from './shared';
 /** Events read before the source round-robin picks `limit` of them (newest evidence first). */
 const CONTENT_CANDIDATE_POOL = 500;
 
@@ -579,7 +585,7 @@ function upsertRelationRow(
 }
 
 /** An admin rejected a relation between these two events (either direction, any type). */
-function isRejectedPair(executor: Executor, eventA: string, eventB: string): boolean {
+export function isRejectedPair(executor: Executor, eventA: string, eventB: string): boolean {
 	const row = executor
 		.select({ id: eventRelations.id })
 		.from(eventRelations)
@@ -724,7 +730,7 @@ function insertEventArticles(
  * a re-summary kept an admin field, `summarized_at` moves past the edit, and the next re-summary
  * must still keep it.
  */
-function adminEditedContentFields(tx: Executor, eventId: string): Set<string> {
+export function adminEditedContentFields(tx: Executor, eventId: string): Set<string> {
 	const rows = tx
 		.select({ before_after: contentRevisions.before_after })
 		.from(contentRevisions)
@@ -732,7 +738,7 @@ function adminEditedContentFields(tx: Executor, eventId: string): Set<string> {
 			and(
 				eq(contentRevisions.entity_type, 'event'),
 				eq(contentRevisions.entity_id, eventId),
-				ne(contentRevisions.changed_by, SYSTEM_ACTOR)
+				byAdmin()
 			)
 		)
 		.all();
@@ -787,7 +793,7 @@ function hasAdminRevision(tx: Executor, eventId: string): boolean {
 			and(
 				eq(contentRevisions.entity_type, 'event'),
 				eq(contentRevisions.entity_id, eventId),
-				ne(contentRevisions.changed_by, SYSTEM_ACTOR)
+				byAdmin()
 			)
 		)
 		.get();
@@ -812,7 +818,9 @@ const CONTENT_FIELD_KEYS: ReadonlySet<string> = new Set([
 	'countries',
 	'tags',
 	'signals',
-	'occurred_at'
+	'occurred_at',
+	'credibility_level',
+	'credibility_reason_th'
 ]);
 
 function pickContentFields(source: EventContentWrite | typeof events.$inferSelect) {
@@ -829,11 +837,16 @@ function pickContentFields(source: EventContentWrite | typeof events.$inferSelec
 		countries: source.countries,
 		tags: source.tags,
 		signals: source.signals,
-		occurred_at: source.occurred_at
+		occurred_at: source.occurred_at,
+		credibility_level: source.credibility_level,
+		credibility_reason_th: source.credibility_reason_th
 	};
 }
 
-function withArticles(tx: Executor, rows: (typeof events.$inferSelect)[]): EventWithArticles[] {
+export function withArticles(
+	tx: Executor,
+	rows: (typeof events.$inferSelect)[]
+): EventWithArticles[] {
 	const articlesByEvent = loadArticlesByEvent(
 		tx,
 		rows.map((row) => row.id)

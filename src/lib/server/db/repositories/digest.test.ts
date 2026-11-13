@@ -89,6 +89,8 @@ const content = (
 	tags: ['inflation'],
 	signals: { impact_breadth: 2, thailand_relevance: 2, sensitive: false },
 	occurred_at: null,
+	credibility_level: 'none',
+	credibility_reason_th: null,
 	summarized_at: '2026-11-13T02:00:00.000Z',
 	status: 'published',
 	review_reasons: [],

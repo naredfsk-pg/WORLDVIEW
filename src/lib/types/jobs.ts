@@ -8,7 +8,11 @@ export const JOB_TYPES = [
 	'digest',
 	'brief_morning',
 	'brief_evening',
-	'archive_snapshot'
+	'archive_snapshot',
+	// CONTRACT-CHANGE (auto-publish wave): re-runs the publish gate with the current
+	// EDITORIAL_AUTO_PUBLISH policy for events held only by a policy reason, and the relation
+	// rule for pending relations. Manual only (CLI or /admin/jobs), never in the crontab.
+	'reevaluate_pending'
 ] as const;
 export type JobType = (typeof JOB_TYPES)[number];
 
@@ -51,7 +55,12 @@ export const JOB_COUNTER_KEYS = [
 	'llm_tokens',
 	// briefs / archive
 	'brief_candidates',
-	'brief_events'
+	'brief_events',
+	// CONTRACT-CHANGE (auto-publish wave): reevaluate_pending (it also uses events_published,
+	// events_pending_review, events_skipped and the relations_* keys).
+	'events_reevaluated',
+	'events_requeued',
+	'relations_reevaluated'
 ] as const;
 export type JobCounterKey = (typeof JOB_COUNTER_KEYS)[number];
 export type JobCounters = Partial<Record<JobCounterKey, number>>;

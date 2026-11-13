@@ -58,6 +58,8 @@ async function publishedEventAt(publishedAt: string, slug: string): Promise<stri
 			tags: [],
 			signals: { impact_breadth: 1, thailand_relevance: 1, sensitive: false },
 			occurred_at: null,
+			credibility_level: 'none',
+			credibility_reason_th: null,
 			summarized_at: publishedAt,
 			status: 'published',
 			review_reasons: [],

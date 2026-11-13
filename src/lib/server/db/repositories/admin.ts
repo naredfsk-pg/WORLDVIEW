@@ -3,7 +3,7 @@
  * row in the same transaction (audit trail, PRD §9.2). Callers run the admin publish gate first.
  */
 import { randomUUID } from 'node:crypto';
-import { and, asc, count, desc, eq, gte, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import type {
 	EventStatus,
@@ -37,10 +37,11 @@ import {
 	llmCalls,
 	sources
 } from '../schema';
-import { SYSTEM_ACTOR } from './digest';
 import { selectEventSources } from './public-read';
 import {
+	byAdmin,
 	EntityNotFoundError,
+	SYSTEM_ACTOR,
 	evidenceUrls,
 	loadEvidenceUrls,
 	toJsonObject,
@@ -439,7 +440,8 @@ function selectReviewEvents(
 		fallback_title: selectEventSources(tx, row.id)[0]?.title ?? '',
 		category: row.category,
 		source_count: row.source_count,
-		last_updated_at: row.last_updated_at
+		last_updated_at: row.last_updated_at,
+		credibility_level: row.credibility_level
 	}));
 }
 
@@ -495,7 +497,7 @@ function hasAdminEditedTags(tx: Executor, eventId: string): boolean {
 			and(
 				eq(contentRevisions.entity_type, 'event'),
 				eq(contentRevisions.entity_id, eventId),
-				ne(contentRevisions.changed_by, SYSTEM_ACTOR),
+				byAdmin(),
 				sql`json_extract(${contentRevisions.before_after}, '$.after.tags') IS NOT NULL`
 			)
 		)

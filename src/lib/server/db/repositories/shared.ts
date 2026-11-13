@@ -3,18 +3,34 @@
  * mappers, the "publicly visible event" predicate, and evidence-URL resolution.
  */
 import type { RunResult } from 'better-sqlite3';
-import { and, eq, inArray, isNotNull, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, ne, notLike, sql, type SQL } from 'drizzle-orm';
 import type { BaseSQLiteDatabase, SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import type { EvidenceRef, JsonObject } from '../../../types/domain';
 import type { EventSummary, LessonSummary } from '../../../types/views';
 import * as schema from '../schema';
-import { academyLessons, articles, eventArticles, events } from '../schema';
+import { academyLessons, articles, contentRevisions, eventArticles, events } from '../schema';
 
 /** The database or an open transaction (both are synchronous better-sqlite3 executors). */
 export type Executor = BaseSQLiteDatabase<'sync', RunResult, typeof schema>;
 
 export type EventRow = typeof events.$inferSelect;
 export type LessonRow = typeof academyLessons.$inferSelect;
+
+/** `content_revisions.changed_by` of pipeline changes; every other actor is an admin email. */
+export const SYSTEM_ACTOR = 'system';
+/**
+ * Automated policy changes (the `reevaluate_pending` job). Like every `system:*` actor it counts
+ * as the pipeline, not as an admin, so its revisions never protect fields from a re-summary.
+ */
+export const POLICY_ACTOR = 'system:policy';
+
+/** The revision was written by an admin: `changed_by` is neither `system` nor `system:*`. */
+export function byAdmin(): SQL {
+	return and(
+		ne(contentRevisions.changed_by, SYSTEM_ACTOR),
+		notLike(contentRevisions.changed_by, 'system:%')
+	) as SQL;
+}
 
 export class EntityNotFoundError extends Error {
 	override name = 'EntityNotFoundError';
@@ -62,7 +78,10 @@ export function toEventSummary(row: EventRow): EventSummary {
 		occurred_at: row.occurred_at,
 		last_updated_at: row.last_updated_at,
 		source_count: row.source_count,
-		is_demo: row.is_demo
+		is_demo: row.is_demo,
+		credibility_level: row.credibility_level,
+		// A reason without a label says nothing; the badge shows it only with a level.
+		credibility_reason_th: row.credibility_level === 'none' ? null : row.credibility_reason_th
 	};
 }
 
