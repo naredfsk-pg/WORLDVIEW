@@ -1,4 +1,4 @@
-# QA bug report — Wave 3 acceptance suite
+# QA bug report — Wave 3 acceptance suite Fixed in `c938697` | Fixed in `c938697` | Fixed in `c938697` | Fixed in `c938697` | Fixed in `74bbe10` (test `203c2c5`) | Fixed in `74bbe10` (test `203c2c5`) | Fixed in `420f511` + `3eaf2a3` | Fixed in `c938697` | Fixed in `d650d52` | Fixed in `c67cec8` |
 
 Branch `test/acceptance-suite` from `main` @ `e074515`, 2026-11-13. Found by the acceptance suite
 (`docs/qa/ACCEPTANCE.md`), axe-core 4.14 via `@axe-core/playwright` 4.14, and exploratory testing on the
@@ -7,26 +7,30 @@ production build (`vite preview`, seeded demo database, Chromium 1254 from Playw
 Severity: **P1** data loss / security · **P2** broken feature · **P3** degraded UX, accessibility, or
 hardening. No P1 or P2 bugs were found.
 
+**Wave 3 (branch `fix/qa-wave3`): all ten bugs are fixed.** Each bug's status and commit are in the table and at the top of its section; the fixme and todo markers are now passing tests.
+
 Each bug has a test that reproduces it. The test is marked `test.fixme` (Playwright) or `it.todo`,
 next to a passing `repro` test (Vitest). When you fix a bug, remove the fixme or todo marker and the
 entry in `tests/e2e/a11y-helpers.ts` `KNOWN_A11Y_BUGS`.
 
-| ID | Severity | Area | Summary | Owner |
-|---|---|---|---|---|
-| BUG-QA-001 | P3 (axe serious) | a11y, shell | The sidebar logo link's name does not contain its visible text | frontend |
-| BUG-QA-002 | P3 (axe serious) | a11y, archive | Calendar days without a brief have 1.77:1 contrast (light) and 2.35:1 (dark) | frontend |
-| BUG-QA-003 | P3 (axe serious) | a11y, theme | The `text-faint` token is 4.47:1 in the light theme, just under 4.5:1 | frontend |
-| BUG-QA-004 | P3 (axe serious) | a11y, event | The event facts `<dl>` has a `<p>` as a direct child | frontend |
-| BUG-QA-005 | P3 (hardening) | public read | A published relation is listed even when none of its evidence resolves | backend |
-| BUG-QA-006 | P3 (hardening) | public read | A published event with no linked article is still public, with 0 sources | backend |
-| BUG-QA-007 | P3 | archive | A future date is shown as "the news of that day", and next-month links never stop | frontend |
-| BUG-QA-008 | P3 (axe moderate) | a11y, brief | The brief page skips from `<h1>` to `<h3>` | frontend |
-| BUG-QA-009 | P3 (Lighthouse) | readability | Only 46–55 % of the text is ≥ 12 px on `/`, `/archive` and the event page | frontend |
-| BUG-QA-010 | P3 (Lighthouse) | performance | `/archive` has CLS 0.175 on Lighthouse mobile (0.32 under CDP throttling) | frontend |
+| ID | Severity | Area | Summary | Owner | Status |
+|---|---|---|---|---|---|
+| BUG-QA-001 | P3 (axe serious) | a11y, shell | The sidebar logo link's name does not contain its visible text | frontend | Fixed `c938697` + `28a3771` |
+| BUG-QA-002 | P3 (axe serious) | a11y, archive | Calendar days without a brief have 1.77:1 contrast (light) and 2.35:1 (dark) | frontend | Fixed `c938697` |
+| BUG-QA-003 | P3 (axe serious) | a11y, theme | The `text-faint` token is 4.47:1 in the light theme, just under 4.5:1 | frontend | Fixed `c938697` |
+| BUG-QA-004 | P3 (axe serious) | a11y, event | The event facts `<dl>` has a `<p>` as a direct child | frontend | Fixed `c938697` |
+| BUG-QA-005 | P3 (hardening) | public read | A published relation is listed even when none of its evidence resolves | backend | Fixed `74bbe10`, test `203c2c5` |
+| BUG-QA-006 | P3 (hardening) | public read | A published event with no linked article is still public, with 0 sources | backend | Fixed `74bbe10`, test `203c2c5` |
+| BUG-QA-007 | P3 | archive | A future date is shown as "the news of that day", and next-month links never stop | frontend | Fixed `420f511` + `3eaf2a3` |
+| BUG-QA-008 | P3 (axe moderate) | a11y, brief | The brief page skips from `<h1>` to `<h3>` | frontend | Fixed `c938697` (+ test `28a3771`) |
+| BUG-QA-009 | P3 (Lighthouse) | readability | Only 46–55 % of the text is ≥ 12 px on `/`, `/archive` and the event page | frontend | Fixed `d650d52` |
+| BUG-QA-010 | P3 (Lighthouse) | performance | `/archive` has CLS 0.175 on Lighthouse mobile (0.32 under CDP throttling) | frontend | Fixed `c67cec8` + `ab6ea7d` |
 
 ---
 
 ## BUG-QA-001: the sidebar logo link's name does not contain its visible text
+
+**Status**: Fixed in `c938697` and `28a3771`. The link has no `aria-label` any more: its name comes from its content, "worldview" plus a visually hidden "หน้าหลัก", and the decorative tagline is `aria-hidden`. (Hiding only the tagline was not enough, because the rule compares the `aria-label` with the visible text.) Regression test: `a11y.e2e.ts` › "fixed accessibility bugs (regression)".
 
 **Severity**: P3. axe `label-content-name-mismatch` (serious, WCAG 2.1 SC 2.5.3 Label in Name). It
 appears on every page, public and admin, in both themes.
@@ -49,6 +53,8 @@ contains its visible text" (fixme).
 
 ## BUG-QA-002: archive calendar days without a brief fail the contrast check
 
+**Status**: Fixed in `c938697`. Days without a brief use `text-faint` (light 5.21:1, dark 5.65:1 on the card). The missing dot and link stay the non-colour cue, as the calendar legend says.
+
 **Severity**: P3. axe `color-contrast` (serious, WCAG SC 1.4.3), 17 nodes on `/archive`.
 **Reproduction**:
 
@@ -65,6 +71,8 @@ contrast" (fixme).
 
 ## BUG-QA-003: the `text-faint` token is just under AA in the light theme
 
+**Status**: Fixed in `c938697`. `--faint` light #67766f → #61706a (bg 4.88:1, surface 5.21:1, surface-2 4.69:1, hero 4.55:1); dark #83968c → #8c9f95 (bg 6.40:1, surface 5.65:1, surface-2 5.20:1, hero 4.06 → 4.55:1). The regression test covers both themes.
+
 **Severity**: P3. axe `color-contrast` (serious), light theme only.
 **Reproduction**:
 
@@ -80,6 +88,8 @@ contrast" (fixme).
 
 ## BUG-QA-004: the event facts `<dl>` contains a `<p>`
 
+**Status**: Fixed in `c938697`. The note moved out of the `<dl>` into the same bordered box.
+
 **Severity**: P3. axe `definition-list` (serious, WCAG SC 1.3.1).
 **Reproduction**: open `/events/demo-evt-01`. The time box `<dl class="mt-4 grid …">` has a direct
 child `<p>`, the note "เวลาทั้งหมดเป็นเวลาไทย (GMT+7)".
@@ -90,6 +100,8 @@ child `<p>`, the note "เวลาทั้งหมดเป็นเวลา
 **Suggested Owner**: frontend (move the `<p>` after the `</dl>`, or wrap it in a `<div>`)
 
 ## BUG-QA-005: a published relation with unresolvable evidence is still listed
+
+**Status**: Fixed in `74bbe10` (tests `203c2c5`). `selectPublishedRelations` requires at least one evidence ref that resolves to a stored article, in SQL, so `limit` counts only showable relations. A relation with one missing and one stored ref is still shown.
 
 **Severity**: P3, defence in depth. You can only reach it with a row that bypassed the write-side
 gates: the relation gate drops evidence-less relations at creation, and articles are never deleted
@@ -113,6 +125,8 @@ behaviour.
 
 ## BUG-QA-006: a published event with no linked article is still public
 
+**Status**: Fixed in `74bbe10` (tests `203c2c5`). New read-layer predicate `isReadableEvent` = `isPublicEvent` + at least one linked stored article, used by every public read: event detail (404), brief items, lesson events, relation endpoints, the demo flag and search. The write side (brief candidates, digest) still uses `isPublicEvent`.
+
 **Severity**: P3, defence in depth. Both publish paths (the digest gate G1 and the admin publish
 gate) require a source. But `isPublicEvent` only checks `status = 'published'` and
 `category IS NOT NULL`. PRD §1.4 says every published event has at least one verifiable source.
@@ -129,6 +143,8 @@ BUG-QA-006" test.
 **Suggested Owner**: backend
 
 ## BUG-QA-007: the archive offers future dates as "the news of that day"
+
+**Status**: Fixed in `420f511` and `3eaf2a3`. **Policy**: a `date` after today or a `month` after the current month (Asia/Bangkok) is out of range and treated like an invalid parameter: ignored, falling back to the latest brief, with a 200 (no redirect, no 404). The calendar has no next-month link from the current month on. **Garbled heading**: in Chromium the heading was always a clean "ข่าว…" (SSR bytes, DOM text and pixels checked). The encoding fault was the HTTP header: pages were sent as bare `text/html`, so header-only clients such as PowerShell 5.1 decoded Thai as ISO-8859-1 ("à¸à¹à¸²à¸§…"). Pages are now `text/html; charset=utf-8`.
 
 **Severity**: P3 (UX).
 **Reproduction**:
@@ -147,6 +163,8 @@ date is not offered as \"news of that day\"" (fixme).
 
 ## BUG-QA-008: the brief page skips a heading level
 
+**Status**: Fixed in `c938697` (the 360 px clip check skips `.sr-only` since `28a3771`). A visually hidden `<h2>` "ข่าวในสรุปฉบับนี้" sits above the story cards. Regression test added (`heading-order`).
+
 **Severity**: P3. axe `heading-order` (moderate). There is no fixme, because the policy is to add
 fixmes for serious and critical violations only.
 **Reproduction**: open `/brief/2026-11-12`. Story cards use `<h3>` (for example "ห่วงโซ่อุปทานชิป…")
@@ -158,6 +176,8 @@ not fail the run.
 **Suggested Owner**: frontend
 
 ## BUG-QA-009: most of the text on three main pages is smaller than 12 px
+
+**Status**: Fixed in `d650d52`. New theme size `text-meta` (12 px, line height 1.6) replaces 10–11 px on Thai metadata, labels, chips and footnotes. English all-caps eyebrows and the mobile nav keep 10 px. Share at 412 px: `/` 0.94, `/archive` 0.95, event 0.97.
 
 **Severity**: P3 (readability). PRD §8.1 asks for "Thai-first readability: typography ขนาดอ่าน
 สะดวก". This is the Lighthouse `font-size` audit, which fails below 60 %.
@@ -175,6 +195,8 @@ least 60 % of the text is 12 px or larger" (fixme). The measured shares at 412 p
 text)
 
 ## BUG-QA-010: `/archive` shifts its layout while loading on a slow mobile connection
+
+**Status**: Fixed in `c67cec8` and `ab6ea7d`. Confirmed with shift attribution: the Latin font subset swapped in before the Thai one, and in that mixed state the date-form row wrapped to two lines (+56 px), then unwrapped. The root layout now preloads the Thai and Latin 400/700 faces, and `src/lib/styles/fonts.css` declares the same @fontsource files with `font-display: optional`, so a late font is never swapped in (preloading alone still failed under the parallel e2e load). Throttled CLS 0.307 → 0.001; see `BASELINE.md` § "After the Wave 3 fixes".
 
 **Severity**: P3 (performance, Core Web Vitals). This is the only route below 90 in Lighthouse
 performance (88).

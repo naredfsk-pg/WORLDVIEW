@@ -142,6 +142,43 @@ These runs show what the fixture numbers cannot: real RSS fetch times.
   LLM clustering in the digest merges later (ARCHITECTURE §9). This matches the open item about
   grouping quality in the Wave 2.5 log.
 
+## After the Wave 3 fixes
+
+Re-measured on 2026-11-13 at about 15:30 ICT, on the same machine, with the same method as §1
+(Lighthouse 12.8.2 mobile preset, installed Chrome 157 via `CHROME_PATH`, `npm run build` then
+`npx vite preview --port 5373` on the seeded `data/worldview.db`, 3 runs per URL, median shown,
+all three runs in brackets). Code: `fix/qa-wave3` @ `ab6ea7d`.
+
+| URL | Performance | Accessibility | Best practices | SEO | LCP | FCP | CLS | TBT | Transfer | Legible text (`font-size`) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `/` before | 95 [95/95/95] | 100 | 96 | 100 | 2.43 s | 2.43 s | 0.011 | 0 ms | 184 KB | 54.7 % (fail) |
+| `/` **after** | **94** [94/95/94] | 100 | **100** | 100 | 2.43 s | 2.16 s | **0.000** | 138 ms [141/0/138] | 184 KB | **98.1 %** |
+| `/archive` before | 88 [88/88/88] | 96 | 96 | 100 | 2.27 s | 2.27 s | 0.175 | 0 ms | 178 KB | 46.0 % (fail) |
+| `/archive` **after** | **97** [97/96/97] | **100** | **100** | 100 | 2.33 s | 2.00 s | **0.000** | 26 ms [26/0/30] | 178 KB | **98.6 %** |
+
+- `/archive` CLS 0.175 → 0.000 (BUG-QA-010) brings performance from 88 to 97. Accessibility is
+  100 because the axe findings (BUG-QA-002/003) are fixed, and best practices is 100 because the
+  `font-size` audit now passes (BUG-QA-009).
+- `/` performance is 94–95, within run-to-run noise of the baseline. Two of its three runs
+  recorded 138–141 ms of TBT; the third recorded 0 ms. LCP is unchanged.
+- FCP is 0.3–0.4 s earlier on both pages. With `font-display: optional` (`src/lib/styles/fonts.css`),
+  text paints immediately in the fallback font if Noto Sans Thai is not ready yet, instead of
+  waiting for the swap.
+- Transfer sizes are unchanged. The four preloaded font files (about 39 KB) were already part of
+  every page load.
+
+Throttled CLS from `tests/e2e/lighthouse-findings.e2e.ts` (412 px, CDP slow 4G, 4× CPU), with
+layout-shift attribution:
+
+| `/archive` | Shifts | CLS |
+|---|---|---|
+| Before | `main > div.grid` down 56 px at about 3.2 s (Latin subset loaded, Thai not yet: the date-form row wraps), then back up at about 3.4 s (Thai subset loaded) | 0.307 |
+| Preload only (`c67cec8`) | Isolated run: one 0.001 shift. Full parallel e2e run: still 0.309 | 0.001 / 0.309 |
+| Preload + `font-display: optional` (`ab6ea7d`) | None, in 2 sequential and 4 parallel runs, and in the full e2e run | **0.000** |
+
+With `ab6ea7d` the same measure gives 0.000 on `/` (0.009 with preload only) and 0.000 on
+`/events/demo-evt-01`.
+
 ## How to repeat
 
 ```bash
