@@ -1,0 +1,16 @@
+# Package Managers
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+bun.lock
+bun.lockb
+
+# Miscellaneous
+/static/
+
+# Owned by other agents / reference material / generated
+/content/
+/docs/
+/worldview-ui-prototype/
+/WORLDVIEW_PROJECT_REQUIREMENTS.md
+/migrations/

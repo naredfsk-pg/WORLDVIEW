@@ -1,0 +1,38 @@
+# Secrets / env (keep .env.example tracked)
+.env
+.env.*
+!.env.example
+
+# Dependencies & build output
+node_modules/
+.svelte-kit/
+build/
+dist/
+.output/
+.vercel/
+.netlify/
+
+# SQLite data
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+
+# Tests / coverage
+coverage/
+test-results/
+playwright-report/
+
+# Logs & OS / editor
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Vite (merged from sv template)
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*

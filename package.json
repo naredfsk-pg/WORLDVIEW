@@ -1,0 +1,63 @@
+{
+	"name": "worldview",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"imports": {
+		"#lib": "./src/lib/index.js",
+		"#lib/*": "./src/lib/*"
+	},
+	"scripts": {
+		"dev": "vite dev",
+		"build": "vite build",
+		"preview": "vite preview",
+		"prepare": "svelte-kit sync || echo ''",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"lint": "prettier --check . && eslint .",
+		"format": "prettier --write .",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"test:e2e": "playwright test",
+		"db:generate": "drizzle-kit generate",
+		"db:migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
+		"db:studio": "drizzle-kit studio",
+		"db:seed": "tsx --env-file-if-exists=.env scripts/seed.ts",
+		"db:reset": "tsx --env-file-if-exists=.env scripts/db-reset.ts && npm run db:migrate && npm run db:seed"
+	},
+	"devDependencies": {
+		"@eslint/js": "^10.0.1",
+		"@playwright/test": "^1.60.0",
+		"@sveltejs/adapter-node": "^6.0.0",
+		"@sveltejs/kit": "^3.0.0",
+		"@sveltejs/vite-plugin-svelte": "^7.2.0",
+		"@tailwindcss/vite": "^4.3.0",
+		"@types/better-sqlite3": "^9.6.0",
+		"@types/node": "^24",
+		"drizzle-kit": "^0.31.11",
+		"eslint": "^10.4.1",
+		"eslint-config-prettier": "^10.1.8",
+		"eslint-plugin-svelte": "^3.19.0",
+		"globals": "^17.6.0",
+		"prettier": "^3.8.3",
+		"prettier-plugin-svelte": "^4.1.0",
+		"prettier-plugin-tailwindcss": "^0.8.0",
+		"svelte": "^5.57.2",
+		"svelte-check": "^4.6.0",
+		"tailwindcss": "^4.3.0",
+		"tsx": "^4.23.15",
+		"typescript": "^6.0.3",
+		"typescript-eslint": "^8.60.1",
+		"vite": "^8.3.0",
+		"vitest": "^4.1.8"
+	},
+	"dependencies": {
+		"better-sqlite3": "^13.1.1",
+		"drizzle-orm": "^0.45.4",
+		"yaml": "^2.9.1",
+		"zod": "^4.6.7"
+	},
+	"engines": {
+		"node": ">=24"
+	}
+}
