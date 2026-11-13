@@ -93,6 +93,8 @@ async function publishedEvent(spec: EventSpec): Promise<string> {
 			tags: [],
 			signals: spec.signals ?? { impact_breadth: 1, thailand_relevance: 1, sensitive: false },
 			occurred_at: null,
+			credibility_level: 'none',
+			credibility_reason_th: null,
 			summarized_at: ingestedAt,
 			status: 'published',
 			review_reasons: [],
@@ -348,6 +350,8 @@ describe('rankBriefCandidates: region quota and selection reasons', () => {
 		last_updated_at: '2026-11-13T00:00:00.000Z',
 		source_count: 1,
 		is_demo: false,
+		credibility_level: 'none',
+		credibility_reason_th: null,
 		signals: { impact_breadth: impact, thailand_relevance: 0, sensitive: false },
 		is_continuing: false,
 		window_evidence_at: null,
@@ -373,6 +377,40 @@ describe('rankBriefCandidates: region quota and selection reasons', () => {
 			windowEnd
 		});
 		expect(alone.map((item) => item.event_id)).toEqual(['injected', 'weak']);
+	});
+
+	it('possible_misinformation never takes ranks 1–3, even with the best score', () => {
+		const flagged = candidate('flagged', ['asia'], 3, {
+			source_count: 3,
+			credibility_level: 'possible_misinformation'
+		});
+		const others = ['c1', 'c2', 'c3', 'c4'].map((id) =>
+			candidate(id, ['africa'], 1, { source_count: 2 })
+		);
+		const items = rankBriefCandidates([flagged, ...others], { max: 10, windowEnd });
+		expect(items.map((item) => item.event_id)).toEqual(['c1', 'c2', 'c3', 'c4', 'flagged']);
+		expect(items.map((item) => item.rank)).toEqual([1, 2, 3, 4, 5]);
+
+		// Other labels rank as usual.
+		const disputed = candidate('disputed', ['asia'], 3, {
+			source_count: 3,
+			credibility_level: 'disputed'
+		});
+		expect(rankBriefCandidates([disputed, ...others], { max: 10, windowEnd })[0]!.event_id).toBe(
+			'disputed'
+		);
+	});
+
+	it('leaves possible_misinformation out when fewer than three other items exist', () => {
+		const flagged = candidate('flagged', ['asia'], 3, {
+			credibility_level: 'possible_misinformation'
+		});
+		const items = rankBriefCandidates(
+			[flagged, candidate('a', ['africa'], 0), candidate('b', ['europe'], 0)],
+			{ max: 10, windowEnd }
+		);
+		expect(items.map((item) => item.event_id)).toEqual(['a', 'b']);
+		expect(rankBriefCandidates([flagged], { max: 10, windowEnd })).toEqual([]);
 	});
 
 	it('keeps US/Europe at or below 40% when other regions have candidates', () => {

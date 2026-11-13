@@ -73,7 +73,9 @@ export const VALID_SUMMARY: SummaryOutput = {
 	thailand_relevance: 0,
 	cited_refs: ['a1', 'a2'],
 	update_th: null,
-	update_refs: []
+	update_refs: [],
+	credibility_level: 'none',
+	credibility_reason_th: null
 };
 
 export const REF_TO_ARTICLE_ID: Record<string, string> = { a1: 'art-1', a2: 'art-2' };

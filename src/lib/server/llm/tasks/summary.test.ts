@@ -3,7 +3,8 @@
  * fact. The prompt now requires title and summary to state only facts every source agrees on.
  * summary@3 (Wave 3): allegations about a named person stay attributed claims, and the optional
  * `update_th` timeline line. summary@4 (review): `update_refs`, and both timeline fields are
- * lenient. tagging@2: tags are topics, never allegations. Each version bump
+ * lenient. summary@5 (auto-publish wave): the lenient credibility label of the claims.
+ * tagging@2: tags are topics, never allegations. Each version bump
  * invalidates the cached outputs of the previous one.
  */
 import { describe, expect, it } from 'vitest';
@@ -22,8 +23,10 @@ const noCache: LlmCallRepository = {
 };
 
 describe('summary task prompt', () => {
-	it('is version summary@4 (tagging@2, clustering@3), so older cache entries are not reused', () => {
-		expect(PROMPT_VERSIONS.summary).toBe('summary@4');
+	it('is version summary@5 (tagging@2, clustering@3), so older cache entries are not reused', () => {
+		expect(PROMPT_VERSIONS.summary).toBe('summary@5');
+		expect(PROMPT_VERSIONS.extraction).toBe('extraction@1');
+		expect(PROMPT_VERSIONS.relations).toBe('relations@1');
 		expect(PROMPT_VERSIONS.tagging).toBe('tagging@2');
 		expect(PROMPT_VERSIONS.clustering).toBe('clustering@3');
 	});
@@ -43,6 +46,51 @@ describe('summary task prompt', () => {
 		const dropped = typeof fields.update_th !== 'string' || fields.update_th.length > 300;
 		if (dropped) expect(result.data.update_th).toBeNull();
 		if (!Array.isArray(fields.update_refs)) expect(result.data.update_refs).toEqual([]);
+	});
+
+	it.each([
+		['a missing label', {}, 'none', null],
+		[
+			'an unknown level',
+			{ credibility_level: 'fake_news', credibility_reason_th: 'ข้อความ' },
+			'none',
+			'ข้อความ'
+		],
+		[
+			'a reason of the wrong type',
+			{ credibility_level: 'disputed', credibility_reason_th: 7 },
+			'disputed',
+			null
+		],
+		[
+			'an overlong reason',
+			{ credibility_level: 'unverified', credibility_reason_th: 'ก'.repeat(201) },
+			'unverified',
+			null
+		],
+		[
+			'a valid label',
+			{ credibility_level: 'disputed', credibility_reason_th: 'ตัวเลขไม่ตรงกัน' },
+			'disputed',
+			'ตัวเลขไม่ตรงกัน'
+		]
+	])('credibility: %s never invalidates the summary', (_label, fields, level, reason) => {
+		const base: Record<string, unknown> = { ...VALID_SUMMARY };
+		delete base.credibility_level;
+		delete base.credibility_reason_th;
+		const result = validateOutput(TASK_DEFINITIONS.summary, SUMMARY_INPUT, { ...base, ...fields });
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.data.credibility_level).toBe(level);
+		expect(result.data.credibility_reason_th).toBe(reason);
+	});
+
+	it('tells the model the label is about claims, never the outlet', () => {
+		const summary = TASK_DEFINITIONS.summary.systemPrompt;
+		expect(summary).toContain('never judge an outlet by its name or reputation');
+		expect(summary).toContain('never accuse a news organisation');
+		expect(summary).toContain('possible_misinformation');
+		expect(summary).toContain('Never use it on suspicion alone');
 	});
 
 	it('clustering rationale_th is optional and lenient too', () => {

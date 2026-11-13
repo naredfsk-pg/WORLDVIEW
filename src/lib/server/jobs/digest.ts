@@ -66,6 +66,8 @@ export interface DigestDeps {
 	maxEvents?: number;
 	/** `EDITORIAL_AUTO_PUBLISH` (ARCHITECTURE §11). */
 	autoPublish: AutoPublishPolicy;
+	/** `RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE`: used only with policy `all` (ARCHITECTURE §11). */
+	relationMinConfidence: number;
 }
 
 export async function runDigest(deps: DigestDeps, ctx: JobContext): Promise<JobOutcome> {
@@ -137,7 +139,15 @@ export async function runDigest(deps: DigestDeps, ctx: JobContext): Promise<JobO
 	}
 
 	let catalog: AcademyLessonRow[] | null = null;
-	const linksDeps = { digest: deps.digest, runTask, now: ctx.now, logger: ctx.logger, counters };
+	const linksDeps = {
+		digest: deps.digest,
+		runTask,
+		now: ctx.now,
+		logger: ctx.logger,
+		autoPublish: deps.autoPublish,
+		relationMinConfidence: deps.relationMinConfidence,
+		counters
+	};
 	for (const event of published) {
 		if (ctx.signal.aborted) break;
 		try {

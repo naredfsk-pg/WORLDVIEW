@@ -18,6 +18,10 @@
  * the brief has such events; the other items follow in score order. Which events enter the brief
  * is unchanged.
  *
+ * Credibility (auto-publish wave): an event labelled `possible_misinformation` never takes ranks
+ * 1–3. It is placed after every other item, and left out of the brief when even that would put it
+ * in the top three (a brief with fewer than three other items).
+ *
  * Region quota: no region (other than `global`) may take more than 40% of the items while other
  * candidates are left, so US/Europe news cannot crowd out every other region. Leftover slots are
  * then filled in score order. At most `max` items; never padded.
@@ -28,6 +32,8 @@ import type { BriefCandidate } from '#lib/types/repositories.js';
 export const REGION_MAX_SHARE = 0.4;
 /** Ranks reserved for corroborated events (≥ 2 registry sources), when the brief has any. */
 export const CORROBORATED_TOP_SLOTS = 3;
+/** Ranks a `possible_misinformation` event never takes. */
+export const TOP_SLOTS = 3;
 const RECENCY_HORIZON_MS = 24 * 60 * 60 * 1000;
 /** Regions whose news usually dominates international feeds (PRD §4.4). */
 const DOMINANT_REGIONS: ReadonlySet<RegionSlug> = new Set(['americas', 'europe']);
@@ -79,10 +85,19 @@ export function rankBriefCandidates(
 	const byScore = picked.sort(
 		(a, b) => b.score - a.score || a.candidate.id.localeCompare(b.candidate.id)
 	);
-	const top = byScore
+	const isFlagged = (entry: (typeof byScore)[number]) =>
+		entry.candidate.credibility_level === 'possible_misinformation';
+	const eligible = byScore.filter((entry) => !isFlagged(entry));
+	const top = eligible
 		.filter((entry) => entry.candidate.source_count >= 2)
 		.slice(0, CORROBORATED_TOP_SLOTS);
-	return [...top, ...byScore.filter((entry) => !top.includes(entry))].map((entry, index) => ({
+	const ordered = [
+		...top,
+		...eligible.filter((entry) => !top.includes(entry)),
+		// Flagged events only below the top slots: with fewer eligible items they are left out.
+		...(eligible.length >= TOP_SLOTS ? byScore.filter(isFlagged) : [])
+	];
+	return ordered.map((entry, index) => ({
 		event_id: entry.candidate.id,
 		rank: index + 1,
 		selection_reason: selectionReason(entry, balancing.has(entry.candidate.id))

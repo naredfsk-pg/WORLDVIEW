@@ -132,6 +132,7 @@ async function digest(mock: MockLlmHandlers = handlers(), overrides: Partial<Dig
 					llm: createMockLlmProvider(mock),
 					llmCalls: repositories.llmCalls,
 					autoPublish: 'all',
+					relationMinConfidence: 0.8,
 					...overrides
 				},
 				ctx
@@ -316,7 +317,7 @@ describe('digest failures and editorial invariants', () => {
 		}
 	});
 
-	it('stores no relation without evidence, and always keeps potential_impact for review', async () => {
+	it('stores no relation without evidence; a confident one is published under policy all', async () => {
 		await ingestFixtures();
 		await digest(
 			handlers({
@@ -349,7 +350,8 @@ describe('digest failures and editorial invariants', () => {
 		const relations = db.select().from(eventRelations).all();
 		expect(relations.length).toBeGreaterThan(0);
 		expect(relations.every((relation) => relation.relation_type === 'potential_impact')).toBe(true);
-		expect(relations.every((relation) => relation.status === 'pending_review')).toBe(true);
+		// Auto-publish wave: confidence 0.99 ≥ the threshold; the UI words potential_impact as possible.
+		expect(relations.every((relation) => relation.status === 'published')).toBe(true);
 		expect(relations.every((relation) => relation.evidence_refs.length > 0)).toBe(true);
 	});
 

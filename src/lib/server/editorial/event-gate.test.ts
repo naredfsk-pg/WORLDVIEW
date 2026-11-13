@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { NewsEvent } from '../../types/domain';
 import type { EventGateInput } from '../../types/editorial';
 import {
 	LINKED_ARTICLES,
@@ -10,8 +11,10 @@ import {
 import {
 	countDistinctSources,
 	evaluateEventForPublish,
+	evaluateStoredEventForAutoPublish,
 	mapRefsToArticleIds,
-	reviewReasonForLlmError
+	reviewReasonForLlmError,
+	storedEventGateReasons
 } from './event-gate';
 
 function gateInput(overrides: Partial<EventGateInput> = {}): EventGateInput {
@@ -195,22 +198,46 @@ describe('evaluateEventForPublish (auto)', () => {
 		]);
 	});
 
-	it('G6: a sensitive single-source event needs review; two publishers pass', () => {
-		const sensitive = {
+	it('G6 matrix: policy × sensitive × registry sources', () => {
+		const signals = (sensitive: boolean) => ({
 			impact_breadth: 2 as const,
 			thailand_relevance: 1 as const,
-			sensitive: true
-		};
+			sensitive
+		});
 		const singleSource = [
 			LINKED_ARTICLES[0]!,
 			makeArticle({ id: 'art-2', canonical_url: 'https://news.example.org/a/2' })
 		];
-
-		expect(
-			evaluateEventForPublish(gateInput({ signals: sensitive, articles: singleSource }))
-				.review_reasons
-		).toEqual(['sensitive_single_source']);
-		expect(evaluateEventForPublish(gateInput({ signals: sensitive })).status).toBe('published');
+		const cases = [
+			// [policy, sensitive, sources, expected status, expected reasons]
+			['all', true, 1, 'published', []],
+			['all', true, 2, 'published', []],
+			['all', false, 1, 'published', []],
+			['multi_source', true, 1, 'pending_review', ['sensitive_single_source']],
+			['multi_source', true, 2, 'published', []],
+			['multi_source', false, 1, 'pending_review', ['auto_publish_disabled']],
+			['multi_source', false, 2, 'published', []],
+			['off', true, 1, 'pending_review', ['sensitive_single_source']],
+			['off', true, 2, 'pending_review', ['auto_publish_disabled']],
+			['off', false, 1, 'pending_review', ['auto_publish_disabled']],
+			['off', false, 2, 'pending_review', ['auto_publish_disabled']]
+		] as const;
+		for (const [policy, sensitive, sources, status, reasons] of cases) {
+			const decision = evaluateEventForPublish(
+				gateInput({
+					auto_publish: policy,
+					signals: signals(sensitive),
+					articles: sources === 1 ? singleSource : LINKED_ARTICLES
+				})
+			);
+			expect({ policy, sensitive, sources, ...decision }).toEqual({
+				policy,
+				sensitive,
+				sources,
+				status,
+				review_reasons: reasons
+			});
+		}
 	});
 
 	it('G6: a fresh sensitive extraction wins over stale non-sensitive signals', () => {
@@ -227,12 +254,40 @@ describe('evaluateEventForPublish (auto)', () => {
 		expect(
 			evaluateEventForPublish(
 				gateInput({
+					auto_publish: 'multi_source',
 					signals: staleSignals,
 					extraction: { ...VALID_EXTRACTION, sensitive: true },
 					articles: singleSource
 				})
 			).review_reasons
 		).toEqual(['sensitive_single_source']);
+	});
+
+	it('all: hard gates still send a sensitive single-source event to review', () => {
+		const singleSource = [
+			LINKED_ARTICLES[0]!,
+			makeArticle({ id: 'art-2', canonical_url: 'https://news.example.org/a/2' })
+		];
+		const decision = evaluateEventForPublish(
+			gateInput({
+				signals: { impact_breadth: 1, thailand_relevance: 0, sensitive: true },
+				articles: singleSource,
+				summary: { ...VALID_SUMMARY, background_th: 'อ่านต่อ www.example.com' }
+			})
+		);
+		expect(decision).toEqual({
+			status: 'pending_review',
+			review_reasons: ['url_in_generated_text']
+		});
+	});
+
+	it('the credibility reason never blocks an auto publish (assessCredibility drops it)', () => {
+		const summary = {
+			...VALID_SUMMARY,
+			credibility_level: 'unverified' as const,
+			credibility_reason_th: 'ดูเพิ่มที่ www.example.com'
+		};
+		expect(evaluateEventForPublish(gateInput({ summary })).status).toBe('published');
 	});
 
 	it('never auto-publishes a hidden event: keep_hidden', () => {
@@ -388,5 +443,101 @@ describe('helpers', () => {
 		] as const) {
 			expect(reviewReasonForLlmError(kind)).toBe('llm_failed');
 		}
+	});
+});
+
+describe('evaluateStoredEventForAutoPublish (reevaluate_pending)', () => {
+	const singleSource = [
+		LINKED_ARTICLES[0]!,
+		makeArticle({ id: 'art-2', canonical_url: 'https://news.example.org/a/2' })
+	];
+	const stored = (overrides: Partial<NewsEvent> = {}): NewsEvent => ({
+		id: 'evt-1',
+		status: 'pending_review',
+		review_reasons: ['sensitive_single_source'],
+		title_th: VALID_SUMMARY.title_th,
+		summary_th: VALID_SUMMARY.summary_th,
+		what_happened_th: VALID_SUMMARY.what_happened_th,
+		why_it_matters_th: VALID_SUMMARY.why_it_matters_th,
+		background_th: null,
+		uncertain_th: 'ไม่แน่ชัด',
+		claims: [{ claimant_th: 'การท่าเรือ', claim_th: 'ความเสียหายมีเพียงเล็กน้อย', evidence_refs: [] }],
+		category: 'economy',
+		regions: ['asia'],
+		countries: [],
+		tags: [],
+		signals: { impact_breadth: 1, thailand_relevance: 0, sensitive: true },
+		occurred_at: null,
+		first_seen_at: '2026-11-13T00:00:00.000Z',
+		event_date: '2026-11-13',
+		last_updated_at: '2026-11-13T00:00:00.000Z',
+		published_at: null,
+		summarized_at: '2026-11-13T00:10:00.000Z',
+		source_count: 1,
+		is_demo: false,
+		credibility_level: 'none',
+		credibility_reason_th: null,
+		created_at: '2026-11-13T00:00:00.000Z',
+		updated_at: '2026-11-13T00:10:00.000Z',
+		...overrides
+	});
+
+	it('all: a sensitive single-source event held by G6 is published', () => {
+		expect(
+			evaluateStoredEventForAutoPublish({
+				event: stored(),
+				articles: singleSource,
+				auto_publish: 'all'
+			})
+		).toEqual({ status: 'published', review_reasons: [] });
+	});
+
+	it('multi_source / off keep the policy reasons', () => {
+		expect(
+			evaluateStoredEventForAutoPublish({
+				event: stored(),
+				articles: singleSource,
+				auto_publish: 'multi_source'
+			}).review_reasons
+		).toEqual(['sensitive_single_source']);
+		expect(
+			evaluateStoredEventForAutoPublish({
+				event: stored({ signals: { impact_breadth: 1, thailand_relevance: 0, sensitive: false } }),
+				articles: LINKED_ARTICLES,
+				auto_publish: 'off'
+			}).review_reasons
+		).toEqual(['auto_publish_disabled']);
+	});
+
+	it('stored text failing G1–G3 stays pending with the real reasons', () => {
+		const decision = evaluateStoredEventForAutoPublish({
+			event: stored({ summary_th: 'โทร 081-234-5678', category: null }),
+			articles: [makeArticle({ canonical_url: 'not a url' })],
+			auto_publish: 'all'
+		});
+		expect(decision).toEqual({
+			status: 'pending_review',
+			review_reasons: ['no_source', 'contact_in_generated_text', 'missing_thai_fields']
+		});
+	});
+
+	it('sticky admin reasons are kept', () => {
+		expect(
+			evaluateStoredEventForAutoPublish({
+				event: stored({ review_reasons: ['manual_flag'] }),
+				articles: LINKED_ARTICLES,
+				auto_publish: 'all'
+			}).review_reasons
+		).toEqual(['manual_flag']);
+	});
+
+	it('storedEventGateReasons (admin publish) checks the credibility reason too', () => {
+		expect(
+			storedEventGateReasons(
+				stored({ credibility_level: 'unverified', credibility_reason_th: 'ดู evil.example.com' }),
+				LINKED_ARTICLES
+			)
+		).toEqual(['url_in_generated_text']);
+		expect(storedEventGateReasons(stored(), LINKED_ARTICLES)).toEqual([]);
 	});
 });

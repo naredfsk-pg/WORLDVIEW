@@ -26,6 +26,7 @@ import { runJob } from '#lib/server/jobs/runner.js';
 import { createDefaultMockHandlers, createMockLlmProvider } from '#lib/server/llm/index.js';
 import { createFixtureAdapter } from '#lib/server/news/adapters.js';
 import { sourceRegistryFor } from '#lib/server/news/sources.js';
+import { DEFAULT_RELATION_AUTO_PUBLISH_MIN_CONFIDENCE } from '#lib/types/editorial.js';
 
 const PIPELINE_BRIEF_DATE = '2026-11-13';
 const EMPTY_BRIEF_DATE = '2026-10-01';
@@ -119,7 +120,8 @@ function digest() {
 					llm: createMockLlmProvider(createDefaultMockHandlers()),
 					llmCalls: repositories.llmCalls,
 					// The e2e data set needs published fictional events (the production default is off).
-					autoPublish: 'all'
+					autoPublish: 'all',
+					relationMinConfidence: DEFAULT_RELATION_AUTO_PUBLISH_MIN_CONFIDENCE
 				},
 				ctx
 			)

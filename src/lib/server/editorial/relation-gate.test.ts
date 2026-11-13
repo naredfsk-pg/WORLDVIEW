@@ -52,7 +52,7 @@ describe('evaluateRelation', () => {
 		}
 	});
 
-	it('sends every type to human review, whatever the confidence (MVP decision)', () => {
+	it('off / multi_source (and omitted): every type waits for review, whatever the confidence', () => {
 		const types = [
 			'same_topic',
 			'follow_up',
@@ -62,10 +62,38 @@ describe('evaluateRelation', () => {
 		] as const;
 		for (const relation_type of types) {
 			for (const confidence of [0, 0.6, 0.99, 1]) {
-				expect(
-					evaluateRelation(relation({ relation_type, confidence, evidence_article_ids: ['art-9'] }))
-				).toEqual({ action: 'store', status: 'pending_review' });
+				for (const auto_publish of ['off', 'multi_source', undefined] as const) {
+					expect(
+						evaluateRelation(
+							relation({ relation_type, confidence, auto_publish, evidence_article_ids: ['art-9'] })
+						)
+					).toEqual({ action: 'store', status: 'pending_review' });
+				}
 			}
+		}
+	});
+
+	it('all: published at or above the threshold, dropped below it', () => {
+		const at = (confidence: number, min_confidence?: number) =>
+			evaluateRelation(relation({ confidence, min_confidence, auto_publish: 'all' }));
+		expect(at(0.8, 0.8)).toEqual({ action: 'store', status: 'published' });
+		expect(at(0.95, 0.8)).toEqual({ action: 'store', status: 'published' });
+		expect(at(0.79, 0.8)).toMatchObject({ action: 'drop' });
+		expect(at(0.5, 0.4)).toEqual({ action: 'store', status: 'published' });
+		// Default threshold when none is passed: 0.8.
+		expect(at(0.8)).toEqual({ action: 'store', status: 'published' });
+		expect(at(0.7)).toMatchObject({ action: 'drop' });
+	});
+
+	it('all: evidence and G3 checks still drop a confident relation', () => {
+		for (const overrides of [
+			{ evidence_article_ids: [] },
+			{ explanation_th: 'ดูต่อที่ evil[.]com' },
+			{ explanation_th: 'English only' }
+		]) {
+			expect(
+				evaluateRelation(relation({ ...overrides, confidence: 1, auto_publish: 'all' }))
+			).toMatchObject({ action: 'drop' });
 		}
 	});
 });

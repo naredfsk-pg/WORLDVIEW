@@ -37,6 +37,8 @@ export const ENV_VAR_NAMES = [
 	'LLM_MAX_REQUESTS_PER_RUN',
 	// Editorial and ingest limits (security wave)
 	'EDITORIAL_AUTO_PUBLISH',
+	// Auto-publish wave
+	'RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE',
 	'INGEST_MAX_NEW_ITEMS_PER_SOURCE',
 	// App
 	'APP_TIMEZONE',

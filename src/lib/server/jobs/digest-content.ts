@@ -7,6 +7,9 @@
  *   next digest retries; any other `keep_published` → `markContentChecked`, so the event comes
  *   back only when newer evidence is linked
  * - `keep_hidden` → nothing is written
+ * Credibility (auto-publish wave): the summary's label plus the deterministic floor
+ * (`assessCredibility`) is saved with the text, so every re-summary recomputes it (an admin
+ * override is kept like any admin-edited field). A reason that fails the checks is dropped.
  * Auto-publish policy (`EDITORIAL_AUTO_PUBLISH`, ARCHITECTURE §11): the gate turns a would-be
  * publication into `pending_review [auto_publish_disabled]` unless the policy allows it, and in
  * `multi_source` / `off` a published event is never re-summarized: `flagNewEvidence` keeps its
@@ -45,7 +48,9 @@ import type {
 	EventWithArticles
 } from '#lib/types/repositories.js';
 import {
+	assessCredibility,
 	buildEventUpdate,
+	countDistinctSources,
 	evaluateEventForPublish,
 	filterAllegationTags,
 	mapRefsToArticleIds
@@ -225,6 +230,11 @@ export async function generateEventContent(
 		tags: taxonomy.tags,
 		signals,
 		occurred_at: extraction.occurred_at,
+		...assessCredibility({
+			assessed: { level: summary.credibility_level, reason_th: summary.credibility_reason_th },
+			sensitive: signals.sensitive,
+			distinct_sources: countDistinctSources(articles)
+		}),
 		summarized_at: deps.checkedAt,
 		status: decision.status,
 		review_reasons: decision.review_reasons,

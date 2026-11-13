@@ -118,6 +118,24 @@ describe('parseConfig', () => {
 		expect(JSON.stringify(config)).not.toContain('tunnel-secret');
 	});
 
+	it('editorial: policy off and a relation threshold of 0.8 by default; bounds 0–1', () => {
+		expect(parseConfig({}).editorial).toEqual({ autoPublish: 'off', relationsMinConfidence: 0.8 });
+		expect(
+			parseConfig({
+				EDITORIAL_AUTO_PUBLISH: 'all',
+				RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE: '0.65'
+			}).editorial
+		).toEqual({ autoPublish: 'all', relationsMinConfidence: 0.65 });
+		expect(parseConfig({ RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE: '' }).editorial).toMatchObject({
+			relationsMinConfidence: 0.8
+		});
+		for (const value of ['1.5', '-0.1', 'high']) {
+			expect(() => parseConfig({ RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE: value })).toThrow(
+				ConfigError
+			);
+		}
+	});
+
 	it('rejects DAILY_EVENT_TARGET_MIN greater than MAX', () => {
 		expect(() =>
 			parseConfig({ DAILY_EVENT_TARGET_MIN: '20', DAILY_EVENT_TARGET_MAX: '15' })

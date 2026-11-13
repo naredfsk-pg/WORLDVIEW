@@ -2,12 +2,15 @@
  * Digest links step (ARCHITECTURE §9 digest order 5), for events published or re-summarized in
  * this run:
  * - relations: candidate published events → `relations` task → relation gate → upsert on `store`
- *   (no relation without evidence from the two events' own articles; causal types wait for a human)
+ *   (no relation without evidence from the two events' own articles; with policy `all` a relation
+ *   at or above the confidence threshold is published and one below it is dropped, otherwise every
+ *   relation waits for a human)
  * - Academy: prefiltered lessons → `academy_linking` task → `selectLessonLinks` (existing ids only)
  *   → `replaceLessonLinks`
  * A failed LLM call stores nothing and keeps the previous links.
  */
 import type { AcademyLessonRow, CategorySlug, NewsEvent, Tag } from '#lib/types/domain.js';
+import type { AutoPublishPolicy } from '#lib/types/editorial.js';
 import type { JobCounters, Logger } from '#lib/types/jobs.js';
 import type { EventRefInput } from '#lib/types/llm.js';
 import type { ArticleWithSource } from '#lib/types/news.js';
@@ -30,6 +33,9 @@ export interface LinksDeps {
 	runTask: RunTask;
 	now: () => Date;
 	logger: Logger;
+	/** `EDITORIAL_AUTO_PUBLISH` and `RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE` (relation gate). */
+	autoPublish: AutoPublishPolicy;
+	relationMinConfidence: number;
 	counters: Required<
 		Pick<
 			JobCounters,
@@ -113,7 +119,9 @@ export async function linkRelatedEvents(published: PublishedEvent, deps: LinksDe
 			evidence_article_ids: evidenceIds,
 			from_article_ids: eventIsFrom ? eventArticleIds : candidateArticleIds,
 			to_article_ids: eventIsFrom ? candidateArticleIds : eventArticleIds,
-			confidence: relation.confidence
+			confidence: relation.confidence,
+			auto_publish: deps.autoPublish,
+			min_confidence: deps.relationMinConfidence
 		});
 		if (decision.action === 'drop') {
 			deps.counters.relations_dropped++;

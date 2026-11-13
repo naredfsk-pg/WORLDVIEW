@@ -15,6 +15,7 @@ import type { AutoPublishPolicy } from '#lib/types/editorial.js';
 import type { LlmTask, MockLlmHandlers } from '#lib/types/llm.js';
 import type { Repositories } from '#lib/types/repositories.js';
 import { createDefaultMockHandlers, createMockLlmProvider, mockLlmError } from '../llm/mock';
+import { SINGLE_SOURCE_FLOOR_REASON_TH } from '../editorial/index';
 import { createFixtureAdapter } from '../news/adapters';
 import { sourceRegistryFor } from '../news/sources';
 import { runDigest } from './digest';
@@ -89,7 +90,8 @@ async function digest(
 					digest: repositories.digest,
 					llm: createMockLlmProvider(mock),
 					llmCalls: repositories.llmCalls,
-					autoPublish
+					autoPublish,
+					relationMinConfidence: 0.8
 				},
 				ctx
 			)
@@ -244,6 +246,102 @@ describe('#1 auto-publish policy (EDITORIAL_AUTO_PUBLISH)', () => {
 	});
 });
 
+describe('credibility label (auto-publish wave)', () => {
+	/** Every extraction says sensitive; the summary proposes `level` with `reason`. */
+	function labelled(level: 'none' | 'disputed', reason: string | null): MockLlmHandlers {
+		const defaults = createDefaultMockHandlers();
+		return {
+			...defaults,
+			extraction: (input) =>
+				({ ...(defaults.extraction!(input) as object), sensitive: true }) as never,
+			summary: (input) =>
+				({
+					...(defaults.summary!(input) as object),
+					credibility_level: level,
+					credibility_reason_th: reason
+				}) as never
+		};
+	}
+
+	it('all: a sensitive single-source event is published with the unverified floor', async () => {
+		await ingestFixtures();
+		await digest('all', labelled('none', null));
+
+		const rows = allEvents();
+		expect(rows.every((row) => row.status === 'published')).toBe(true);
+		for (const row of rows) {
+			expect(row.review_reasons).toEqual([]);
+			expect(row.credibility_level).toBe(row.source_count >= 2 ? 'none' : 'unverified');
+			expect(row.credibility_reason_th).toBe(
+				row.source_count >= 2 ? null : SINGLE_SOURCE_FLOOR_REASON_TH
+			);
+		}
+		// Public DTOs carry the label.
+		const single = rows.find((row) => row.source_count === 1)!;
+		const detail = await repositories.read.getPublishedEventDetail(single.id);
+		expect(detail).toMatchObject({ credibility_level: 'unverified' });
+	});
+
+	for (const policy of ['off', 'multi_source'] as const) {
+		it(`${policy}: a sensitive single-source event still waits (G6)`, async () => {
+			await ingestFixtures();
+			await digest(policy, labelled('none', null));
+			for (const row of allEvents().filter((row) => row.source_count === 1)) {
+				expect(row).toMatchObject({
+					status: 'pending_review',
+					review_reasons: ['sensitive_single_source']
+				});
+			}
+		});
+	}
+
+	it('stores the model label and drops a reason that fails G3, never blocking the publish', async () => {
+		await ingestFixtures();
+		await digest('all', labelled('disputed', 'ดูหลักฐานที่ evil.example.com'));
+
+		for (const row of allEvents()) {
+			expect(row).toMatchObject({
+				status: 'published',
+				credibility_level: 'disputed',
+				credibility_reason_th: null
+			});
+		}
+	});
+
+	it('a re-summary recomputes the label, but keeps an admin override', async () => {
+		await ingestFixtures();
+		await digest('all', labelled('none', null));
+		const [multi, single] = [
+			allEvents().find((row) => row.source_count === 3)!,
+			allEvents().find((row) => row.source_count === 1)!
+		];
+		await repositories.admin.updateEventIfCurrent(
+			single.id,
+			single.updated_at,
+			{ credibility_level: 'none', credibility_reason_th: null },
+			{ ...EDITOR, public_note_th: null },
+			clock.toISOString()
+		);
+
+		clock = new Date(NOW.getTime() + 60 * 60 * 1000);
+		for (const id of [multi.id, single.id]) {
+			const joined = await addArticle('fixture-wire-c', `Follow-up ${id}`);
+			await repositories.digest.linkArticles(id, [joined], 1, clock.toISOString());
+		}
+		const reason = 'รายงานจากแต่ละแหล่งระบุตัวเลขไม่ตรงกัน';
+		await digest('all', labelled('disputed', reason));
+
+		expect(eventById(multi.id)).toMatchObject({
+			credibility_level: 'disputed',
+			credibility_reason_th: reason
+		});
+		expect(eventById(single.id)).toMatchObject({
+			credibility_level: 'none',
+			credibility_reason_th: null
+		});
+	});
+});
+
 describe('#4 admin flag during the summary call (probe race.mts)', () => {
 	it('keeps the flag, and the flagged events stay unpublished', async () => {
 		await ingestFixtures();
@@ -343,7 +441,7 @@ describe('#6 LLM fairness and budget', () => {
 });
 
 describe('#8 relations', () => {
-	it('stores every relation as pending_review, whatever the type and confidence', async () => {
+	async function relateNewEventWith(confidence: number) {
 		await ingestFixtures();
 		await digest('all');
 		clock = new Date(NOW.getTime() + 60 * 60 * 1000);
@@ -371,14 +469,22 @@ describe('#8 relations', () => {
 					direction: 'event_to_candidate',
 					explanation_th: 'เป็นความคืบหน้าต่อจากข่าวก่อนหน้า',
 					evidence: [input.event.articles[0]!.ref],
-					confidence: 0.99
+					confidence
 				}))
 			})
 		});
+		return db.select().from(eventRelations).all();
+	}
 
-		const relations = db.select().from(eventRelations).all();
+	it('policy all: a relation at or above the threshold is published without review', async () => {
+		const relations = await relateNewEventWith(0.8);
 		expect(relations.length).toBeGreaterThan(0);
-		expect(relations.every((relation) => relation.status === 'pending_review')).toBe(true);
+		expect(relations.every((relation) => relation.status === 'published')).toBe(true);
+		expect(relations.every((relation) => relation.reviewed_at === null)).toBe(true);
+	});
+
+	it('policy all: a relation below the threshold is dropped, not queued', async () => {
+		expect(await relateNewEventWith(0.79)).toEqual([]);
 	});
 
 	it('an admin rejection blocks the pair for every relation type in later runs', async () => {

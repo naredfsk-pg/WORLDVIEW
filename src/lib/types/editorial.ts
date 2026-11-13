@@ -23,6 +23,11 @@ export type GateMode = 'auto' | 'admin';
 export const AUTO_PUBLISH_POLICIES = ['all', 'multi_source', 'off'] as const;
 export type AutoPublishPolicy = (typeof AUTO_PUBLISH_POLICIES)[number];
 
+// CONTRACT-CHANGE (auto-publish wave): default of RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE, the same
+// value as CLUSTERING_MERGE_MIN_CONFIDENCE (the other confident model decision that changes public
+// content). Used by the relation gate only with policy `all`.
+export const DEFAULT_RELATION_AUTO_PUBLISH_MIN_CONFIDENCE = 0.8;
+
 export interface EventGateInput {
 	mode: GateMode;
 	/** Linked stored articles — the ONLY source of citable URLs. */
@@ -69,9 +74,14 @@ export interface RelationGateInput {
 	// CONTRACT-CHANGE: added. ARCHITECTURE §11 publishes non-causal relations only when
 	// confidence ≥ 0.6, so the gate needs the LLM's 0..1 confidence.
 	confidence: number;
+	// CONTRACT-CHANGE (auto-publish wave): with policy `all` a valid relation is published when
+	// `confidence ≥ min_confidence` (RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE) and dropped below it;
+	// with `off` / `multi_source` (and when omitted) every valid relation waits for an admin.
+	auto_publish?: AutoPublishPolicy;
+	min_confidence?: number;
 }
 
-/** `drop` = not stored at all (no or unresolvable evidence). */
+/** `drop` = not stored at all (no or unresolvable evidence, or below the auto-publish threshold). */
 export type RelationGateDecision =
 	| { action: 'store'; status: Exclude<RelationStatus, 'rejected'> }
 	| { action: 'drop'; reason: string };
