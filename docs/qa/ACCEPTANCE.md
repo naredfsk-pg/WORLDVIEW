@@ -4,6 +4,13 @@ This file maps each PRD §11 item (1–12) to the tests that prove it, with the 
 branch `test/acceptance-suite` from `main` @ `e074515`, 2026-11-13. Bugs are listed in
 [`BUGS.md`](BUGS.md) and the measured numbers in [`BASELINE.md`](BASELINE.md).
 
+> **Update, branch `fix/qa-wave3` (2026-11-13):** BUG-QA-001…010 are fixed. Every `test.fixme`
+> and `it.todo` below now runs and passes; `KNOWN_A11Y_BUGS` is empty, so any serious or critical
+> axe violation fails. Totals after the fixes: Vitest 711 passed (55 files), Playwright 318
+> passed with 0 fixme. Future `/archive` months are out of range now, so the month-boundary tests
+> use past months (Feb 2024/2025, 2025-12 → 2026-01). The rest of this file is the matrix as
+> filed.
+
 **Status key**:
 
 - **Covered**: automated tests prove every part of the item.
