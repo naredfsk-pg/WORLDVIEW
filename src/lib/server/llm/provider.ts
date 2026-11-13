@@ -24,7 +24,9 @@ import type {
 	LlmResult,
 	LlmTask
 } from '../../types/llm';
-import { toBriefDate } from '../../utils/date';
+import type { RetryPolicy } from '../../types/jobs';
+import { bangkokDayRangeUtc, todayBriefDate } from '../../utils/date';
+import { backoffDelayMs } from '../../utils/retry';
 import { computeCacheKey } from './cache-key';
 import { extractJsonObject } from './json';
 import { buildRepairMessages, buildTaskMessages, estimateTokens } from './prompt';
@@ -125,6 +127,11 @@ export function createLlmProvider(deps: LlmProviderDeps): LLMProvider {
 	const log = deps.log ?? ((entry: LlmLogEntry) => console.info(JSON.stringify(entry)));
 	const runDeadlineMs = deps.runDeadlineMs ?? DEFAULT_RUN_DEADLINE_MS;
 	const limit = createConcurrencyLimit(settings.maxConcurrency);
+	const backoffPolicy: RetryPolicy = {
+		max_attempts: 1 + settings.maxRetries,
+		base_delay_ms: BACKOFF_BASE_MS,
+		max_delay_ms: BACKOFF_MAX_MS
+	};
 	/**
 	 * Budget checks and call recording take turns, so a check never sees a call both as an
 	 * `llm_calls` row and as in flight, nor misses one in between.
@@ -277,7 +284,8 @@ export function createLlmProvider(deps: LlmProviderDeps): LLMProvider {
 
 			retriesLeft--;
 			const attempt = settings.maxRetries - retriesLeft;
-			await sleep(backoffDelay(attempt, call.retryAfterMs, random), context.signal);
+			const delayMs = backoffDelayMs(attempt, backoffPolicy, random(), call.retryAfterMs);
+			await sleep(delayMs, context.signal);
 			if (context.signal.aborted) return notSent(abortedError(model));
 		}
 	}
@@ -318,7 +326,7 @@ export function createLlmProvider(deps: LlmProviderDeps): LLMProvider {
 	}
 
 	async function reserveBudget(model: string, estimatedTokensIn: number): Promise<LlmError | null> {
-		const usage = await calls.usageSince(bangkokDayStartUtc(now()));
+		const usage = await calls.usageSince(bangkokDayRangeUtc(todayBriefDate(now())).start_utc);
 		if (usage.requests + inFlight.requests + 1 > settings.dailyMaxRequests) {
 			return { kind: 'budget_exceeded', message: 'daily request cap reached', model };
 		}
@@ -453,22 +461,6 @@ export function createLlmProvider(deps: LlmProviderDeps): LLMProvider {
 			tokens_out: call.tokensOut
 		});
 	}
-}
-
-/** `min(max, base·2^(n-1)) · rand(0.5..1)`; a `Retry-After` value wins, capped at max. */
-export function backoffDelay(
-	attempt: number,
-	retryAfterMs: number | null,
-	random: () => number = Math.random
-): number {
-	if (retryAfterMs !== null) return Math.min(BACKOFF_MAX_MS, retryAfterMs);
-	const exponential = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (attempt - 1));
-	return exponential * (0.5 + random() * 0.5);
-}
-
-/** Start of the current Asia/Bangkok day as UTC (ICT is a fixed UTC+7, no DST). */
-export function bangkokDayStartUtc(instant: Date): string {
-	return new Date(`${toBriefDate(instant.toISOString())}T00:00:00+07:00`).toISOString();
 }
 
 /**

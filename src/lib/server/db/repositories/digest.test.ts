@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { EventContentWrite } from '../../../types/repositories';
 import type { Db } from '../client';
-import { contentRevisions, eventRelations, events } from '../schema';
+import { contentRevisions, eventRelations, events, eventUpdates } from '../schema';
 import { openTestDb } from '../test-db';
 import { createRepositories } from './index';
 
@@ -220,6 +220,80 @@ describe('DigestRepository content lifecycle', () => {
 		expect(getEvent(id).published_at).toBe('2026-11-13T02:00:00.000Z');
 	});
 
+	it('lists the articles linked since the last summary, and never stores the same update twice', async () => {
+		const first = await addArticle('2026-11-13T00:00:00.000Z');
+		const id = await repos.digest.createDraftEvent([first], 1, '2026-11-13T01:00:00.000Z');
+		const [draft] = await repos.digest.listEventsNeedingContent(10);
+		// Never summarized: every linked article is new.
+		expect(draft?.new_article_ids).toEqual([first]);
+		await repos.digest.saveEventContent(id, content(), '2026-11-13T02:00:00.000Z');
+
+		const later = await addArticle('2026-11-13T02:30:00.000Z');
+		await repos.digest.linkArticles(id, [later], 0.9, '2026-11-13T03:00:00.000Z');
+		const [stale] = await repos.digest.listEventsNeedingContent(10);
+		expect(stale?.new_article_ids).toEqual([later]);
+
+		const update = {
+			occurred_at: null,
+			reported_at: '2026-11-13T02:30:00.000Z',
+			update_text_th: 'มีพัฒนาการใหม่',
+			evidence_refs: [{ article_id: later }]
+		};
+		const resummary = content({ summarized_at: '2026-11-13T03:05:00.000Z', new_updates: [update] });
+		await repos.digest.saveEventContent(id, resummary, '2026-11-13T03:05:00.000Z');
+		// A forced rerun with the same evidence set (and a duplicate in one list) adds nothing.
+		await repos.digest.saveEventContent(
+			id,
+			{ ...resummary, new_updates: [update, { ...update, update_text_th: 'ข้อความอื่น' }] },
+			'2026-11-13T03:10:00.000Z'
+		);
+
+		const stored = db.select().from(eventUpdates).where(eq(eventUpdates.event_id, id)).all();
+		expect(stored).toHaveLength(1);
+		expect(stored[0]).toMatchObject({
+			update_text_th: 'มีพัฒนาการใหม่',
+			reported_at: '2026-11-13T02:30:00.000Z',
+			occurred_at: null,
+			evidence_refs: [{ article_id: later }]
+		});
+	});
+
+	it('never lets a new update report earlier than the latest stored one', async () => {
+		const first = await addArticle('2026-11-13T00:00:00.000Z');
+		const id = await repos.digest.createDraftEvent([first], 1, '2026-11-13T01:00:00.000Z');
+		await repos.digest.saveEventContent(id, content(), '2026-11-13T02:00:00.000Z');
+		const update = (articleId: string, reportedAt: string) => ({
+			occurred_at: null,
+			reported_at: reportedAt,
+			update_text_th: 'มีพัฒนาการใหม่',
+			evidence_refs: [{ article_id: articleId }]
+		});
+		const later = await addArticle('2026-11-13T05:00:00.000Z');
+		const older = await addArticle('2026-11-12T22:00:00.000Z');
+		await repos.digest.linkArticles(id, [later, older], 1, '2026-11-13T05:10:00.000Z');
+
+		await repos.digest.saveEventContent(
+			id,
+			content({ new_updates: [update(later, '2026-11-13T05:00:00.000Z')] }),
+			'2026-11-13T05:20:00.000Z'
+		);
+		// A late-linked older article: its update is placed at the latest time, not before it.
+		await repos.digest.saveEventContent(
+			id,
+			content({ new_updates: [update(older, '2026-11-12T22:00:00.000Z')] }),
+			'2026-11-13T05:30:00.000Z'
+		);
+
+		const reported = db
+			.select()
+			.from(eventUpdates)
+			.where(eq(eventUpdates.event_id, id))
+			.all()
+			.map((row) => row.reported_at)
+			.sort();
+		expect(reported).toEqual(['2026-11-13T05:00:00.000Z', '2026-11-13T05:00:00.000Z']);
+	});
+
 	it('never demotes a published event', async () => {
 		const id = await repos.digest.createDraftEvent(
 			[await addArticle('2026-11-13T00:00:00.000Z')],
@@ -359,20 +433,80 @@ describe('DigestRepository.mergeDraftEvent', () => {
 			1,
 			now
 		);
-		await repos.digest.saveEventContent(target, content(), now);
 
 		await repos.digest.mergeDraftEvent(draft, target, 0.9, '2026-11-13T03:00:00.000Z');
 
 		expect(db.select().from(events).where(eq(events.id, draft)).get()).toBeUndefined();
 		expect(getEvent(target)).toMatchObject({
-			status: 'published',
+			status: 'draft',
 			source_count: 2,
 			first_seen_at: '2026-11-12T20:00:00.000Z'
 		});
-		// The published target now has evidence newer than its summary: digest re-summarizes it.
 		expect((await repos.digest.listEventsNeedingContent(10)).map((e) => e.event.id)).toEqual([
 			target
 		]);
+	});
+
+	it('never merges into a published event; flagPossibleDuplicate flags the draft and links them instead', async () => {
+		const now = '2026-11-13T02:00:00.000Z';
+		const published = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-13T00:00:00.000Z')],
+			1,
+			now
+		);
+		await repos.digest.saveEventContent(published, content(), now);
+		const before = getEvent(published);
+		const draftArticle = await addArticle('2026-11-13T00:30:00.000Z', { publisher: 'Other Wire' });
+		const draft = await repos.digest.createDraftEvent([draftArticle], 1, now);
+
+		await expect(repos.digest.mergeDraftEvent(draft, published, 0.95, now)).rejects.toThrow(
+			/into a published event/
+		);
+		const flagged = await repos.digest.flagPossibleDuplicate(
+			draft,
+			published,
+			{
+				explanation_th: 'อาจเป็นเหตุการณ์เดียวกัน',
+				evidence_article_ids: [draftArticle],
+				confidence: 0.9
+			},
+			'2026-11-13T03:00:00.000Z'
+		);
+
+		expect(flagged).toBe(true);
+		expect(getEvent(draft)).toMatchObject({
+			status: 'draft',
+			review_reasons: ['possible_duplicate']
+		});
+		expect(getEvent(published)).toEqual(before);
+		expect(db.select().from(eventRelations).all()).toMatchObject([
+			{
+				relation_type: 'same_topic',
+				status: 'pending_review',
+				explanation_th: 'อาจเป็นเหตุการณ์เดียวกัน',
+				evidence_refs: [{ article_id: draftArticle }],
+				confidence: 0.9,
+				reviewed_at: null
+			}
+		]);
+		// Not a published target, or no longer a draft: refused / nothing written.
+		await expect(
+			repos.digest.flagPossibleDuplicate(
+				published,
+				draft,
+				{ explanation_th: 'ก', evidence_article_ids: [], confidence: 1 },
+				now
+			)
+		).rejects.toThrow(/must be a published event/);
+		db.update(events).set({ status: 'pending_review' }).where(eq(events.id, draft)).run();
+		expect(
+			await repos.digest.flagPossibleDuplicate(
+				draft,
+				published,
+				{ explanation_th: 'ก', evidence_article_ids: [draftArticle], confidence: 1 },
+				now
+			)
+		).toBe(false);
 	});
 
 	it('refuses to merge away a non-draft event, or into a hidden one', async () => {

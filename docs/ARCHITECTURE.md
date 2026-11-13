@@ -1,6 +1,6 @@
 # WORLDVIEW — Architecture Contract (MVP)
 
-> Owner: `software-eng` (step 0.1) · 2026-11-13 · Status: **binding for Wave 0–2**
+> Owner: `software-eng` (step 0.1) · 2026-11-13 · Status: **binding for Wave 0–3** (§1, §2, §14 refreshed in Wave 3)
 > Precedence: [`AGENT_PLAN.md` §1 locked decisions](AGENT_PLAN.md) > **this document** > PRD / UI spec where this document reconciles them.
 > Types live in [`src/lib/types/`](../src/lib/types/index.ts) (pure TS, no runtime deps). If code and this doc disagree, raise it; do not fork the contract silently.
 
@@ -30,27 +30,29 @@
 
 ## 1. Module boundaries and import rules
 
-Import alias: `#lib/*` maps to `src/lib/*`. The scaffold defines it in the `package.json` `imports` field, so it also resolves in plain Node and `tsx` CLI scripts.
+Imports: `#lib/*` maps to `src/lib/*` through the `package.json` `imports` field (Node subpath imports, written with the `.js` extension, e.g. `#lib/utils/date.js`), so one path works in SvelteKit, Vitest and the `tsx` CLI. Relative imports inside a module are fine; `$lib` is not used (§18 #16).
 
 | Module | Responsibility | May import | Must NOT import |
 |---|---|---|---|
 | `src/lib/types` | Contracts: types and `as const` enums | other `types` files (type-only) | anything else |
-| `src/lib/utils` | Pure, isomorphic helpers (`date.ts`, `freshness.ts`, `retry.ts`, `url.ts`) | `types` | `node:*`, env, `server/*`, Svelte |
+| `src/lib/utils` | Pure, isomorphic helpers: `date.ts`, `freshness.ts`, `params.ts`, `retry.ts` (`withRetry`, `backoffDelayMs`), `url.ts` (`canonicalizeUrl`, `isHttpUrl`). These are the only copies: other modules import them instead of re-implementing them (Wave 3 removed the duplicates in `llm/provider.ts` and `editorial/text.ts`). | `types` | `node:*`, env, `server/*`, Svelte |
 | `src/lib/content` | Academy: parse, validate and render lesson Markdown. `academy.ts` is pure; `academy.server.ts` reads the files with `node:fs` | `types`, `utils` | `server/*` |
-| `src/lib/server/config.ts` | `getConfig()`, the only reader of `process.env` for app settings | zod | everything in `server/*` |
-| `src/lib/server/db` | Drizzle schema, migrations, `getDb()`, and the repository implementations | `types`, `utils`, `config` | `news`, `llm`, `jobs`, `editorial` |
-| `src/lib/server/news` | Source registry, adapters, `SafeFetch`, normalization, dedup keys, rule-based grouping | `types`, `utils` | `db`, `llm`, `jobs` |
+| `src/lib/stores` | Browser state (theme, Academy progress) over guarded `localStorage` | `types`, `utils` | `server/*` |
+| `src/lib/server/config.ts` | `getConfig()` / `parseConfig(env)`: the only reader of `process.env` for app settings (exceptions in §14) | zod | the rest of `server/*` |
+| `src/lib/server/db` | Drizzle schema, migrations, `getDb()`, `openDb()`, and the repository implementations | `types`, `utils`, `config` | `news`, `llm`, `jobs`, `editorial`, `auth` |
+| `src/lib/server/news` | Source registry, adapters, `SafeFetch`, normalization (incl. excerpt boilerplate), dedup keys, rule-based grouping | `types`, `utils` | `db`, `llm`, `jobs` |
 | `src/lib/server/llm` | `LLMProvider`, OpenAI-compatible transport, mock provider, Zod schemas, prompts, routing, cache, caps | `types`, `utils` | `db` (it receives `LlmCallRepository` by injection), `news`, `jobs` |
-| `src/lib/server/editorial` | Pure publishing gates, relation gate, brief ranking, region quota | `types`, `utils` | `db`, `llm`, `news`, `jobs`, any I/O |
-| `src/lib/server/jobs` | Orchestrates `ingest`, `digest`, `brief_*` and `archive_snapshot` against injected deps | `types`, `utils`, `news`, `llm`, `editorial` | `db` concrete code, `$app/*` |
-| `src/lib/server/auth.ts` | Cloudflare Access JWT verification (§4) | `types`, `config` | `db` |
-| `src/lib/components` | Svelte UI (shadcn-svelte + the components in UI spec §6) | `types`, `utils` | `server/*`, `content/*.server.ts` |
-| `src/routes/**/+page.server.ts`, `+server.ts`, `hooks.server.ts` | Thin HTTP adapters: parse params, call repositories and content, shape the page data | `server/*`, `content`, `types`, `utils` | business rules (put them in `editorial` or `jobs`) |
-| `src/routes/**/+page.svelte` | Rendering only | `components`, `types`, `utils` | `server/*` |
-| `scripts/*.ts` | **Composition root** for CLI work: build the config, db, repositories, adapters and provider, then call a job | everything server-side | `$app/*` |
+| `src/lib/server/editorial` | Pure rules: publishing gates, relation gate, lesson-link selection, allegation tag filter, timeline-entry builder | `types`, `utils` | `db`, `llm`, `news`, `jobs`, any I/O |
+| `src/lib/server/jobs` | Orchestrates `ingest`, `digest`, `brief_*` and `archive_snapshot` against injected repositories; brief ranking (`brief-ranking.ts`) | `types`, `utils`, `news`, `llm`, `editorial` | concrete `db`, `config`, `$app/*` (except `registry.ts`) |
+| `src/lib/server/jobs/registry.ts` | **The one exception in `jobs`:** `runJobByType`, the jobs composition root shared by the CLI and the admin rerun action. Reads `config`, opens the concrete db (one connection per call) and builds the adapters and provider | `jobs`, `news`, `llm`, `config`, `db` | `$app/*` |
+| `src/lib/server/auth/` | A folder: `admin-guard.ts` (the `/admin*` guard `hooks.server.ts` installs), `cloudflare-access.ts` (JWT verification, §4), `rate-limit.ts`, `security-headers.ts` | `types`, `config`, `jose`, `@sveltejs/kit` types | `db`, `jobs`, `llm`, `news` |
+| `src/lib/components` | Svelte UI (shadcn-svelte + the components in UI spec §6); `format.ts` re-exports display helpers from `utils` | `types`, `utils`, `stores` | `server/*`, `content/*.server.ts` |
+| `src/routes/**/+page.server.ts`, `+server.ts`, `hooks.server.ts` | Thin HTTP adapters: parse params, call repositories and content, shape the page data. `/admin/jobs` starts `runJobByType` in-process | `server/*`, `content`, `types`, `utils` | business rules (put them in `editorial` or `jobs`) |
+| `src/routes/**/+page.svelte` | Rendering only | `components`, `stores`, `types`, `utils` | `server/*` |
+| `scripts/*.ts` | **Composition root** for CLI work: `job.ts` is a thin CLI over `runJobByType`; `migrate`, `seed`, `db-reset`, `llm-smoke` build their own config and db | everything server-side | `$app/*` |
 
 Rules:
-- Dependencies point inward: routes and scripts → jobs → (news | llm | editorial) → types/utils. Concrete `db` is reached only from routes and scripts. Jobs depend on the interfaces in `types/repositories.ts`. There are no cycles.
+- Dependencies point inward: routes and scripts → `jobs/registry.ts` → jobs → (news | llm | editorial) → types/utils. Concrete `db` and `config` are reached only from routes, `hooks.server.ts`, scripts, `server/auth` (config only) and `jobs/registry.ts`. Job bodies depend on the interfaces in `types/repositories.ts`. There are no cycles.
 - Code under `src/lib/server/**` other than routes must be runnable from plain Node. It must not import `$app/*`, `$env/*` or `.svelte` files.
 - Side effects stay at the edges: `editorial` and `utils` are pure; time is injected (`now: () => Date`); the network goes only through `SafeFetch` (news) and `ChatTransport` (llm).
 - Only `PUBLIC_*` values may reach the client bundle. API keys never leave `config` → `llm`.
@@ -64,25 +66,28 @@ Rules:
 
 ```mermaid
 flowchart LR
-  cron["host cron (UTC lines = ICT schedule)"] -->|"docker compose exec -T app npm run job -- TYPE"| cli["scripts/job.ts (composition root)"]
-  cli --> jobs["server/jobs"]
-  jobs -->|ingest| news["server/news: adapters, normalize, dedup keys"]
+  cron["host cron (UTC lines = ICT schedule)"] -->|"docker compose exec -T app npm run job -- TYPE"| cli["scripts/job.ts (CLI)"]
+  cli --> registry["server/jobs/registry.ts: runJobByType (config + db composition root)"]
+  adminjobs["/admin/jobs ?/rerun"] -->|"in-process, same claim as cron"| registry
+  registry --> jobs["server/jobs"]
+  jobs -->|ingest| news["server/news: adapters, normalize, dedup keys, rule grouping"]
   news -->|SafeFetch allowlist| feeds[("approved RSS / fixture feeds")]
-  jobs -->|digest| grouping["news grouping rules"]
   jobs -->|digest| llm["server/llm: LLMProvider"]
   llm -->|"HTTPS chat/completions"| omni[("omniroute: cc/*, cx/* models")]
-  jobs --> editorial["server/editorial: gates, ranking"]
-  jobs -->|"write repositories"| db[("SQLite WAL: data/worldview.db")]
+  jobs --> editorial["server/editorial: gates, tag filter, timeline entry"]
+  registry -->|"repositories"| db[("SQLite WAL: data/worldview.db")]
   md["content/academy/**/*.md"] --> content["lib/content"]
   content -->|"npm run academy:sync"| db
   db -->|"PublicReadRepository"| loads["+page.server.ts loads"]
   content -->|"lesson HTML + TOC"| loads
   loads --> pages["+page.svelte + components (SSR)"]
   pages --> browser["mobile / desktop browser"]
-  browser -->|"/admin/* (Cloudflare Access)"| admin["admin form actions"]
-  admin -->|"AdminRepository + content_revisions"| db
-  admin -.->|"rerun: runJobByType in-process"| cli
+  browser -->|"/admin/* (Cloudflare Access + app JWT check)"| admin["admin loads + form actions"]
+  admin -->|"AdminRepository: content_revisions / admin_actions"| db
+  admin --> adminjobs
 ```
+
+Job pipeline: **ingest** (fetch → normalize, excerpt boilerplate stripped → dedup → rule grouping into draft events) → **digest** (group leftovers → tag articles → ambiguous clustering, which may merge a draft into another draft, or flag it as a possible duplicate of a published event for review → extraction → summary → gates → save, plus a timeline entry for a re-summarized published event → relations and Academy links) → **brief_morning / brief_evening / archive_snapshot** (rank → save). An admin rerun goes through the same `runJobByType` and the same `job_runs` claim as cron, so a running slot is never started twice.
 
 The UI only reads persisted data. If the LLM or a provider is down, every page keeps working from the database (PRD §11 #9).
 
@@ -120,7 +125,7 @@ Errors: loads throw `error(status, thaiMessage)` and the root `+error.svelte` re
 
 ## 4. Admin authentication (`/admin/*`)
 
-There are two layers. Cloudflare Access protects `/admin*` at the edge, and the app verifies the result in `hooks.server.ts` (code: `src/lib/server/auth/`, a folder rather than the `auth.ts` file listed in §1).
+There are two layers. Cloudflare Access protects `/admin*` at the edge, and the app verifies the result in `hooks.server.ts` (code: the `src/lib/server/auth/` folder, §1).
 
 1. Matching: `pathname === '/admin' || pathname.startsWith('/admin/')`, after the same percent-decoding SvelteKit applies before routing (so `/%61dmin` matches) and case-insensitively; an undecodable path counts as admin. **Or** the matched `event.route.id` (route groups stripped) is `/admin` or starts with `/admin/`, so a future `reroute` hook or base path cannot map another URL onto an admin route without the guard. This covers GET, form POSTs and `__data.json`.
 2. Read the `Cf-Access-Jwt-Assertion` request header. If it is missing → **403**.
@@ -218,7 +223,7 @@ Storage: ids are TEXT (`crypto.randomUUID()`; slugs for sources and lessons). Ti
 | Enum | Values | Source |
 |---|---|---|
 | `EventStatus` | `draft` · `pending_review` · `published` · `hidden` | `EVENT_STATUSES` |
-| `ReviewReason` | `no_source` · `llm_failed` · `invalid_llm_output` · `llm_request_rejected` · `unsupported_claim` · `url_in_generated_text` · `sensitive_single_source` · `missing_thai_fields` · `manual_flag` | `REVIEW_REASONS` |
+| `ReviewReason` | `no_source` · `llm_failed` · `invalid_llm_output` · `llm_request_rejected` · `unsupported_claim` · `url_in_generated_text` · `sensitive_single_source` · `missing_thai_fields` · `possible_duplicate` (Wave 3) · `manual_flag` | `REVIEW_REASONS` |
 | `RelationType` | `same_topic` · `follow_up` · `response_to` · `background_of` · `potential_impact` (no `causes` in MVP) | `RELATION_TYPES`; causal = `response_to`, `potential_impact` |
 | `RelationStatus` | `pending_review` · `published` · `rejected` | `RELATION_STATUSES` |
 | `BriefEdition` / `BriefStatus` | `morning` · `evening` · `daily_snapshot` / `draft` · `published` · `hidden` | `BRIEF_EDITIONS`, `BRIEF_STATUSES` |
@@ -229,7 +234,7 @@ Storage: ids are TEXT (`crypto.randomUUID()`; slugs for sources and lessons). Ti
 stateDiagram-v2
   [*] --> draft: digest groups articles
   draft --> published: all auto gates pass
-  draft --> pending_review: any gate fails / LLM fails
+  draft --> pending_review: any gate fails / LLM fails / possible duplicate of a published event
   pending_review --> published: next digest retry passes (only when reasons == [llm_failed])
   pending_review --> published: admin publish (hard gates)
   pending_review --> hidden: admin hide
@@ -375,7 +380,7 @@ To add late reports to a past day, run `archive_snapshot --date D --force`.
 - **Normalization** (`normalizeFeedItem(source, raw, now): NormalizedArticle | null`, pure):
   - `link` must parse as http(s), otherwise the item is dropped.
   - `title`: strip HTML, decode entities, collapse whitespace, max 300 chars. Empty → dropped.
-  - `excerpt`: same cleanup, max 500 chars; set only when `source.allow_excerpt`, otherwise `null`.
+  - `excerpt`: feed boilerplate is stripped first (`stripFeedBoilerplate`, Wave 3), then the same cleanup, max 500 chars; set only when `source.allow_excerpt`, otherwise `null`. Stripping runs before the cap so the cap keeps article text. It removes only: the trailing "Continue reading..." link (or the same words with an ellipsis at the very end); list items whose every link text is navigation (a label inside the link such as "Full report: …", "Analysis: …", "Explainer: …", "Live: …", a "… – latest updates" / "… – live" suffix, a bare "Read more" / "See also" / "Sign up …" link); promo or related-links items and paragraphs ("Get our …", "Sign up …", "Related:", "See also:" outside the links). Link-only headlines (English or Thai), "Analysis: <a>a sentence</a>" with the label outside the link, content bullets and plain sentences are kept; each item match is length-bounded (600 chars). Seen in Guardian descriptions; the other enabled feeds carry no boilerplate.
   - `published_at = parseFeedTimestamp(published ?? updated)`.
   - `publisher_name = source.name`.
   - `raw_metadata = { guid, author, categories }` only.
@@ -393,24 +398,41 @@ To add late reports to a past day, run `archive_snapshot --date D --force`.
 - **Grouping vs tagging** (AGENT_PLAN Wave 2 decision (a)): rule-based grouping runs at the end of **ingest** (and again at the start of digest for anything left unassigned). Digest tags articles `WHERE taxonomy IS NULL` whether grouped or not, and the LLM `clustering` task runs only for ambiguous pairs. Real and demo articles never share an event.
 - **Grouping** (`news/grouping.ts`, pure):
   - Compare against events whose `last_updated_at` is within 72 h.
-  - Score = title-token Jaccard plus tag overlap.
+  - Score = mean title-token Jaccard against the event's article titles + 0.15 · Jaccard of named entities; a pair whose entities or event types conflict is capped just below `join`. Tags are not part of the rule score.
   - ≥ 0.6 → `join`; 0.3–0.6 → `ambiguous` (LLM `clustering`); < 0.3 → `new_event`.
-  - Ingest turns an ambiguous match into a new draft event. Digest recomputes the score of each draft it processes (`bestEventMatch`) and sends the 0.3–0.6 pairs (max 20 per call) to `clustering`; `same_event` with confidence ≥ 0.7 merges the draft into the other event (`mergeDraftEvent`, one transaction). Anything else, or a failed call, keeps them separate. A draft an admin edited is never merged away (`mergeDraftEvent` resolves false), and real and demo events are never merged. Wrong merges are worse than duplicates.
-  - The thresholds are named constants (data-scientist may tune them).
+  - Ingest turns an ambiguous match into a new draft event. Digest sends a draft it processes to `clustering` (max `MAX_CLUSTERING_PAIRS` = 20 pairs, one per draft, per call; rule-band pairs take the slots first, shared-tag pairs fill the rest) when either:
+    - its recomputed best rule score (`bestEventMatch`) against a non-hidden event (draft or published) is in the 0.3–0.6 band, or
+    - (Wave 3, recall) it has a single article and no such match, and a **published** event shares ≥ `PUBLISHED_TARGET_MIN_SHARED_TAGS` (2) tags with that article's taxonomy (most shared tags wins).
+  - On `same_event` (Wave 3 review, coordinator decision: **a published event is never changed by clustering**):
+    - target a draft or `pending_review` event, confidence ≥ `CLUSTERING_MERGE_MIN_CONFIDENCE` (0.8, was 0.7) → the draft is merged into it (`mergeDraftEvent`, one transaction);
+    - target a **published** event, at any confidence → `flagPossibleDuplicate` (one transaction): the draft keeps its articles and gets `possible_duplicate` in `review_reasons`, and a `pending_review` `same_topic` relation from the draft to the published event is upserted with the model's `rationale_th` (or a fixed Thai line) and the draft's articles as evidence. The auto gate carries `possible_duplicate` forward like `manual_flag`, so the draft gets its own Thai text but ends `pending_review` and is never auto-published. The admin then publishes it as a separate event (admin gate G1–G3) or hides it, and approves or rejects the relation in `/admin/relations`. The published event is untouched: no relink, no `source_count` change, no re-summary, no timeline row. `mergeDraftEvent` refuses published targets.
+  - Anything else, or a failed call, keeps them separate. A draft an admin edited is never merged away (`mergeDraftEvent` resolves false), a hidden event is never a target, and real and demo events are never paired, merged or flagged. Every event a merge touched in the run (source and target) is skipped by later decisions, so merge chains never act on articles the LLM did not compare; after any merge or flag digest lists the events again before the content step. Wrong merges are worse than duplicates.
+  - Thresholds (named constants; data-scientist may tune them on fixtures):
+
+    | Constant | Value | Where | Why |
+    |---|---|---|---|
+    | `joinThreshold` | 0.6 | `GROUPING_CONFIG` | rules join without the LLM |
+    | `ambiguousThreshold` | 0.3 | `GROUPING_CONFIG` | kept in Wave 3: the missed Nvidia merge scored 0.05 (different wording), while an unrelated Congress story scored 0.23 against the same event, so a lower floor only adds noise |
+    | `entityWeight` / `conflictMargin` / `timeWindowMs` | 0.15 / 0.01 / 72 h | `GROUPING_CONFIG` | unchanged |
+    | `PUBLISHED_TARGET_MIN_SHARED_TAGS` | 2 | `jobs/digest.ts` | one shared tag (e.g. `semiconductors`) is too generic |
+    | `CLUSTERING_MERGE_MIN_CONFIDENCE` | 0.8 | `jobs/digest.ts` | draft/pending targets only; a borderline 0.7+ merge joined two happenings of one papal visit |
+  - `clustering@3` (Wave 3 review): `same_event` means the same happening only (two outlets reporting one announcement, attack, meeting or resignation). Reactions, consequences, investigations and other follow-ups are `related`, because they are modelled as relations (FR-04), and so are other stops or announcements of the same trip. Each decision may carry a short Thai `rationale_th` (lenient: invalid → null).
+  - Regression fixtures: `tests/fixtures/grouping/cases.json` (rule level) and the "clustering regressions" block in `jobs/digest.test.ts` (mock LLM: Nvidia-style draft → review item + pending relation with the published event unchanged, papal-visit precision, pair priority, merge chains, the guards).
 
 **Digest order** (`server/jobs/digest.ts`, Wave 2):
 1. Group unassigned articles (72 h, up to 200) by rules: `createDraftEvent` / `linkArticles`.
 2. Take up to 30 (or `--max-events`) `listEventsNeedingContent` (newest evidence first, id tie-break; published events with `manual_flag` are left out, since the gate could only keep them) and tag their articles `WHERE taxonomy IS NULL` (up to 20 per call), then `saveArticleTaxonomy`. Tagging errors are tracked per article: only `invalid_request` / `input_too_large` reach a human (`llm_request_rejected`); anything else, including articles the model left out, is retried as `llm_failed`.
-3. Ambiguous clustering for the drafts among them (see Grouping); after a merge, steps 2–3 list again.
+3. Ambiguous clustering for the drafts among them (see Grouping): merge into drafts / pending events, flag possible duplicates of published events; after any merge or flag, steps 2–3 list again.
 4. Per event: `extraction` → `summary` (with the previous wording for a published event) → `evaluateEventForPublish` (with `current_review_reasons`) → `saveEventContent` (output present) or `markEventForReview` (no output); nothing is written on `keep_hidden`, nor on `keep_published` after a transient `[llm_failed]` (retried next run); any other `keep_published` calls `markContentChecked`, so the event returns only when newer evidence is linked. `summarized_at` (and that marker) is the time the events were *listed*, so an article linked while the LLM works triggers the next re-summary. Claim evidence goes through `mapRefsToArticleIds`. `signals` = summary `impact_breadth` / `thailand_relevance` + extraction `sensitive`. An event with no tagged article skips the LLM and records the tagging failure (`llm_failed`, retried).
    - **Admin corrections win** (PRD FR-06, §9.2): `saveEventContent` never overwrites a content field that any admin revision of the event changed (a `content_revisions` row with `entity_type = 'event'` whose `changed_by` is not `system`; the fields are the keys of `before_after.after`). It checks every admin revision, not only those newer than `summarized_at`, so a field stays protected after later re-summaries. Untouched fields still follow the new evidence, a published event stays published, and the `system` revision notes "admin-edited fields kept". An unpublished event with admin edits is never auto-published: it stays `pending_review` with `manual_flag` until the admin publishes it. (Option (a) of the Wave 2 review. Option (b), skipping the re-summary and queueing the event, was not used: the review queue lists only `pending_review` events, and a published event is never auto-demoted.)
+   - **Timeline** (Wave 3): when a **published** event is re-summarized because new articles were linked and the gates publish it again, `saveEventContent` appends one `event_updates` row: `update_text_th` = the summary's `update_th`, `evidence_refs` = the summary's `update_refs` (summary@4: the refs of `previous.new_refs` the line is based on; the input carries `previous.new_refs`, the refs of the new articles it sees), `reported_at` = the newest `published_at ?? ingested_at` of that evidence but never earlier than the event's latest stored update (repository), `occurred_at` = null. `editorial/event-update.ts` builds it and applies the gate checks (Thai text, no URL; evidence must be stored articles with an http(s) URL). G3 covers `update_th` only for a published event (a draft's line is unused), so there a URL keeps the old text (`keep_published`). Both fields are lenient in the schema (`.catch`): an overlong or wrongly typed value only drops the row. No row on a first publication, `keep_published`, `keep_hidden`, a null or non-Thai `update_th`, or `update_refs` that are empty or include a ref that is not new. Idempotent: the repository skips an update whose evidence set equals one already stored for the event. `EventWithArticles.new_article_ids` (articles linked after `summarized_at`) supplies the new articles.
 5. For events published or re-summarized in this run, using the row as stored (admin-kept title, category and tags), not the LLM output:
    - `relations`: up to 8 published events from the last 14 days that share a tag or a region other than `global` (and the same `is_demo`), 3 articles each, then the relation gate, then `upsertRelation` on `store`.
    - `academy_linking`: up to 8 lessons sharing a tag (2 points) or the category (1 point), then `selectLessonLinks(links, existing ids)` → `replaceLessonLinks`. A failed call keeps the previous links.
 
 Every LLM call passes `{ job_run_id, signal }`; no failure throws.
 
-Event taxonomy: `category` is the majority of the articles' `taxonomy.category` (a tie goes to the earliest article). `regions`, `countries` and `tags` are the union (tags capped at 10).
+Event taxonomy: `category` is the majority of the articles' `taxonomy.category` (a tie goes to the earliest article). `regions`, `countries` and `tags` are the union (tags capped at 10). **Allegation tags** (owner policy, Wave 3) are dropped before the cap by `filterAllegationTags` (`editorial/tag-filter.ts`): an event about allegations concerning a named person (private life, criminal, corruption, espionage, sexual misconduct) may auto-publish, but never gets public tags derived from them. Rules (Wave 3 review), over the kebab parts of a tag: a part starting with `alleg`, `accus`, `rumo(u)r`, `scandal`, `indict`, `brib`, `kickback`, `embezzl`, `extramarital`, `adulter`, `infidelit`, `mistress`, `philander`, `molest`, `rapist`, or the parts `spying` / `spied`; a last part `spy`, `spies`, `traitor(s)`, `suspect(s)`; `spy`/`espionage` with `case`, `trial`, `probe`, `charge(s)`, `arrest`; `charge(s)`/`charged` only with a crime word (`fraud-charges`, not `service-charges`); `misconduct`, `harassment`, `rape`, `suspected` unless a topic qualifier is present (`police-misconduct`, `workplace-harassment`, `rape-law`, `suspected-cholera` stay); `affair(s)` unless the tag starts with `foreign-`, `public-`, `veterans-`, `consumer-`, `current-`, `internal-` or `international-`; `sexual-`/`sex-` with `assault`, `abuse`, `crime(s)`, `tape(s)`. Topic tags (`semiconductors`, `us-china`, `cyber-espionage`, `espionage-law`, `spy-satellite`, `corruption`) stay. Article taxonomy (internal) is not filtered. The filter also runs on admin publish (`AdminRepository.publishEvent(…, publicTags)`, with a `system` revision), so allegation tags of an older `pending_review` event cannot go public; tags an admin edited are kept as they are, on publish and on re-summary. `tagging@2` and `summary@3`/`@4` carry the matching prompt guidance. Events stored before Wave 3 keep their tags until their next re-summary.
 
 ## 10. LLM contract (`types/llm.ts`)
 
@@ -420,7 +442,7 @@ interface LLMProvider {
   run<T extends LlmTask>(task: T, input: LlmInput<T>, options?: LlmCallOptions): Promise<LlmResult<LlmOutput<T>>>;
 }
 ```
-- Tasks: `tagging | clustering | extraction | summary | relations | academy_linking`. Each has typed input and output in `LlmTaskMap`, and a Zod schema plus a `PROMPT_VERSIONS[task]` (e.g. `'summary@1'`) in `server/llm`. Bump the version whenever the prompt or schema changes; the version is part of the cache key.
+- Tasks: `tagging | clustering | extraction | summary | relations | academy_linking`. Each has typed input and output in `LlmTaskMap`, and a Zod schema plus a `PROMPT_VERSIONS[task]` in `server/llm`. Bump the version whenever the prompt or schema changes; the version is part of the cache key. Current (Wave 3): `tagging@2`, `clustering@3`, `extraction@1`, `summary@4`, `relations@1`, `academy_linking@1`.
 - Expected failures come back as `{ ok: false, error: { kind } }` and are never thrown. Callers map them to `pending_review` (`llm_failed` / `invalid_output`).
 
 **Model routing** (task model = `LLM_MODEL_<TASK> ?? LLM_MODEL_ID`, with `LLM_MODEL_ACADEMY_LINKING` added; when unset → `not_configured`):
@@ -479,8 +501,10 @@ interface LLMProvider {
 Outcomes:
 - All gates pass → `published`.
 - Any gate fails → `pending_review` with all failing reasons, or `keep_published` when the event was already published.
-- In `auto` mode an event that is `hidden` returns `keep_hidden` (write nothing), and an existing `manual_flag` reason is carried forward so auto-publish never overrides an editor (Wave 1 review fix).
+- In `auto` mode an event that is `hidden` returns `keep_hidden` (write nothing), and an existing `manual_flag` or `possible_duplicate` reason is carried forward so auto-publish never overrides an editor (Wave 1 review fix) or publishes a possible duplicate of a published event (Wave 3 review).
 - Admin publish runs only G1–G3. The admin's judgement replaces the rest.
+
+Other pure rules in `server/editorial` (Wave 3, details in §9): `filterAllegationTags` (no public tags derived from allegations about a person) and `buildEventUpdate` (timeline entry: Thai `update_th` without URL, evidence = the `update_refs` articles, which must be stored and citable).
 
 **Relation gate** (`evaluateRelation(input: RelationGateInput): RelationGateDecision`):
 - `evidence_article_ids` must be non-empty and every id must belong to the from-event's or to-event's articles. `explanation_th` must be Thai and contain no URL. Failing either → `drop`, so **no relation exists without evidence**.
@@ -559,41 +583,44 @@ Rendering:
 
 ## 14. Config contract (env names only; values live in `.env`, never in docs)
 
-`src/lib/server/config.ts` (scaffold, `getConfig()`) is the only reader of `process.env`. Empty values count as unset. Modules receive the slice of config they need as a parameter. `ENV_VAR_NAMES` in `types/config.ts` lists every name.
+`src/lib/server/config.ts` (`getConfig()`, cached; `parseConfig(env)`) is the only reader of `process.env` for app settings. Empty values count as unset. Modules receive the slice of config they need (`config.llm`, `config.cloudflare`, …) as a parameter. `ENV_VAR_NAMES` in `types/config.ts` lists every name. In `vite dev` / `vite preview`, `vite.config.ts` copies `.env` into `process.env`; the CLI uses `tsx --env-file`.
+
+Raw `process.env` reads outside `config.ts` (the only ones): `hooks.server.ts` passes the raw `NODE_ENV` to the admin guard (dev bypass, §4.7, no default); adapter-node reads its own variables (`ORIGIN`, `HOST`, `PORT`, `ADDRESS_HEADER`, `BODY_SIZE_LIMIT`); the e2e harness reads `E2E_PORT` / `E2E_JWKS_PORT`.
 
 | Var | Type | Default | Read by |
 |---|---|---|---|
-| `NODE_ENV` | `development\|test\|production` | development | config → auth dev bypass |
-| `OMNI_API_URL` / `OMNI_API_KEY` | url / secret | — (LLM `not_configured`) | config → llm (alias of `LLM_BASE_URL`/`LLM_API_KEY`) |
-| `LLM_BASE_URL` / `LLM_API_KEY` | url / secret | — | config → llm (override; not in .env) |
-| `LLM_API_COMPATIBILITY` | `openai_compatible\|custom` | openai_compatible | config → llm (`custom` = unsupported → `not_configured`) |
-| `LLM_MODEL_ID` | string | — | config → llm (default for every task) |
-| `LLM_MODEL_TAGGING` · `_CLUSTERING` · `_EXTRACTION` · `_SUMMARY` · `_RELATIONS` | string | `LLM_MODEL_ID` | config → llm routing |
-| `LLM_MODEL_ACADEMY_LINKING` | string | `LLM_MODEL_ID` | config → llm routing (**new; add to config.ts and `.env.example`**) |
-| `LLM_MODEL_FALLBACK` | string | — | llm (fallback for `cc/*` and other prefixes) |
-| `LLM_MODEL_FALLBACK_SECONDARY` | string | — | llm (fallback for `cx/*`) |
-| `LLM_OMIT_TEMPERATURE_FOR` | CSV (exact or `prefix*`) | empty | llm |
-| `LLM_TIMEOUT_SECONDS` | int | 90 (scaffold) | llm transport |
-| `LLM_MAX_CONCURRENCY` | int | 2 | llm semaphore |
-| `LLM_MAX_RETRIES` | int ≥0 | 2 | llm transport retry |
-| `LLM_MAX_INPUT_TOKENS` | int | 32000 | llm pre-check |
-| `LLM_MAX_OUTPUT_TOKENS` | int | 4000 | llm `max_tokens` |
-| `LLM_TEMPERATURE` | float 0–2 | 0.1 | llm |
-| `LLM_DAILY_MAX_REQUESTS` / `LLM_DAILY_MAX_TOKENS` | int | 300 / 600000 | llm caps, admin usage view |
-| `APP_TIMEZONE` | `Asia/Bangkok` only | Asia/Bangkok | config (validate) |
-| `DATABASE_URL` | `file:<path>` or `:memory:` | `file:./data/worldview.db` | db `getDb()`, scripts |
-| `DAILY_EVENT_TARGET_MIN` / `_MAX` | int | 10 / 15 | jobs brief ranking |
-| `PUBLIC_SITE_URL` | url | `http://localhost:5173` | root layout (canonical / og URLs) |
-| `CF_ACCESS_TEAM_DOMAIN` | host or url | — (admin closed) | `server/auth.ts` |
-| `CF_ACCESS_AUD` | string | — | `server/auth.ts` |
-| `ADMIN_ALLOWED_EMAILS` | CSV emails | empty (nobody) | `server/auth.ts` |
-| `ORIGIN` | url | required in prod | adapter-node (CSRF origin) |
-| `HOST` / `PORT` | string / int | 0.0.0.0 / 3000 | adapter-node |
-| `ADDRESS_HEADER` | header | `CF-Connecting-IP` recommended | adapter-node |
-| `BODY_SIZE_LIMIT` | size | 512K | adapter-node |
-| `PUBLIC_HOSTNAME` | host | localhost | compose / cloudflared docs |
-| `COMPOSE_PROJECT_NAME` | string | worldview | docker compose |
-| `TUNNEL_TOKEN` | secret | — | **cloudflared container only** |
+| `NODE_ENV` | `development\|test\|production` | development | config (`nodeEnv`); raw value → `server/auth/admin-guard.ts` dev bypass; `server/auth/cloudflare-access.ts` (test JWKS gate); Vite build mode (§4.7) |
+| `OMNI_API_URL` / `OMNI_API_KEY` | url / secret | — (LLM `not_configured`) | config → `llm` (`createLlmProviderFromConfig`, built in `jobs/registry.ts` and `scripts/llm-smoke.ts`); alias of `LLM_BASE_URL` / `LLM_API_KEY` |
+| `LLM_BASE_URL` / `LLM_API_KEY` | url / secret | — | config → `llm` (override; not in `.env.example`) |
+| `LLM_API_COMPATIBILITY` | `openai_compatible\|custom` | openai_compatible | config → `llm/index.ts` (`custom` = unsupported → `not_configured`) |
+| `LLM_MODEL_ID` | string | — | config → `llm/routing.ts` (default for every task) |
+| `LLM_MODEL_TAGGING` · `_CLUSTERING` · `_EXTRACTION` · `_SUMMARY` · `_RELATIONS` · `_ACADEMY_LINKING` | string | `LLM_MODEL_ID` | config → `llm/routing.ts` |
+| `LLM_MODEL_FALLBACK` | string | — | config → `llm/routing.ts` (fallback for `cc/*` and other prefixes) |
+| `LLM_MODEL_FALLBACK_SECONDARY` | string | — | config → `llm/routing.ts` (fallback for `cx/*`) |
+| `LLM_OMIT_TEMPERATURE_FOR` | CSV (exact or `prefix*`) | empty | config → `llm/routing.ts` `shouldOmitTemperature` |
+| `LLM_TIMEOUT_SECONDS` | int | 90 | config → `llm/transport.ts` (per attempt) |
+| `LLM_MAX_CONCURRENCY` | int | 2 | config → `llm/provider.ts` semaphore |
+| `LLM_MAX_RETRIES` | int ≥0 | 2 | config → `llm/provider.ts` retry loop (`utils/retry` backoff) |
+| `LLM_MAX_INPUT_TOKENS` | int | 32000 | config → `llm/provider.ts` pre-check |
+| `LLM_MAX_OUTPUT_TOKENS` | int | 4000 | config → `llm/provider.ts` `max_tokens` |
+| `LLM_TEMPERATURE` | float 0–2 | 0.1 | config → `llm/provider.ts` |
+| `LLM_DAILY_MAX_REQUESTS` / `LLM_DAILY_MAX_TOKENS` | int | 300 / 600000 | config → `llm/provider.ts` caps; `routes/admin/+page.server.ts` usage view |
+| `APP_TIMEZONE` | `Asia/Bangkok` only | Asia/Bangkok | config (validated literal; code never reads the host zone) |
+| `DATABASE_URL` | `file:<path>` or `:memory:` | `file:./data/worldview.db` | config → `db/client.ts` `getDb()` (routes), `jobs/registry.ts`, `scripts/migrate.ts`, `seed.ts`, `db-reset.ts` |
+| `DAILY_EVENT_TARGET_MIN` / `_MAX` | int | 10 / 15 | config → `jobs/registry.ts` → brief ranking |
+| `PUBLIC_SITE_URL` | url | `http://localhost:5173` | config → `routes/+layout.server.ts` (canonical / og URLs) |
+| `PUBLIC_HOSTNAME` | host | localhost | config (parsed, unused by app code); compose / cloudflared docs |
+| `COMPOSE_PROJECT_NAME` | string | worldview | config (parsed, unused by app code); docker compose |
+| `ORIGIN` | url | required in prod | adapter-node (CSRF origin); config → `server/auth/cloudflare-access.ts` (test JWKS needs a loopback origin) |
+| `HOST` / `PORT` | string / int | 0.0.0.0 / 3000 | adapter-node (config parses them only) |
+| `ADDRESS_HEADER` | header | `CF-Connecting-IP` recommended | adapter-node `getClientAddress()` → admin rate limit (config parses it only) |
+| `BODY_SIZE_LIMIT` | size | 512K (`.env.example`: 1M) | adapter-node (config parses it only) |
+| `TUNNEL_TOKEN` | secret | — | **cloudflared container only**; not in `AppConfig` (§18 #12) |
+| `CF_ACCESS_TEAM_DOMAIN` | host or url | — (admin closed) | config → `server/auth/cloudflare-access.ts` |
+| `CF_ACCESS_AUD` | string | — | config → `server/auth/cloudflare-access.ts`; unset is one condition of the dev bypass (`admin-guard.ts`) |
+| `ADMIN_ALLOWED_EMAILS` | CSV emails (plain ASCII) | empty (nobody) | config → `server/auth/cloudflare-access.ts` |
+| `CF_ACCESS_TEST_JWKS_URL` | url (loopback) | — | config → `server/auth/cloudflare-access.ts`; honoured only with `NODE_ENV=test`, a loopback `ORIGIN` and a loopback URL (§4.8). Test-only, not in `.env.example` |
+| `E2E_PORT` / `E2E_JWKS_PORT` | int | 4173 / `E2E_PORT + 1` | e2e harness only (`tests/e2e/admin-auth.ts`, Playwright config); not app config |
 
 These names from UI spec §9 are **not used**:
 - `LLM_REQUEST_TIMEOUT_MS` → use `LLM_TIMEOUT_SECONDS`

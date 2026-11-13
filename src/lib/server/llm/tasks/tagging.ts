@@ -11,7 +11,8 @@ import {
 	unknownRefIssues
 } from './shared';
 
-export const TAGGING_PROMPT_VERSION = 'tagging@1';
+// tagging@2 (Wave 3, owner policy): tags name topics, never allegations about a person.
+export const TAGGING_PROMPT_VERSION = 'tagging@2';
 
 const outputSchema: z.ZodType<TaggingOutput> = z.object({
 	items: z.array(
@@ -33,6 +34,7 @@ export const taggingTask = defineTask({
 - regions: the regions the story is about ("global" only for genuinely worldwide stories).
 - countries: ISO 3166-1 alpha-2 codes of countries the article is clearly about; [] if none.
 - tags: up to 8 short kebab-case English keywords (for example "nato", "interest-rates").
+- Tags describe topics (organisations, places, sectors, policy areas such as "semiconductors" or "us-china"), never allegations about individuals: no tag for a named person's private life, or for criminal, corruption, espionage or sexual-misconduct allegations (not "extramarital-affair", "alleged-spy" or "<name>-scandal").
 Base the tags only on the title and excerpt.`,
 	outputSchema,
 	maxArticles: MAX_ARTICLES_PER_TAGGING_CALL,

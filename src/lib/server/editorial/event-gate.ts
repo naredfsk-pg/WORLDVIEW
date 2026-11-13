@@ -7,13 +7,17 @@ import { REVIEW_REASONS, type CategorySlug, type ReviewReason } from '../../type
 import type { EventGateDecision, EventGateInput } from '../../types/editorial';
 import type { LlmErrorKind, SummaryOutput } from '../../types/llm';
 import type { ArticleWithSource } from '../../types/news';
-import { containsUrl, isHttpUrl, isThaiText } from './text';
+import { isHttpUrl } from '../../utils/url';
+import { containsUrl, isThaiText } from './text';
 
 export function evaluateEventForPublish(input: EventGateInput): EventGateDecision {
 	const reasons = input.mode === 'admin' ? adminGateReasons(input) : autoGateReasons(input);
-	// ARCHITECTURE §6: only an admin clears a manual flag or republishes a hidden event.
-	if (input.mode === 'auto' && input.current_review_reasons?.includes('manual_flag')) {
-		reasons.add('manual_flag');
+	// ARCHITECTURE §6: only an admin clears a manual flag or a possible duplicate, or republishes
+	// a hidden event.
+	for (const sticky of ['manual_flag', 'possible_duplicate'] as const) {
+		if (input.mode === 'auto' && input.current_review_reasons?.includes(sticky)) {
+			reasons.add(sticky);
+		}
 	}
 
 	// Stable order (the enum order) so stored reasons and the "exactly [llm_failed]" retry check are deterministic.
@@ -83,7 +87,10 @@ function autoGateReasons(input: EventGateInput): Set<ReviewReason> {
 
 	// G2, G3
 	if (!hasRequiredThaiFields(summary, input.category)) reasons.add('missing_thai_fields');
-	if (hasUrlInText(summary)) reasons.add('url_in_generated_text');
+	// `update_th` is only used for a published event (its timeline), so only then is it checked.
+	if (hasUrlInText(summary, input.current_status === 'published')) {
+		reasons.add('url_in_generated_text');
+	}
 
 	// G5: every evidence list is non-empty and resolves to stored articles.
 	const evidenceLists = [
@@ -124,7 +131,7 @@ function hasRequiredThaiFields(
 	].every(isThaiText);
 }
 
-function hasUrlInText(summary: SummaryOutput): boolean {
+function hasUrlInText(summary: SummaryOutput, includeUpdate = false): boolean {
 	const fields = [
 		summary.title_th,
 		summary.summary_th,
@@ -132,6 +139,7 @@ function hasUrlInText(summary: SummaryOutput): boolean {
 		summary.why_it_matters_th,
 		summary.background_th,
 		summary.uncertain_th,
+		includeUpdate ? summary.update_th : null,
 		...summary.claims_th.flatMap((claim) => [claim.claimant_th, claim.claim_th])
 	];
 	return fields.some(containsUrl);

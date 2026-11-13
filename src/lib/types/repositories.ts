@@ -25,6 +25,7 @@ import type {
 	RelationStatus,
 	ReviewReason,
 	Source,
+	Tag,
 	YearMonth
 } from './domain';
 import type {
@@ -108,7 +109,11 @@ export interface IngestRepository {
 
 export interface EventWithArticles {
 	event: NewsEvent;
+	/** Oldest evidence first. */
 	articles: ArticleWithSource[];
+	// CONTRACT-CHANGE (Wave 3): added for the event timeline.
+	/** Ids of the articles linked after `event.summarized_at` (all of them while it is null). */
+	new_article_ids: string[];
 }
 
 /** Result of summarization + publish gates, persisted atomically by `saveEventContent`. */
@@ -130,6 +135,7 @@ export interface EventContentWrite {
 	/** From `evaluateEventForPublish` ('keep_published' → caller does not save). */
 	status: 'published' | 'pending_review';
 	review_reasons: ReviewReason[];
+	/** Appended to the timeline; one whose evidence set equals a stored update's is skipped. */
 	new_updates: Omit<EventUpdate, 'id' | 'event_id' | 'created_at'>[];
 }
 
@@ -177,10 +183,25 @@ export interface DigestRepository {
 	// same happening as `targetEventId`: move its articles there and delete the draft, in one
 	// transaction. Throws unless the source is a `draft`, the target exists and is not hidden, and
 	// both have the same is_demo. Resolves false (nothing changed) when an admin edited the draft.
+	// CONTRACT-CHANGE (Wave 3 review): also throws for a `published` target; published events
+	// are never changed by clustering (see flagPossibleDuplicate).
 	mergeDraftEvent(
 		sourceEventId: string,
 		targetEventId: string,
 		confidence: number,
+		now: IsoUtc
+	): Promise<boolean>;
+	// CONTRACT-CHANGE: added (Wave 3 review). The LLM `clustering` task said a draft reports the
+	// same happening as a published event: in one transaction, add `possible_duplicate` to the
+	// draft's review_reasons (it stays a draft until digest saves its content, then waits for an
+	// admin) and upsert a `pending_review` `same_topic` relation from the draft to the published
+	// event with the draft's articles as evidence. The published event is not touched. Resolves
+	// false (nothing written) when the source is no longer a draft; throws unless the target is
+	// published with the same is_demo.
+	flagPossibleDuplicate(
+		draftEventId: string,
+		publishedEventId: string,
+		relation: { explanation_th: string; evidence_article_ids: string[]; confidence: number },
 		now: IsoUtc
 	): Promise<boolean>;
 	/**
@@ -330,9 +351,12 @@ export interface AdminRepository {
 	 */
 	publishEvent(
 		id: string,
-		gate: (current: EventWithArticles) => ReviewReason[],
+		gate: (current: Pick<EventWithArticles, 'event' | 'articles'>) => ReviewReason[],
 		meta: RevisionMeta,
-		now: IsoUtc
+		now: IsoUtc,
+		// CONTRACT-CHANGE (Wave 3): the public tag filter (allegation tags, owner policy) applied to
+		// pipeline tags on publish; tags an admin edited are kept as they are.
+		publicTags: (tags: Tag[]) => Tag[]
 	): Promise<AdminTransitionResult>;
 	/** draft | pending_review | published → hidden. */
 	hideEvent(id: string, meta: RevisionMeta, now: IsoUtc): Promise<AdminTransitionResult>;

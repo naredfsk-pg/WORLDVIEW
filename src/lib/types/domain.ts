@@ -171,6 +171,10 @@ export const REVIEW_REASONS = [
 	'sensitive_single_source',
 	/** A required Thai field is empty or contains no Thai script, or category is null. */
 	'missing_thai_fields',
+	// CONTRACT-CHANGE (Wave 3): the clustering LLM said this draft reports the same happening as
+	// a published event. Never auto-published (carried forward like manual_flag); a pending
+	// same_topic relation points at the published event. An admin publishes or hides it.
+	'possible_duplicate',
 	/** Flagged by an admin. */
 	'manual_flag'
 ] as const;
@@ -258,7 +262,7 @@ export interface EventUpdate {
 	id: string;
 	event_id: string;
 	occurred_at: IsoUtc | null;
-	/** Earliest publish time among the evidence articles for this update. */
+	/** Newest `published_at ?? ingested_at` among the evidence articles of this update. */
 	reported_at: IsoUtc;
 	update_text_th: string;
 	/** Non-empty. */

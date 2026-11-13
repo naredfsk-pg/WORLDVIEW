@@ -24,7 +24,7 @@ import {
 	type SQL
 } from 'drizzle-orm';
 import type { SQLiteColumn } from 'drizzle-orm/sqlite-core';
-import type { ReviewReason } from '../../../types/domain';
+import type { EventRelation, ReviewReason } from '../../../types/domain';
 import type { ArticleWithSource, EventMatchCandidate } from '../../../types/news';
 import type {
 	DigestRepository,
@@ -82,7 +82,7 @@ export function createDigestRepository(db: Db): DigestRepository {
 					rows.map((row) => row.id)
 				);
 				return rows.map((row): EventMatchCandidate => {
-					const titles = (articlesByEvent.get(row.id) ?? []).map((article) => article.title);
+					const titles = (articlesByEvent.get(row.id) ?? []).map(({ article }) => article.title);
 					return {
 						event_id: row.id,
 						title: row.title_th || titles[0] || '',
@@ -90,7 +90,8 @@ export function createDigestRepository(db: Db): DigestRepository {
 						first_seen_at: row.first_seen_at,
 						last_updated_at: row.last_updated_at,
 						article_titles: titles,
-						is_demo: row.is_demo
+						is_demo: row.is_demo,
+						status: row.status
 					};
 				});
 			});
@@ -229,10 +230,11 @@ export function createDigestRepository(db: Db): DigestRepository {
 						.where(eq(events.id, eventId))
 						.run();
 
-					if (content.new_updates.length > 0) {
+					const newUpdates = withoutStoredUpdates(tx, eventId, content.new_updates);
+					if (newUpdates.length > 0) {
 						tx.insert(eventUpdates)
 							.values(
-								content.new_updates.map((update) => ({
+								newUpdates.map((update) => ({
 									...update,
 									id: randomUUID(),
 									event_id: eventId,
@@ -309,7 +311,11 @@ export function createDigestRepository(db: Db): DigestRepository {
 						.get();
 					if (!source) throw new EntityNotFoundError('event', sourceEventId);
 					if (!target) throw new EntityNotFoundError('event', targetEventId);
-					if (source.status !== 'draft' || target.status === 'hidden') {
+					if (
+						source.status !== 'draft' ||
+						target.status === 'hidden' ||
+						target.status === 'published'
+					) {
 						throw new Error(
 							`mergeDraftEvent: cannot merge a ${source.status} event into a ${target.status} event`
 						);
@@ -327,6 +333,57 @@ export function createDigestRepository(db: Db): DigestRepository {
 					// A draft has no public content; its updates, relations and links cascade away.
 					tx.delete(events).where(eq(events.id, sourceEventId)).run();
 					recomputeDerivedFields(tx, targetEventId, now);
+					return true;
+				},
+				{ behavior: 'immediate' }
+			);
+		},
+
+		async flagPossibleDuplicate(draftEventId, publishedEventId, relation, now) {
+			return db.transaction(
+				(tx) => {
+					const draft = tx
+						.select({
+							status: events.status,
+							is_demo: events.is_demo,
+							reasons: events.review_reasons
+						})
+						.from(events)
+						.where(eq(events.id, draftEventId))
+						.get();
+					const target = tx
+						.select({ status: events.status, is_demo: events.is_demo })
+						.from(events)
+						.where(eq(events.id, publishedEventId))
+						.get();
+					if (!draft) throw new EntityNotFoundError('event', draftEventId);
+					if (!target) throw new EntityNotFoundError('event', publishedEventId);
+					if (target.status !== 'published' || target.is_demo !== draft.is_demo) {
+						throw new Error(
+							'flagPossibleDuplicate: the target must be a published event of the same kind'
+						);
+					}
+					if (draft.status !== 'draft') return false;
+
+					if (!draft.reasons.includes('possible_duplicate')) {
+						tx.update(events)
+							.set({ review_reasons: [...draft.reasons, 'possible_duplicate'], updated_at: now })
+							.where(eq(events.id, draftEventId))
+							.run();
+					}
+					upsertRelationRow(
+						tx,
+						{
+							from_event_id: draftEventId,
+							to_event_id: publishedEventId,
+							relation_type: 'same_topic',
+							explanation_th: relation.explanation_th,
+							evidence_refs: relation.evidence_article_ids.map((article_id) => ({ article_id })),
+							status: 'pending_review',
+							confidence: relation.confidence
+						},
+						now
+					);
 					return true;
 				},
 				{ behavior: 'immediate' }
@@ -371,39 +428,8 @@ export function createDigestRepository(db: Db): DigestRepository {
 		},
 
 		async upsertRelation(relation) {
-			// same_topic is symmetric and stored with from_event_id < to_event_id (types/domain.ts).
-			const swap =
-				relation.relation_type === 'same_topic' && relation.from_event_id > relation.to_event_id;
-			const from_event_id = swap ? relation.to_event_id : relation.from_event_id;
-			const to_event_id = swap ? relation.from_event_id : relation.to_event_id;
-
-			db.insert(eventRelations)
-				.values({
-					...relation,
-					id: randomUUID(),
-					from_event_id,
-					to_event_id,
-					// CONTRACT-GAP: upsertRelation has no `now` parameter, so the clock is read here.
-					created_at: new Date().toISOString(),
-					reviewed_at: null,
-					reviewed_by: null
-				})
-				.onConflictDoUpdate({
-					target: [
-						eventRelations.from_event_id,
-						eventRelations.to_event_id,
-						eventRelations.relation_type
-					],
-					set: {
-						explanation_th: relation.explanation_th,
-						evidence_refs: relation.evidence_refs,
-						status: relation.status,
-						confidence: relation.confidence
-					},
-					// Never overwrite an admin decision.
-					setWhere: isNull(eventRelations.reviewed_at)
-				})
-				.run();
+			// CONTRACT-GAP: upsertRelation has no `now` parameter, so the clock is read here.
+			upsertRelationRow(db, relation, new Date().toISOString());
 		},
 
 		async replaceLessonLinks(eventId, links) {
@@ -436,6 +462,46 @@ export function createDigestRepository(db: Db): DigestRepository {
 			return db.select().from(academyLessons).orderBy(asc(academyLessons.day)).all();
 		}
 	};
+}
+
+/** Upsert on (from, to, type); never overwrites an admin decision (`reviewed_at` set). */
+function upsertRelationRow(
+	executor: Executor,
+	relation: Omit<EventRelation, 'id' | 'created_at' | 'reviewed_at' | 'reviewed_by'>,
+	createdAt: string
+): void {
+	// same_topic is symmetric and stored with from_event_id < to_event_id (types/domain.ts).
+	const swap =
+		relation.relation_type === 'same_topic' && relation.from_event_id > relation.to_event_id;
+	const from_event_id = swap ? relation.to_event_id : relation.from_event_id;
+	const to_event_id = swap ? relation.from_event_id : relation.to_event_id;
+
+	executor
+		.insert(eventRelations)
+		.values({
+			...relation,
+			id: randomUUID(),
+			from_event_id,
+			to_event_id,
+			created_at: createdAt,
+			reviewed_at: null,
+			reviewed_by: null
+		})
+		.onConflictDoUpdate({
+			target: [
+				eventRelations.from_event_id,
+				eventRelations.to_event_id,
+				eventRelations.relation_type
+			],
+			set: {
+				explanation_th: relation.explanation_th,
+				evidence_refs: relation.evidence_refs,
+				status: relation.status,
+				confidence: relation.confidence
+			},
+			setWhere: isNull(eventRelations.reviewed_at)
+		})
+		.run();
 }
 
 /** `column` (a JSON array) contains any of `values`; undefined when `values` is empty. */
@@ -554,6 +620,40 @@ function adminEditedContentFields(tx: Executor, eventId: string): Set<string> {
 	return fields;
 }
 
+/**
+ * Idempotent, ordered timeline: drops each update whose evidence (as a set of article ids) equals
+ * that of a stored update of the event, or of an earlier one in the same list, and never lets
+ * `reported_at` go back before the event's latest stored update (a merged-in or late-linked
+ * article can be older than an earlier entry).
+ */
+function withoutStoredUpdates(
+	tx: Executor,
+	eventId: string,
+	updates: EventContentWrite['new_updates']
+): EventContentWrite['new_updates'] {
+	if (updates.length === 0) return [];
+	const evidenceKey = (refs: { article_id: string }[]) =>
+		[...new Set(refs.map((ref) => ref.article_id))].sort().join('|');
+	const stored = tx
+		.select({ evidence_refs: eventUpdates.evidence_refs, reported_at: eventUpdates.reported_at })
+		.from(eventUpdates)
+		.where(eq(eventUpdates.event_id, eventId))
+		.all();
+	const seen = new Set(stored.map((row) => evidenceKey(row.evidence_refs)));
+	// UTC ISO strings compare chronologically.
+	let latest = stored.reduce((max, row) => (row.reported_at > max ? row.reported_at : max), '');
+	const fresh: EventContentWrite['new_updates'] = [];
+	for (const update of updates) {
+		const key = evidenceKey(update.evidence_refs);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		const reportedAt = update.reported_at > latest ? update.reported_at : latest;
+		latest = reportedAt;
+		fresh.push({ ...update, reported_at: reportedAt });
+	}
+	return fresh;
+}
+
 function hasAdminRevision(tx: Executor, eventId: string): boolean {
 	const row = tx
 		.select({ id: contentRevisions.id })
@@ -613,17 +713,35 @@ function withArticles(tx: Executor, rows: (typeof events.$inferSelect)[]): Event
 		tx,
 		rows.map((row) => row.id)
 	);
-	return rows.map((event) => ({ event, articles: articlesByEvent.get(event.id) ?? [] }));
+	return rows.map((event) => {
+		const linked = articlesByEvent.get(event.id) ?? [];
+		// Both are UTC ISO strings, so the string comparison is chronological.
+		const isNew = (linkedAt: string) =>
+			event.summarized_at === null || linkedAt > event.summarized_at;
+		return {
+			event,
+			articles: linked.map(({ article }) => article),
+			new_article_ids: linked
+				.filter((item) => isNew(item.linked_at))
+				.map(({ article }) => article.id)
+		};
+	});
 }
 
-/** Linked articles per event, oldest evidence first. */
-function loadArticlesByEvent(tx: Executor, eventIds: string[]): Map<string, ArticleWithSource[]> {
-	const byEvent = new Map<string, ArticleWithSource[]>();
+interface LinkedArticle {
+	article: ArticleWithSource;
+	linked_at: string;
+}
+
+/** Linked articles per event, oldest evidence first, with the time each was linked. */
+function loadArticlesByEvent(tx: Executor, eventIds: string[]): Map<string, LinkedArticle[]> {
+	const byEvent = new Map<string, LinkedArticle[]>();
 	if (eventIds.length === 0) return byEvent;
 
 	const rows = tx
 		.select({
 			event_id: eventArticles.event_id,
+			linked_at: eventArticles.linked_at,
 			article: articles,
 			source_name: sources.name,
 			source_is_demo: sources.is_demo
@@ -636,7 +754,7 @@ function loadArticlesByEvent(tx: Executor, eventIds: string[]): Map<string, Arti
 		.all();
 	for (const row of rows) {
 		const list = byEvent.get(row.event_id) ?? [];
-		list.push(toArticleWithSource(row));
+		list.push({ article: toArticleWithSource(row), linked_at: row.linked_at });
 		byEvent.set(row.event_id, list);
 	}
 	return byEvent;

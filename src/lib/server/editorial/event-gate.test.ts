@@ -77,6 +77,18 @@ describe('evaluateEventForPublish (auto)', () => {
 		]);
 	});
 
+	it('G3 checks update_th only for a published event (the only place it is used)', () => {
+		const inUpdate = { ...VALID_SUMMARY, update_th: 'อัปเดตจาก evil-news.example.com/x' };
+		// A draft has no previous text, so its update_th is ignored, URL or not.
+		expect(evaluateEventForPublish(gateInput({ summary: inUpdate }))).toEqual({
+			status: 'published',
+			review_reasons: []
+		});
+		expect(
+			evaluateEventForPublish(gateInput({ summary: inUpdate, current_status: 'published' }))
+		).toEqual({ status: 'keep_published', review_reasons: ['url_in_generated_text'] });
+	});
+
 	it('G4: a missing LLM output gives only the LLM reason, so the digest can retry', () => {
 		expect(evaluateEventForPublish(gateInput({ summary: null }))).toEqual({
 			status: 'pending_review',
@@ -163,6 +175,20 @@ describe('evaluateEventForPublish (auto)', () => {
 		expect(evaluateEventForPublish(gateInput({ current_status: 'hidden', summary: null }))).toEqual(
 			{ status: 'keep_hidden', review_reasons: ['llm_failed'] }
 		);
+	});
+
+	it('keeps possible_duplicate like manual_flag: a flagged draft is never auto-published', () => {
+		const flagged = { current_review_reasons: ['possible_duplicate' as const] };
+		expect(evaluateEventForPublish(gateInput({ ...flagged, current_status: 'draft' }))).toEqual({
+			status: 'pending_review',
+			review_reasons: ['possible_duplicate']
+		});
+		// The admin gate ignores it: publishing the draft as a separate event is the admin's call.
+		expect(
+			evaluateEventForPublish(
+				gateInput({ ...flagged, mode: 'admin', current_status: 'pending_review' })
+			)
+		).toEqual({ status: 'published', review_reasons: [] });
 	});
 
 	it('keeps an admin manual_flag: never auto-published, and not eligible for the llm_failed retry', () => {

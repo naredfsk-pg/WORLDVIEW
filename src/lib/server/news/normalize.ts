@@ -36,7 +36,7 @@ export function normalizeFeedItem(
 	if (!title) return null;
 
 	const excerpt = source.allow_excerpt
-		? cleanFeedText(raw.summary, MAX_EXCERPT_LENGTH) || null
+		? cleanFeedText(stripFeedBoilerplate(raw.summary), MAX_EXCERPT_LENGTH) || null
 		: null;
 	const publisherName = source.name;
 
@@ -73,6 +73,110 @@ export function cleanFeedText(raw: string | null, maxLength: number): string {
 		.replace(/\s+/g, ' ')
 		.trim();
 	return truncate(text, maxLength);
+}
+
+/**
+ * Removes common feed navigation from an excerpt's HTML, before the length cap, so the cap keeps
+ * article text (Wave 3; seen in Guardian descriptions). Conservative: only these shapes go;
+ * headlines, sentences and Thai text are never touched:
+ * - the trailing "Continue reading..." link (or the same words with an ellipsis at the very end)
+ * - list items made only of links whose text is navigation: a label inside the link
+ *   ("Full report: …", "Analysis: …", "Explainer: …", "Live: …"), "… – latest updates" /
+ *   "… – live", or a bare "Read more" / "See also" / "Sign up …" link
+ * - newsletter promos: an item or paragraph of links behind "Get our …" / "Sign up …"
+ * - paragraphs of links behind a "Related:" or "See also:" label
+ * A link-only item with a real headline ("<a>Floods kill 12 in Chiang Mai</a>") and
+ * "Analysis: <a>a sentence</a>" (label outside the link) are kept.
+ * Each item is searched within a bounded length, so a hostile feed cannot make it slow.
+ */
+export function stripFeedBoilerplate(raw: string | null): string {
+	if (!raw) return '';
+	return raw
+		.slice(0, MAX_RAW_TEXT_LENGTH)
+		.replace(CONTINUE_READING_LINK, ' ')
+		.replace(CONTINUE_READING_AT_END, '$1')
+		.replace(LIST_ITEM, (item, inner: string) => (isNavigationListItem(inner) ? ' ' : item))
+		.replace(PARAGRAPH, (paragraph, inner: string) =>
+			isNavigationParagraph(inner) ? ' ' : paragraph
+		);
+}
+
+const CONTINUE_READING_LINK =
+	/<a\b[^<>]*>\s*Continue reading(?:\.{3}|…|&hellip;|&#8230;)?\s*<\/a\s*>/g;
+const CONTINUE_READING_AT_END =
+	/(^|[\s>])Continue reading(?:\.{3}|…|&hellip;|&#8230;)\s*(?:<\/[a-z]+\s*>\s*)*$/;
+/** Navigation items are short; a longer item is article text and is kept. */
+const LIST_ITEM = /<li\b[^<>]*>([\s\S]{0,600}?)<\/li\s*>/gi;
+const PARAGRAPH = /<p\b[^<>]*>([\s\S]{0,600}?)<\/p\s*>/gi;
+const LINK = /<a\b[^<>]*>[\s\S]*?<\/a\s*>/gi;
+/** The only words that may stand outside the links of a navigation item (lower case). */
+const RESIDUE_WORDS = new Set([
+	'get',
+	'our',
+	'sign',
+	'up',
+	'for',
+	'to',
+	'the',
+	'email',
+	'newsletter',
+	'related',
+	'see',
+	'also',
+	'or',
+	'and'
+]);
+/** Labels outside the links that make the links navigation: promos and related-links lists. */
+const BLOCK_LABELS = ['get our', 'sign up', 'related', 'see also'];
+/** Link text that is navigation: a label inside the link, a live/updates suffix, a bare label. */
+const NAV_LINK_PREFIX = /^(?:full report|analysis|explainer|live|related|opinion)\s*:/i;
+const NAV_LINK_SUFFIX = /(?:latest updates|live updates|[-–—]\s*live)$/i;
+const NAV_LINK_WHOLE = /^(?:read more|see also|related|live|latest|latest updates|live updates)$/i;
+const SIGN_UP_LINK = /^sign up(?: |$)/i;
+
+/** A list item of navigation links only, or a promo / related-links item. */
+function isNavigationListItem(inner: string): boolean {
+	const parts = splitLinks(inner);
+	if (!parts || !isNavigationResidue(parts.residue)) return false;
+	return hasBlockLabel(parts.residue) || parts.linkTexts.every(isNavigationLinkText);
+}
+
+/** A paragraph needs a label outside its links: a link-only paragraph can be article text. */
+function isNavigationParagraph(inner: string): boolean {
+	const parts = splitLinks(inner);
+	return parts !== null && isNavigationResidue(parts.residue) && hasBlockLabel(parts.residue);
+}
+
+/** Link texts and the rest (lower case, letters and digits only); null without a link. */
+function splitLinks(inner: string): { linkTexts: string[]; residue: string } | null {
+	const links = inner.match(LINK);
+	if (!links) return null;
+	const residue = plainText(inner.replace(LINK, ' '))
+		.toLowerCase()
+		.replace(/[^\p{L}\p{N}]+/gu, ' ')
+		.trim();
+	return { linkTexts: links.map(plainText), residue };
+}
+
+function plainText(html: string): string {
+	return decodeEntities(stripTags(html)).normalize('NFKC').replace(/\s+/g, ' ').trim();
+}
+
+function isNavigationResidue(residue: string): boolean {
+	return residue === '' || residue.split(' ').every((word) => RESIDUE_WORDS.has(word));
+}
+
+function hasBlockLabel(residue: string): boolean {
+	return BLOCK_LABELS.some((label) => ` ${residue} `.includes(` ${label} `));
+}
+
+function isNavigationLinkText(text: string): boolean {
+	return (
+		NAV_LINK_PREFIX.test(text) ||
+		NAV_LINK_SUFFIX.test(text) ||
+		NAV_LINK_WHOLE.test(text) ||
+		SIGN_UP_LINK.test(text)
+	);
 }
 
 /**

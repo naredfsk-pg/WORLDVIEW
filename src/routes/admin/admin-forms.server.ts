@@ -7,7 +7,7 @@
 import { error, fail, type RequestEvent } from '@sveltejs/kit';
 import { z } from 'zod';
 import { getRepositories } from '#lib/server/db/repositories/index.js';
-import { evaluateEventForPublish } from '#lib/server/editorial/index.js';
+import { evaluateEventForPublish, filterAllegationTags } from '#lib/server/editorial/index.js';
 import type { ReviewReason } from '#lib/types/domain.js';
 import type {
 	AdminRepository,
@@ -58,7 +58,10 @@ export function revisionMeta(admin: AdminIdentity, reason: string): RevisionMeta
 }
 
 /** Admin publish runs only the hard gates G1–G3 (ARCHITECTURE §11) on the stored row. */
-export function adminPublishGate({ event, articles }: EventWithArticles): ReviewReason[] {
+export function adminPublishGate({
+	event,
+	articles
+}: Pick<EventWithArticles, 'event' | 'articles'>): ReviewReason[] {
 	return evaluateEventForPublish({
 		mode: 'admin',
 		articles,
@@ -78,7 +81,9 @@ export function adminPublishGate({ event, articles }: EventWithArticles): Review
 			})),
 			impact_breadth: 0,
 			thailand_relevance: 0,
-			cited_refs: []
+			cited_refs: [],
+			update_th: null,
+			update_refs: []
 		},
 		signals: event.signals,
 		category: event.category,
@@ -124,7 +129,8 @@ export const eventStatusActions = {
 	publish: (event: RequestEvent) =>
 		runEventTransition(
 			event,
-			(admin, id, meta, now) => admin.publishEvent(id, adminPublishGate, meta, now),
+			(admin, id, meta, now) =>
+				admin.publishEvent(id, adminPublishGate, meta, now, filterAllegationTags),
 			'เผยแพร่แล้ว'
 		),
 	hide: (event: RequestEvent) =>

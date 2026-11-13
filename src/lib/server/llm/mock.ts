@@ -106,7 +106,12 @@ export function createDefaultMockHandlers(): Required<MockLlmHandlers> {
 			claims_th: [],
 			impact_breadth: 1,
 			thailand_relevance: 1,
-			cited_refs: input.articles.map((article) => article.ref)
+			cited_refs: input.articles.map((article) => article.ref),
+			update_th:
+				input.previous && input.previous.new_refs.length > 0
+					? `ข้อมูลใหม่ตัวอย่างจาก ${input.previous.new_refs.length} แหล่งข่าว`
+					: null,
+			update_refs: input.previous?.new_refs ?? []
 		}),
 		relations: () => ({ relations: [] }),
 		academy_linking: (input) => ({

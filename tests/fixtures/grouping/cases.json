@@ -2,6 +2,13 @@
 	"_comment": "Grouping regression cases (fictional or generic headlines). mustNotMerge: every title must end up in its own event. mustMerge: all titles must form one event. Titles are published one hour apart in the given order.",
 	"mustNotMerge": [
 		{
+			"name": "one papal visit, two happenings (Wave 3 live run): the rules only flag it as ambiguous; the LLM decides",
+			"titles": [
+				"Pope Leo meets clergy abuse survivors in Peru amid calls for justice",
+				"Pope Leo urges reparations for abuse victims during Peru visit"
+			]
+		},
+		{
 			"name": "same template, different countries (generic feed category used to add +0.25)",
 			"titles": [
 				"Thailand central bank holds rate at 2.5%",

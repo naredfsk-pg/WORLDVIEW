@@ -31,7 +31,12 @@ export interface GroupingConfig {
 	conflictMargin: number;
 }
 
-/** Named, tunable constants (data-scientist may tune them on fixtures). */
+/**
+ * Named, tunable constants (data-scientist may tune them on fixtures). Reviewed in Wave 3 and kept:
+ * the missed Nvidia merge scored 0.05 (different wording, not a threshold problem), while an
+ * unrelated Congress story scored 0.23, so a lower ambiguous floor would only add noise. Digest
+ * covers that case with shared tags instead (ARCHITECTURE §9).
+ */
 export const GROUPING_CONFIG: GroupingConfig = {
 	joinThreshold: 0.6,
 	ambiguousThreshold: 0.3,

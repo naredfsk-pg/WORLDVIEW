@@ -3,7 +3,7 @@
  * row in the same transaction (audit trail, PRD §9.2). Callers run the admin publish gate first.
  */
 import { randomUUID } from 'node:crypto';
-import { and, asc, count, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, ne, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import type {
 	EventStatus,
@@ -37,6 +37,7 @@ import {
 	llmCalls,
 	sources
 } from '../schema';
+import { SYSTEM_ACTOR } from './digest';
 import { selectEventSources } from './public-read';
 import {
 	EntityNotFoundError,
@@ -188,7 +189,7 @@ export function createAdminRepository(db: Db): AdminRepository {
 			return db.transaction((tx) => selectReviewEvents(tx, 'hidden', limit));
 		},
 
-		async publishEvent(id, gate, meta, now) {
+		async publishEvent(id, gate, meta, now, publicTags) {
 			return db.transaction((tx): AdminTransitionResult => {
 				const before = tx.select().from(events).where(eq(events.id, id)).get();
 				if (!before) return { ok: false, error: 'not_found' };
@@ -197,15 +198,35 @@ export function createAdminRepository(db: Db): AdminRepository {
 				const reasons = gate({ event: before, articles: selectLinkedArticles(tx, id) });
 				if (reasons.length > 0) return { ok: false, error: 'gate_failed', reasons };
 
+				// Tags an admin set are the admin's call; pipeline tags pass the public filter.
+				const tags = hasAdminEditedTags(tx, id) ? before.tags : publicTags(before.tags);
+				const tagsChanged = tags.length !== before.tags.length;
 				tx.update(events)
 					.set({
 						status: 'published',
 						review_reasons: [],
+						...(tagsChanged ? { tags } : {}),
 						published_at: before.published_at ?? now,
 						updated_at: now
 					})
 					.where(eq(events.id, id))
 					.run();
+				if (tagsChanged) {
+					// A system revision, so the digest does not treat the tags as admin-edited.
+					appendRevision(
+						tx,
+						'event',
+						id,
+						{
+							changed_by: SYSTEM_ACTOR,
+							change_reason: 'allegation tags removed on publish',
+							public_note_th: null
+						},
+						now,
+						{ tags: before.tags },
+						{ tags }
+					);
+				}
 				appendRevision(
 					tx,
 					'event',
@@ -448,6 +469,23 @@ function selectAdminRelations(
 
 function toRelationEndpoint(row: EventRow): AdminRelationEndpoint {
 	return { id: row.id, title_th: row.title_th, status: row.status, category: row.category };
+}
+
+/** An admin revision of the event changed its tags (admin-edited tags are never filtered). */
+function hasAdminEditedTags(tx: Executor, eventId: string): boolean {
+	const row = tx
+		.select({ id: contentRevisions.id })
+		.from(contentRevisions)
+		.where(
+			and(
+				eq(contentRevisions.entity_type, 'event'),
+				eq(contentRevisions.entity_id, eventId),
+				ne(contentRevisions.changed_by, SYSTEM_ACTOR),
+				sql`json_extract(${contentRevisions.before_after}, '$.after.tags') IS NOT NULL`
+			)
+		)
+		.get();
+	return row !== undefined;
 }
 
 function appendRevision(

@@ -40,6 +40,7 @@ const event = (overrides: Partial<EventMatchCandidate>): EventMatchCandidate => 
 	last_updated_at: '2026-11-12T12:00:00.000Z',
 	article_titles: [],
 	is_demo: false,
+	status: 'draft',
 	...overrides
 });
 

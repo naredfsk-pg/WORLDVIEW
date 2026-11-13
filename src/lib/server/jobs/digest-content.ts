@@ -7,6 +7,8 @@
  *   next digest retries; any other `keep_published` → `markContentChecked`, so the event comes
  *   back only when newer evidence is linked
  * - `keep_hidden` → nothing is written
+ * A published event re-summarized and published again also gets a timeline entry
+ * (`event_updates`) from the summary's `update_th`, with the newly linked articles as evidence.
  * `summarized_at` (and the checked marker) is the time the events were listed, so an article
  * linked while the LLM was working still triggers the next re-summary.
  */
@@ -33,12 +35,17 @@ import type {
 	EventContentWrite,
 	EventWithArticles
 } from '#lib/types/repositories.js';
-import { evaluateEventForPublish, mapRefsToArticleIds } from '../editorial/index.js';
+import {
+	buildEventUpdate,
+	evaluateEventForPublish,
+	filterAllegationTags,
+	mapRefsToArticleIds
+} from '../editorial/index.js';
 import { toArticleRef, type RunTask } from './digest-llm.js';
 
 /** ARCHITECTURE §10: at most 12 articles per extraction / summary call (the newest are kept). */
 export const MAX_LLM_ARTICLES = 12;
-/** ARCHITECTURE §9: event tags are the union of the article tags, capped. */
+/** ARCHITECTURE §9: event tags are the union of the article tags (allegation tags dropped), capped. */
 export const MAX_EVENT_TAGS = 10;
 
 export interface ContentDeps {
@@ -79,13 +86,17 @@ export async function generateEventContent(
 		refToArticleId[ref] = article.id;
 		return toArticleRef(article, ref);
 	});
+	// The articles linked since the last summary that the LLM sees: what a timeline entry is about.
+	const newRefs = Object.keys(refToArticleId).filter((ref) =>
+		item.new_article_ids.includes(refToArticleId[ref]!)
+	);
 
 	// Without any tagged article there is no category to publish under: skip the LLM and let the
 	// gate record the tagging failure (an `llm_failed` event is retried by the next digest).
 	const generated =
 		taxonomy.category === null
 			? { extraction: null, summary: null, errorKind: deps.taggingErrorKind }
-			: await extractAndSummarize(inputArticles, item, deps.runTask);
+			: await extractAndSummarize(inputArticles, newRefs, item, deps.runTask);
 	const { extraction, summary } = generated;
 	const signals: EditorialSignals | null =
 		extraction && summary
@@ -131,6 +142,19 @@ export async function generateEventContent(
 		return { outcome: 'pending_review', review_reasons: decision.review_reasons };
 	}
 
+	// Only a published event that stays published gets an entry; keep_* outcomes returned above.
+	// Its evidence is what the line is based on (`update_refs`), which must all be new refs.
+	const updateRefs = summary.update_refs;
+	const hasValidUpdateRefs =
+		updateRefs.length > 0 && updateRefs.every((ref) => newRefs.includes(ref));
+	const timelineUpdate =
+		event.status === 'published' && decision.status === 'published' && hasValidUpdateRefs
+			? buildEventUpdate({
+					update_th: summary.update_th,
+					evidence_article_ids: updateRefs.map((ref) => refToArticleId[ref]!),
+					articles
+				})
+			: null;
 	const content: EventContentWrite = {
 		title_th: summary.title_th,
 		summary_th: summary.summary_th,
@@ -155,7 +179,7 @@ export async function generateEventContent(
 		summarized_at: deps.checkedAt,
 		status: decision.status,
 		review_reasons: decision.review_reasons,
-		new_updates: []
+		new_updates: timelineUpdate ? [timelineUpdate] : []
 	};
 	// Fields an admin edited are kept by the repository, and an unpublished event an admin edited
 	// waits for the admin, so the written status can differ from the gate's.
@@ -172,7 +196,9 @@ export async function generateEventContent(
 
 /**
  * Event taxonomy from the articles' tagging (ARCHITECTURE §9): `category` is the majority (a tie
- * goes to the earliest article; `articles` are oldest first), the rest is the union.
+ * goes to the earliest article; `articles` are oldest first), the rest is the union. Tags that
+ * label an allegation about a person are never public (owner policy), so they are dropped before
+ * the cap and cannot take a topic tag's slot.
  */
 export function deriveEventTaxonomy(articles: readonly ArticleWithSource[]): EventTaxonomy {
 	const counts = new Map<CategorySlug, number>();
@@ -196,12 +222,13 @@ export function deriveEventTaxonomy(articles: readonly ArticleWithSource[]): Eve
 		category,
 		regions: [...regions],
 		countries: [...countries],
-		tags: [...tags].slice(0, MAX_EVENT_TAGS)
+		tags: filterAllegationTags([...tags]).slice(0, MAX_EVENT_TAGS)
 	};
 }
 
 async function extractAndSummarize(
 	inputArticles: ArticleRefInput[],
+	newRefs: string[],
 	item: EventWithArticles,
 	runTask: RunTask
 ): Promise<{
@@ -215,7 +242,7 @@ async function extractAndSummarize(
 	// Re-summarizing a published event: pass the current wording so it stays stable.
 	const previous =
 		item.event.status === 'published'
-			? { title_th: item.event.title_th, summary_th: item.event.summary_th }
+			? { title_th: item.event.title_th, summary_th: item.event.summary_th, new_refs: newRefs }
 			: null;
 	const summarized = await runTask('summary', {
 		articles: inputArticles,
