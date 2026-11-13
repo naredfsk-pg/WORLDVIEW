@@ -232,16 +232,12 @@
 			tabindex="-1"
 			class="px-[18px] pt-6 pb-[calc(112px+env(safe-area-inset-bottom))] outline-none md:px-[25px] md:pt-[29px] lg:px-[42px] lg:pt-8 lg:pb-[70px]"
 		>
-			{#if freshness.stale || demoMode}
-				<div class="mb-[18px] flex flex-wrap gap-2">
-					{#if freshness.stale}
-						<FreshnessBadge {freshness} />
-					{/if}
-					{#if demoMode}
-						<DemoNotice />
-					{/if}
-				</div>
-			{/if}
+			<div class="mb-[18px] flex flex-wrap gap-2">
+				<FreshnessBadge {freshness} />
+				{#if demoMode}
+					<DemoNotice />
+				{/if}
+			</div>
 			{@render children()}
 		</main>
 	</div>

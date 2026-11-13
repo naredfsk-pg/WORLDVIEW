@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { TIMEZONE_LABEL } from '#lib/components/format.js';
+	import { formatThaiDateTimeShort, TIMEZONE_LABEL } from '#lib/components/format.js';
 	import { formatThaiDateTime } from '#lib/utils/date.js';
 	import type { Freshness } from '#lib/types/views.js';
 
@@ -8,13 +8,18 @@
 	const lastUpdated = $derived(
 		freshness.last_ingest_succeeded_at ?? freshness.last_brief_published_at
 	);
-	const lastUpdatedText = $derived(
-		lastUpdated ? `${formatThaiDateTime(lastUpdated)} น. ${TIMEZONE_LABEL}` : 'ยังไม่มีการอัปเดต'
-	);
+	// Stale: the full ARCHITECTURE §15 wording. Fresh: a compact line (UI spec §8 "last updated").
+	const lastUpdatedText = $derived.by(() => {
+		if (!lastUpdated) return 'ยังไม่มีการอัปเดต';
+		return freshness.stale
+			? `${formatThaiDateTime(lastUpdated)} น. ${TIMEZONE_LABEL}`
+			: `${formatThaiDateTimeShort(lastUpdated)} (GMT+7)`;
+	});
 </script>
 
-<!-- Never claims live freshness: when stale it says so, with the real last-update time. -->
+<!-- Always shows the last update; never claims live freshness: when stale it says so. -->
 <p
+	data-testid="freshness"
 	role="status"
 	class={[
 		'inline-flex items-center gap-[7px] rounded-lg border px-2.5 py-1.5 text-[11px]',
