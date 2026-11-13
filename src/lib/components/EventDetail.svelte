@@ -30,7 +30,7 @@
 
 <article class="max-w-[760px]" data-testid="event-detail">
 	<header class="mb-6">
-		<p class="text-[10px] font-bold tracking-[0.09em] text-primary">
+		<p class="text-meta font-bold tracking-[0.09em] text-primary">
 			{categoryLabel(event.category)}{regions ? ` · ${regions}` : ''}
 		</p>
 		<h1 class="mt-3 mb-3 text-[24px] leading-[1.45] font-bold tracking-[-0.03em] md:text-[30px]">
@@ -39,27 +39,31 @@
 		<p class="mb-3 text-[15px] leading-[1.9] text-muted-foreground">{event.summary_th}</p>
 		<EventLabels isDemo={event.is_demo} sourceCount={event.source_count} />
 
-		<dl class="mt-4 grid gap-x-6 gap-y-2 rounded-2xl border bg-card p-4 text-xs sm:grid-cols-2">
-			<div>
-				<dt class="text-muted-foreground">เวลาเกิดเหตุ</dt>
-				<dd class="font-semibold">
-					{event.occurred_at ? formatThaiDateTimeShort(event.occurred_at) : UNKNOWN_OCCURRED_AT}
-				</dd>
-			</div>
-			<div>
-				<dt class="text-muted-foreground">วันที่ของเหตุการณ์ (วันที่พบข่าวครั้งแรก)</dt>
-				<dd class="font-semibold">{formatThaiDate(event.event_date, 'long')}</dd>
-			</div>
-			<div>
-				<dt class="text-muted-foreground">หลักฐานล่าสุด</dt>
-				<dd class="font-semibold">{formatThaiDateTimeShort(event.last_updated_at)}</dd>
-			</div>
-			<div>
-				<dt class="text-muted-foreground">เผยแพร่บน Worldview</dt>
-				<dd class="font-semibold">{formatThaiDateTimeShort(event.published_at)}</dd>
-			</div>
-			<p class="m-0 text-[11px] text-faint sm:col-span-2">เวลาทั้งหมดเป็น{TIMEZONE_LABEL}</p>
-		</dl>
+		<!-- The note sits after the <dl>, inside the same box: a <dl> may only hold dt/dd groups
+		     (BUG-QA-004). -->
+		<div class="mt-4 rounded-2xl border bg-card p-4 text-xs">
+			<dl class="m-0 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+				<div>
+					<dt class="text-muted-foreground">เวลาเกิดเหตุ</dt>
+					<dd class="font-semibold">
+						{event.occurred_at ? formatThaiDateTimeShort(event.occurred_at) : UNKNOWN_OCCURRED_AT}
+					</dd>
+				</div>
+				<div>
+					<dt class="text-muted-foreground">วันที่ของเหตุการณ์ (วันที่พบข่าวครั้งแรก)</dt>
+					<dd class="font-semibold">{formatThaiDate(event.event_date, 'long')}</dd>
+				</div>
+				<div>
+					<dt class="text-muted-foreground">หลักฐานล่าสุด</dt>
+					<dd class="font-semibold">{formatThaiDateTimeShort(event.last_updated_at)}</dd>
+				</div>
+				<div>
+					<dt class="text-muted-foreground">เผยแพร่บน Worldview</dt>
+					<dd class="font-semibold">{formatThaiDateTimeShort(event.published_at)}</dd>
+				</div>
+			</dl>
+			<p class="mt-2 mb-0 text-meta text-faint">เวลาทั้งหมดเป็น{TIMEZONE_LABEL}</p>
+		</div>
 	</header>
 
 	{#if event.corrections.length > 0}
@@ -97,7 +101,7 @@
 		<section class="py-5" aria-labelledby="why">
 			{@render sectionHeading('why', 'ทำไมเรื่องนี้สำคัญ', 'Why it matters')}
 			<p class="text-[14px] leading-[1.9]">{event.why_it_matters_th}</p>
-			<p class="m-0 rounded-xl bg-surface-2 px-3 py-2 text-[11px] text-muted-foreground">
+			<p class="m-0 rounded-xl bg-surface-2 px-3 py-2 text-meta text-muted-foreground">
 				บทวิเคราะห์ส่วนนี้เรียบเรียงโดยมี AI ช่วย (AI-assisted) จากแหล่งข่าวด้านล่าง ควรอ่านประกอบกับแหล่งข่าวต้นทาง
 			</p>
 		</section>
@@ -134,7 +138,7 @@
 				<ol class="grid gap-3 border-l-2 border-accent-subtle pl-4">
 					{#each event.updates as update (update.id)}
 						<li class="text-[13px] leading-[1.8]">
-							<p class="m-0 text-[11px] font-bold text-primary">
+							<p class="m-0 text-meta font-bold text-primary">
 								รายงานเมื่อ {formatThaiDateTimeShort(update.reported_at)}
 								{#if update.occurred_at}
 									· เกิดเหตุ {formatThaiDateTimeShort(update.occurred_at)}

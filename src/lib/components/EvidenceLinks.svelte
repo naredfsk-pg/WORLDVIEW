@@ -9,7 +9,7 @@
 </script>
 
 {#if uniqueUrls.length > 0}
-	<span class="mt-1 flex flex-wrap items-center gap-x-3 text-[11px]" data-testid="evidence-links">
+	<span class="mt-1 flex flex-wrap items-center gap-x-3 text-meta" data-testid="evidence-links">
 		{#each uniqueUrls as url, index (url)}
 			{#if isHttpUrl(url)}
 				<a

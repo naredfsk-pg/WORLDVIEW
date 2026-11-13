@@ -38,6 +38,7 @@ export function withSecurityHeaders(
 		...SECURITY_HEADERS,
 		...(options.https ? HTTPS_HEADERS : {}),
 		...(options.admin ? ADMIN_HEADERS : {}),
+		...htmlCharset(response),
 		'content-security-policy': contentSecurityPolicy(response, options.https)
 	};
 	try {
@@ -60,6 +61,17 @@ export function isHttpsRequest(event: { url: URL; request: Request }): boolean {
 	if (event.url.protocol === 'https:') return true;
 	const forwarded = event.request.headers.get('x-forwarded-proto')?.split(',')[0] ?? '';
 	return forwarded.trim().toLowerCase() === 'https';
+}
+
+/**
+ * SvelteKit sends pages as bare `text/html`. Browsers still decode UTF-8 from `<meta charset>`,
+ * but clients that only read the header (PowerShell 5.1, some proxies and log tools) fall back to
+ * ISO-8859-1 and garble every Thai character (BUG-QA-007), so the charset is stated.
+ */
+function htmlCharset(response: Response): Record<string, string> {
+	return response.headers.get('content-type') === 'text/html'
+		? { 'content-type': 'text/html; charset=utf-8' }
+		: {};
 }
 
 /** Keep SvelteKit's page policy, else the fallback; `upgrade-insecure-requests` only over HTTPS. */

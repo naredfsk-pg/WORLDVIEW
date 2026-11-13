@@ -74,8 +74,7 @@
 				})}
 				class="rounded-[13px] border bg-card px-4 py-3 hover:border-primary/35"
 			>
-				<span class="block text-[11px] text-muted-foreground">← บทก่อนหน้า · วันที่ {data.prev.day}</span
-				>
+				<span class="block text-meta text-muted-foreground">← บทก่อนหน้า · วันที่ {data.prev.day}</span>
 				<span class="block text-[13px] font-bold">{data.prev.title}</span>
 			</a>
 		{/if}
@@ -87,7 +86,7 @@
 				})}
 				class="rounded-[13px] border bg-card px-4 py-3 text-right hover:border-primary/35 sm:col-start-2"
 			>
-				<span class="block text-[11px] text-muted-foreground">บทถัดไป · วันที่ {data.next.day} →</span>
+				<span class="block text-meta text-muted-foreground">บทถัดไป · วันที่ {data.next.day} →</span>
 				<span class="block text-[13px] font-bold">{data.next.title}</span>
 			</a>
 		{/if}

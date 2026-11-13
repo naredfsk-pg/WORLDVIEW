@@ -52,6 +52,6 @@
 	</div>
 {/if}
 
-<p class="pt-[25px] text-[11px] text-faint">
+<p class="pt-[25px] text-meta text-faint">
 	เวอร์ชันนี้แสดงเป็นรายการ แผนภาพเครือข่าย (graph) จะตามมาใน Phase 2
 </p>

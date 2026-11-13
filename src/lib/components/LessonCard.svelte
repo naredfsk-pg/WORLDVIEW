@@ -30,7 +30,7 @@
 	</span>
 	<span class="min-w-0 flex-1">
 		<span class="block text-[13px] leading-[1.5] font-bold">{lesson.title}</span>
-		<span class="mt-[3px] block text-[11px] text-muted-foreground">{lesson.summary}</span>
+		<span class="mt-[3px] block text-meta text-muted-foreground">{lesson.summary}</span>
 	</span>
 	<span class="text-primary" aria-hidden="true">→</span>
 </a>

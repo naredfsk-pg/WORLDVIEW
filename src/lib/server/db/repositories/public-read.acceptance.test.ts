@@ -119,28 +119,78 @@ describe('acceptance #8: public relations carry a type, an explanation and evide
 });
 
 describe('defence in depth: the read layer with rows that bypassed the gates', () => {
-	// BUG-QA-005: the read layer trusts the write-side gates. A published relation whose evidence
-	// no longer resolves is still listed, with zero evidence links.
-	it.todo(
-		'BUG-QA-005: a published causal relation whose evidence does not resolve is not shown (repro: evidenceWithoutArticle)'
-	);
-
-	it('repro BUG-QA-005: documents the current behaviour (relation listed with no evidence)', async () => {
+	// BUG-QA-005: a published relation whose evidence does not resolve to a stored article is not
+	// shown, neither on /connections nor on the event page.
+	it('BUG-QA-005: a published causal relation whose evidence does not resolve is not shown (repro: evidenceWithoutArticle)', async () => {
 		const relations = await evidenceWithoutArticle();
-		const broken = relations.find((relation) => relation.id === BROKEN_RELATION_ID);
-		// Current behaviour. When BUG-QA-005 is fixed this becomes `toBeUndefined()`.
-		expect(broken?.evidence_source_urls).toEqual([]);
+		expect(relations.find((relation) => relation.id === BROKEN_RELATION_ID)).toBeUndefined();
+
+		const [from] = publishedEventIds();
+		const detail = await read.getPublishedEventDetail(from!);
+		expect(detail!.relations.map((relation) => relation.id)).not.toContain(BROKEN_RELATION_ID);
 	});
 
-	// BUG-QA-006: a published event with no linked article is still public, with an empty
-	// "sources" section (PRD §1.4: every published event has >= 1 verifiable source).
-	it.todo('BUG-QA-006: a published event with no linked article is not public');
+	it('BUG-QA-005: a relation with one resolvable and one missing ref is still shown', async () => {
+		db.update(eventRelations)
+			.set({
+				evidence_refs: [{ article_id: 'qa-missing-article' }, { article_id: 'demo-art-02a' }]
+			})
+			.where(eq(eventRelations.to_event_id, 'demo-evt-02'))
+			.run();
+		const relations = await read.listPublishedRelations({
+			since: '1970-01-01T00:00:00.000Z',
+			category: null,
+			limit: 500
+		});
+		const kept = relations.filter((relation) => relation.to_event_id === 'demo-evt-02');
+		expect(kept.length).toBeGreaterThan(0);
+		for (const relation of kept) expect(relation.evidence_source_urls).toHaveLength(1);
+	});
 
-	it('repro BUG-QA-006: documents the current behaviour (event public with 0 sources)', async () => {
-		db.delete(eventArticles).where(eq(eventArticles.event_id, 'demo-evt-02')).run();
-		const detail = await read.getPublishedEventDetail('demo-evt-02');
-		// Current behaviour. When BUG-QA-006 is fixed this becomes `toBeNull()`.
-		expect(detail?.sources).toEqual([]);
+	// BUG-QA-006: a published event with no linked article is not public anywhere (PRD §1.4:
+	// every published event has >= 1 verifiable source).
+	it('BUG-QA-006: a published event with no linked article is not public', async () => {
+		const sourceless = 'demo-evt-02';
+		const [row] = db
+			.select({ title: events.title_th })
+			.from(events)
+			.where(eq(events.id, sourceless))
+			.all();
+		const searchIds = async () =>
+			(
+				await read.searchEvents({
+					q: row!.title,
+					scope: 'all',
+					category: null,
+					region: null,
+					from: null,
+					to: null,
+					limit: 50,
+					offset: 0
+				})
+			).items.map((event) => event.id);
+		expect(await searchIds()).toContain(sourceless);
+
+		db.delete(eventArticles).where(eq(eventArticles.event_id, sourceless)).run();
+
+		expect(await read.getPublishedEventDetail(sourceless)).toBeNull();
+
+		const brief = await read.getPublishedBrief('2026-11-13', 'morning');
+		expect(brief!.events.length).toBeGreaterThan(0);
+		expect(brief!.events.map((event) => event.id)).not.toContain(sourceless);
+
+		expect(await searchIds()).not.toContain(sourceless);
+
+		const relations = await read.listPublishedRelations({
+			since: '1970-01-01T00:00:00.000Z',
+			category: null,
+			limit: 500
+		});
+		const endpoints = relations.flatMap((relation) => [
+			relation.from_event_id,
+			relation.to_event_id
+		]);
+		expect(endpoints).not.toContain(sourceless);
 	});
 });
 

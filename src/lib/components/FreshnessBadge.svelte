@@ -22,7 +22,7 @@
 	data-testid="freshness"
 	role="status"
 	class={[
-		'inline-flex items-center gap-[7px] rounded-lg border px-2.5 py-1.5 text-[11px]',
+		'inline-flex items-center gap-[7px] rounded-lg border px-2.5 py-1.5 text-meta',
 		freshness.stale
 			? 'border-gold/25 bg-gold-bg text-gold'
 			: 'border-transparent bg-surface-2 text-muted-foreground'

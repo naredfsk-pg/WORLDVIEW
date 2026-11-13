@@ -4,7 +4,10 @@
  *
  * Contrast adjustments versus the prototype (WCAG 2.1 AA, 4.5:1 for small text):
  * - light `--muted` #65756f → #5c6b65 (4.25:1 → 4.9:1 on `--hero`)
- * - light `--faint` #89978f → #67766f (3.0:1 → 4.6:1 on `--bg`)
+ * - light `--faint` #89978f → #67766f → #61706a (Wave 3, BUG-QA-003: 4.48 / 4.78 / 4.30:1 →
+ *   4.88 / 5.21 / 4.69:1 on bg / surface / surface-2, 4.55:1 on `--hero`)
+ * - dark  `--faint` #83968c → #8c9f95 (Wave 3: 4.06:1 → 4.55:1 on `--hero`; 6.40 / 5.65 / 5.20:1
+ *   on bg / surface / surface-2)
  * - light `--gold`  #ad7833 → #8a5d20 (3.4:1 → 5.2:1 on `--gold-bg`)
  */
 :root {
@@ -14,7 +17,7 @@
 	--surface-2: #f1f4ef;
 	--text: #172622;
 	--muted: #5c6b65;
-	--faint: #67766f;
+	--faint: #61706a;
 	--stroke: #e3e9e3;
 	--accent: #176653;
 	--on-accent: #ffffff;
@@ -35,7 +38,7 @@
 	--surface-2: #1d2c28;
 	--text: #ebf2ee;
 	--muted: #a6b5ae;
-	--faint: #83968c;
+	--faint: #8c9f95;
 	--stroke: #304039;
 	--accent: #91d9b8;
 	--on-accent: #0c1713;

@@ -45,6 +45,18 @@ describe('withSecurityHeaders', () => {
 		expect(response.headers.get('x-robots-tag')).toContain('noindex');
 	});
 
+	it('states charset=utf-8 on bare text/html, and leaves other content types alone', () => {
+		const page = new Response('<html>ข่าว', { headers: { 'content-type': 'text/html' } });
+		expect(withSecurityHeaders(page, PLAIN_HTTP).headers.get('content-type')).toBe(
+			'text/html; charset=utf-8'
+		);
+
+		const json = new Response('{}', { headers: { 'content-type': 'application/json' } });
+		expect(withSecurityHeaders(json, PLAIN_HTTP).headers.get('content-type')).toBe(
+			'application/json'
+		);
+	});
+
 	it('copies responses whose headers are immutable', () => {
 		const redirect = Response.redirect('http://localhost/admin', 303);
 		const response = withSecurityHeaders(redirect, { admin: true, https: false });

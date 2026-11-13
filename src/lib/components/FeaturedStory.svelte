@@ -22,7 +22,7 @@
 	<div
 		class="relative z-[1] flex w-[91%] flex-col items-start px-[21px] py-[22px] sm:w-[79%] md:w-[75%] md:px-[30px] md:py-7 xl:w-[70%]"
 	>
-		<span class="text-[10px] font-bold tracking-[0.09em] text-primary uppercase">
+		<span class="text-meta font-bold tracking-[0.09em] text-primary uppercase">
 			Featured explainer · {categoryLabel(event.category)}
 		</span>
 		<h2
@@ -36,7 +36,7 @@
 		<span class="mb-3 block"
 			><EventLabels isDemo={event.is_demo} sourceCount={event.source_count} /></span
 		>
-		<span class="mt-auto flex flex-wrap items-center gap-[9px] text-[11px] text-muted-foreground">
+		<span class="mt-auto flex flex-wrap items-center gap-[9px] text-meta text-muted-foreground">
 			<span>
 				{event.occurred_at ? formatThaiTime(event.occurred_at) : UNKNOWN_OCCURRED_AT}
 			</span>

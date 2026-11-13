@@ -25,7 +25,7 @@
 			{:else}
 				<p class="mt-1 mb-0 text-[13px] leading-[1.7]">{source.title}</p>
 			{/if}
-			<p class="mt-1 mb-0 text-[11px] text-muted-foreground">
+			<p class="mt-1 mb-0 text-meta text-muted-foreground">
 				เผยแพร่ {source.published_at
 					? formatThaiDateTimeShort(source.published_at)
 					: UNKNOWN_PUBLISHED_AT}

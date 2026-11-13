@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 /**
  * Reproductions of the two Lighthouse mobile findings in docs/qa/BASELINE.md, so that they can
- * be checked without Lighthouse. Both are `test.fixme` until fixed (docs/qa/BUGS.md). The
+ * be checked without Lighthouse. Both were fixed in Wave 3 (docs/qa/BUGS.md). The
  * thresholds are Lighthouse's own pass marks (CLS "good" < 0.1; legible text >= 60 %), not new
  * performance targets.
  */
@@ -11,14 +11,14 @@ const MOBILE = { width: 412, height: 823 };
 test.describe('Lighthouse mobile findings', () => {
 	test.use({ viewport: MOBILE });
 
-	test.fixme('BUG-QA-009: at least 60 % of the text is 12 px or larger', async ({ page }) => {
+	test('BUG-QA-009: at least 60 % of the text is 12 px or larger', async ({ page }) => {
 		for (const route of ['/', '/archive', '/events/demo-evt-01']) {
 			await page.goto(route);
 			expect.soft(await legibleTextShare(page), route).toBeGreaterThanOrEqual(0.6);
 		}
 	});
 
-	test.fixme('BUG-QA-010: /archive has CLS < 0.1 on a throttled mobile load', async ({ page }) => {
+	test('BUG-QA-010: /archive has CLS < 0.1 on a throttled mobile load', async ({ page }) => {
 		expect(await throttledCls(page, '/archive')).toBeLessThan(0.1);
 	});
 });

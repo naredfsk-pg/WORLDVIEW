@@ -13,6 +13,8 @@
 
 	interface Props {
 		month: YearMonth;
+		/** Last month offered by the next-month link (the current Bangkok month). */
+		maxMonth: YearMonth;
 		selected: BriefDate | null;
 		/** Dates in `month` with a published brief: the only selectable days. */
 		available: BriefDate[];
@@ -21,7 +23,7 @@
 		region: RegionSlug | null;
 	}
 
-	let { month, selected, available, category, region }: Props = $props();
+	let { month, maxMonth, selected, available, category, region }: Props = $props();
 
 	const WEEKDAYS = [
 		['อา', 'อาทิตย์'],
@@ -52,21 +54,26 @@
 			<ChevronLeft class="size-5" aria-hidden="true" />
 		</a>
 		<h2 id="calendar-title" class="m-0 text-[15px] font-bold">{formatThaiMonth(month)}</h2>
-		<a
-			href={resolve(`/archive?${queryString({ month: addMonths(month, 1), category, region })}`)}
-			class="grid size-11 place-items-center rounded-[10px] text-muted-foreground hover:bg-surface-2"
-			aria-label="เดือนถัดไป"
-			data-sveltekit-noscroll
-		>
-			<ChevronRight class="size-5" aria-hidden="true" />
-		</a>
+		{#if month < maxMonth}
+			<a
+				href={resolve(`/archive?${queryString({ month: addMonths(month, 1), category, region })}`)}
+				class="grid size-11 place-items-center rounded-[10px] text-muted-foreground hover:bg-surface-2"
+				aria-label="เดือนถัดไป"
+				data-sveltekit-noscroll
+			>
+				<ChevronRight class="size-5" aria-hidden="true" />
+			</a>
+		{:else}
+			<!-- No future months (BUG-QA-007); the spacer keeps the month name centred. -->
+			<span class="size-11" aria-hidden="true"></span>
+		{/if}
 	</div>
 
 	<table class="w-full table-fixed border-separate border-spacing-[5px]">
 		<thead>
 			<tr>
 				{#each WEEKDAYS as [short, full] (short)}
-					<th scope="col" abbr={full} class="pb-2 text-center text-[10px] font-normal text-faint">
+					<th scope="col" abbr={full} class="pb-2 text-center text-meta font-normal text-faint">
 						{short}
 					</th>
 				{/each}
@@ -95,7 +102,9 @@
 									{cell.day}
 								</a>
 							{:else if cell}
-								<span class="grid h-[37px] place-items-center text-muted-foreground/40">
+								<!-- No brief: the faint colour still meets 4.5:1 (BUG-QA-002); the missing
+								     dot and link are the non-colour cue, as the legend below explains. -->
+								<span class="grid h-[37px] place-items-center text-faint">
 									{cell.day}
 								</span>
 							{/if}
@@ -106,7 +115,7 @@
 		</tbody>
 	</table>
 
-	<p class="mt-3.5 mb-0 border-t pt-[13px] text-[11px] text-muted-foreground">
+	<p class="mt-3.5 mb-0 border-t pt-[13px] text-meta text-muted-foreground">
 		<span class="text-primary" aria-hidden="true">•</span> จุดสีเขียวแสดงวันที่มีสรุปข่าว (เวลาไทย GMT+7)
 	</p>
 </section>

@@ -123,11 +123,17 @@
 		class="sticky top-0 hidden h-svh flex-col gap-[27px] self-start border-r bg-surface py-[27px] pr-4 pl-[23px] lg:flex"
 		aria-label="แถบด้านข้าง"
 	>
-		<a href={resolve('/')} class="flex items-center gap-2.5 px-2" aria-label="Worldview หน้าหลัก">
+		<!-- Named by its content, not aria-label, so the name starts with the visible "worldview"
+		     (WCAG 2.5.3 Label in Name): "worldview หน้าหลัก". The tagline is decorative. -->
+		<a href={resolve('/')} class="flex items-center gap-2.5 px-2">
 			{@render brandMark('sidebar')}
 			<span>
 				<span class="block text-[19px] leading-[1.1] font-bold tracking-[-0.05em]">worldview</span>
-				<span class="mt-0.5 block text-[9px] tracking-[0.04em] text-muted-foreground">
+				<span class="sr-only">หน้าหลัก</span>
+				<span
+					class="mt-0.5 block text-[9px] tracking-[0.04em] text-muted-foreground"
+					aria-hidden="true"
+				>
 					MAKE SENSE OF THE WORLD
 				</span>
 			</span>
@@ -179,7 +185,7 @@
 						style:width="{progressPercent}%"
 					></div>
 				</div>
-				<p class="mt-2.5 text-[11px] text-muted-foreground">
+				<p class="mt-2.5 text-meta text-muted-foreground">
 					{academyProgress.count === 0
 						? 'เริ่มต้นบทเรียนแรกของคุณ'
 						: `เรียนแล้ว ${academyProgress.count} จาก ${LESSON_TOTAL} บทเรียน`}
@@ -209,7 +215,7 @@
 			</a>
 			<div class="hidden flex-col gap-px lg:flex">
 				<p class="text-xs font-bold">{headerTitle}</p>
-				<p class="text-[11px] text-muted-foreground">ความรู้ที่ทำให้โลกเข้าใจง่ายขึ้น</p>
+				<p class="text-meta text-muted-foreground">ความรู้ที่ทำให้โลกเข้าใจง่ายขึ้น</p>
 			</div>
 			<div class="flex items-center gap-2">
 				<Button

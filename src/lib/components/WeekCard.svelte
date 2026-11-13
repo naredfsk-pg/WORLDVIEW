@@ -23,7 +23,7 @@
 >
 	<span class="text-[10px] font-bold tracking-[0.08em] text-primary">WEEK 0{week.week}</span>
 	<span class="text-sm leading-[1.55] font-bold">{week.title_th}</span>
-	<span class="mt-auto text-[11px] text-muted-foreground">
+	<span class="mt-auto text-meta text-muted-foreground">
 		{completedCount} / {week.lessons.length} บทเรียนเสร็จแล้ว
 	</span>
 </a>

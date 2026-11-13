@@ -33,7 +33,7 @@
 <div class="grid items-start gap-8 xl:grid-cols-[minmax(0,760px)_250px]">
 	<article class="min-w-0" data-testid="lesson-article">
 		<header class="mb-6">
-			<p class="text-[10px] font-bold tracking-[0.07em] text-primary">
+			<p class="text-meta font-bold tracking-[0.07em] text-primary">
 				WEEK {lesson.week} · DAY {dayLabel} · {week.title_th}
 			</p>
 			<h1 class="mt-3 mb-3 text-[26px] leading-[1.4] font-bold tracking-[-0.03em] md:text-[34px]">
@@ -125,7 +125,7 @@
 			</section>
 		{/if}
 
-		<p class="mt-8 text-[11px] text-faint">
+		<p class="mt-8 text-meta text-faint">
 			ตรวจทานเนื้อหาล่าสุด {formatThaiDate(lesson.last_reviewed_at, 'long')}
 		</p>
 
