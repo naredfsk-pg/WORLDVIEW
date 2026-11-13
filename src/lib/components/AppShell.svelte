@@ -25,6 +25,9 @@
 
 	let { pathname, freshness, demoMode, children }: Props = $props();
 
+	// AGPL-3.0 §13: a fork that runs a modified version must point this at its own source.
+	const SOURCE_CODE_URL = 'https://github.com/naredfsk-pg/WORLDVIEW';
+
 	interface NavItem {
 		href: ResolvedPathname;
 		label: string;
@@ -236,7 +239,7 @@
 		<main
 			id="main"
 			tabindex="-1"
-			class="px-[18px] pt-6 pb-[calc(112px+env(safe-area-inset-bottom))] outline-none md:px-[25px] md:pt-[29px] lg:px-[42px] lg:pt-8 lg:pb-[70px]"
+			class="px-[18px] pt-6 outline-none md:px-[25px] md:pt-[29px] lg:px-[42px] lg:pt-8"
 		>
 			<div class="mb-[18px] flex flex-wrap gap-2">
 				<FreshnessBadge {freshness} />
@@ -246,6 +249,21 @@
 			</div>
 			{@render children()}
 		</main>
+		<!-- AGPL-3.0 §13: users interacting over a network must be offered the source. -->
+		<footer
+			class="mx-[18px] mt-12 flex flex-wrap gap-x-3 gap-y-1 border-t pt-4 pb-[calc(112px+env(safe-area-inset-bottom))] text-meta text-muted-foreground md:mx-[25px] lg:mx-[42px] lg:pb-[70px]"
+			data-testid="site-license"
+		>
+			<span>โค้ดเผยแพร่ภายใต้ AGPL-3.0</span>
+			<a
+				href={SOURCE_CODE_URL}
+				rel="external noopener noreferrer"
+				class="font-semibold text-primary underline-offset-2 hover:underline"
+			>
+				ซอร์สโค้ด (GitHub)
+			</a>
+			<span>เนื้อหา Academy: CC BY-NC-SA 4.0</span>
+		</footer>
 	</div>
 </div>
 

@@ -236,3 +236,12 @@ Migrations และ `academy:sync` รันเองตอน `app` start ส�
 | `/health` เป็น `degraded`                                    | ยังไม่มี ingest ที่สำเร็จใน 9 ชั่วโมง: ดู `docker compose logs scheduler` หรือ `/admin/jobs`                                                              |
 | Git Bash แปลง `/backups/...` เป็น `C:/Program Files/Git/...` | ตั้ง `MSYS_NO_PATHCONV=1` ก่อนคำสั่ง `docker compose exec` (PowerShell ไม่มีปัญหานี้)                                                                     |
 | `docker compose build` fail ที่ `verify:prod-build`           | build ไม่ใช่ production (`NODE_ENV` ไม่ใช่ production หรือมี `.env*` หลุดเข้า build context) ตรวจ `.dockerignore` และอย่าแก้ `ENV NODE_ENV` ใน Dockerfile |
+
+## License
+
+- **Source code:** [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`). You may use, modify and redistribute it, including commercially. If you **run a modified version as a web service** for other users, you must offer those users the corresponding source code (AGPL §13). The site footer links to this repository; a fork must change `SOURCE_CODE_URL` in `src/lib/components/AppShell.svelte` to its own source.
+- **Academy content** (`content/academy/`: the 30 lessons, takeaways and infographic specs): [Creative Commons Attribution-NonCommercial-ShareAlike 4.0](content/academy/LICENSE) (`CC BY-NC-SA 4.0`). Attribution is required, commercial use is not allowed, and adaptations must use the same license.
+- **News:** this project does not republish articles. Public pages show Thai summaries written by the system, with links back to the original sources (UN News, BBC, The Guardian, Al Jazeera). Copyright in the original reporting belongs to those publishers. Feed excerpts are used only internally.
+- **Third-party:** dependencies keep their own licenses (MIT, Apache-2.0, BSD, ISC and others). The Noto Sans Thai font is under the SIL Open Font License 1.1 (via `@fontsource/noto-sans-thai`).
+
+Copyright (C) 2026 naredfsk-pg
