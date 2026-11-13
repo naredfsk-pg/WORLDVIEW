@@ -75,10 +75,18 @@ describe('evaluateEventForPublish (auto)', () => {
 		expect(evaluateEventForPublish(gateInput({ summary: inClaim })).review_reasons).toEqual([
 			'url_in_generated_text'
 		]);
+	});
+
+	it('G3 checks update_th only for a published event (the only place it is used)', () => {
 		const inUpdate = { ...VALID_SUMMARY, update_th: 'อัปเดตจาก evil-news.example.com/x' };
-		expect(evaluateEventForPublish(gateInput({ summary: inUpdate })).review_reasons).toEqual([
-			'url_in_generated_text'
-		]);
+		// A draft has no previous text, so its update_th is ignored, URL or not.
+		expect(evaluateEventForPublish(gateInput({ summary: inUpdate }))).toEqual({
+			status: 'published',
+			review_reasons: []
+		});
+		expect(
+			evaluateEventForPublish(gateInput({ summary: inUpdate, current_status: 'published' }))
+		).toEqual({ status: 'keep_published', review_reasons: ['url_in_generated_text'] });
 	});
 
 	it('G4: a missing LLM output gives only the LLM reason, so the digest can retry', () => {

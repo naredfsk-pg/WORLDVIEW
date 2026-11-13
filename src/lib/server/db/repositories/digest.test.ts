@@ -258,6 +258,42 @@ describe('DigestRepository content lifecycle', () => {
 		});
 	});
 
+	it('never lets a new update report earlier than the latest stored one', async () => {
+		const first = await addArticle('2026-11-13T00:00:00.000Z');
+		const id = await repos.digest.createDraftEvent([first], 1, '2026-11-13T01:00:00.000Z');
+		await repos.digest.saveEventContent(id, content(), '2026-11-13T02:00:00.000Z');
+		const update = (articleId: string, reportedAt: string) => ({
+			occurred_at: null,
+			reported_at: reportedAt,
+			update_text_th: 'มีพัฒนาการใหม่',
+			evidence_refs: [{ article_id: articleId }]
+		});
+		const later = await addArticle('2026-11-13T05:00:00.000Z');
+		const older = await addArticle('2026-11-12T22:00:00.000Z');
+		await repos.digest.linkArticles(id, [later, older], 1, '2026-11-13T05:10:00.000Z');
+
+		await repos.digest.saveEventContent(
+			id,
+			content({ new_updates: [update(later, '2026-11-13T05:00:00.000Z')] }),
+			'2026-11-13T05:20:00.000Z'
+		);
+		// A late-linked older article: its update is placed at the latest time, not before it.
+		await repos.digest.saveEventContent(
+			id,
+			content({ new_updates: [update(older, '2026-11-12T22:00:00.000Z')] }),
+			'2026-11-13T05:30:00.000Z'
+		);
+
+		const reported = db
+			.select()
+			.from(eventUpdates)
+			.where(eq(eventUpdates.event_id, id))
+			.all()
+			.map((row) => row.reported_at)
+			.sort();
+		expect(reported).toEqual(['2026-11-13T05:00:00.000Z', '2026-11-13T05:00:00.000Z']);
+	});
+
 	it('never demotes a published event', async () => {
 		const id = await repos.digest.createDraftEvent(
 			[await addArticle('2026-11-13T00:00:00.000Z')],

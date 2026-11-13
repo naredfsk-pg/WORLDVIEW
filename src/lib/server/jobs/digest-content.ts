@@ -143,11 +143,15 @@ export async function generateEventContent(
 	}
 
 	// Only a published event that stays published gets an entry; keep_* outcomes returned above.
+	// Its evidence is what the line is based on (`update_refs`), which must all be new refs.
+	const updateRefs = summary.update_refs;
+	const hasValidUpdateRefs =
+		updateRefs.length > 0 && updateRefs.every((ref) => newRefs.includes(ref));
 	const timelineUpdate =
-		event.status === 'published' && decision.status === 'published'
+		event.status === 'published' && decision.status === 'published' && hasValidUpdateRefs
 			? buildEventUpdate({
 					update_th: summary.update_th,
-					evidence_article_ids: newRefs.map((ref) => refToArticleId[ref]!),
+					evidence_article_ids: updateRefs.map((ref) => refToArticleId[ref]!),
 					articles
 				})
 			: null;

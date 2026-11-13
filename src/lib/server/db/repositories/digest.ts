@@ -621,8 +621,10 @@ function adminEditedContentFields(tx: Executor, eventId: string): Set<string> {
 }
 
 /**
- * Idempotent timeline: drops each update whose evidence (as a set of article ids) equals that of
- * a stored update of the event, or of an earlier one in the same list.
+ * Idempotent, ordered timeline: drops each update whose evidence (as a set of article ids) equals
+ * that of a stored update of the event, or of an earlier one in the same list, and never lets
+ * `reported_at` go back before the event's latest stored update (a merged-in or late-linked
+ * article can be older than an earlier entry).
  */
 function withoutStoredUpdates(
 	tx: Executor,
@@ -632,20 +634,24 @@ function withoutStoredUpdates(
 	if (updates.length === 0) return [];
 	const evidenceKey = (refs: { article_id: string }[]) =>
 		[...new Set(refs.map((ref) => ref.article_id))].sort().join('|');
-	const seen = new Set(
-		tx
-			.select({ evidence_refs: eventUpdates.evidence_refs })
-			.from(eventUpdates)
-			.where(eq(eventUpdates.event_id, eventId))
-			.all()
-			.map((row) => evidenceKey(row.evidence_refs))
-	);
-	return updates.filter((update) => {
+	const stored = tx
+		.select({ evidence_refs: eventUpdates.evidence_refs, reported_at: eventUpdates.reported_at })
+		.from(eventUpdates)
+		.where(eq(eventUpdates.event_id, eventId))
+		.all();
+	const seen = new Set(stored.map((row) => evidenceKey(row.evidence_refs)));
+	// UTC ISO strings compare chronologically.
+	let latest = stored.reduce((max, row) => (row.reported_at > max ? row.reported_at : max), '');
+	const fresh: EventContentWrite['new_updates'] = [];
+	for (const update of updates) {
 		const key = evidenceKey(update.evidence_refs);
-		if (seen.has(key)) return false;
+		if (seen.has(key)) continue;
 		seen.add(key);
-		return true;
-	});
+		const reportedAt = update.reported_at > latest ? update.reported_at : latest;
+		latest = reportedAt;
+		fresh.push({ ...update, reported_at: reportedAt });
+	}
+	return fresh;
 }
 
 function hasAdminRevision(tx: Executor, eventId: string): boolean {

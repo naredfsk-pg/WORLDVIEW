@@ -121,6 +121,9 @@ export interface SummaryOutput {
 	// CONTRACT-CHANGE (Wave 3): added for the event timeline (`event_updates`).
 	/** One Thai line on what `previous.new_refs` add; null without `previous` or nothing new. */
 	update_th: string | null;
+	// CONTRACT-CHANGE (Wave 3 review, summary@4): the refs (a subset of `previous.new_refs`) the
+	// update line is based on; its only evidence. Empty or not a subset → no timeline row.
+	update_refs: string[];
 }
 
 export interface RelationsInput {

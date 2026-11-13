@@ -82,7 +82,8 @@ export function adminPublishGate({
 			impact_breadth: 0,
 			thailand_relevance: 0,
 			cited_refs: [],
-			update_th: null
+			update_th: null,
+			update_refs: []
 		},
 		signals: event.signals,
 		category: event.category,

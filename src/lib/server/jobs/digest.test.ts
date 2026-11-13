@@ -1045,6 +1045,49 @@ describe('timeline: event_updates on re-summary', () => {
 		expect(updatesOf(id)).toHaveLength(1);
 	});
 
+	it('uses only the update_refs as evidence; none, or a ref that is not new, writes no update', async () => {
+		const { id } = await publishedEventWithNewArticle();
+		const second = await addArticle(
+			'Avalor dam opening: officials respond',
+			'2026-11-13T00:40:00.000Z'
+		);
+		await repositories.digest.linkArticles(id, [second], 1, clock.toISOString());
+		const withRefs = (update_refs: string[]) =>
+			handlers({
+				summary: (input) => ({
+					...defaultSummary(input),
+					update_th: 'เจ้าหน้าที่ชี้แจงหลังพิธีเปิดเขื่อน',
+					update_refs
+				})
+			});
+
+		// a1 is the old article; a2 and a3 are new.
+		await digest(withRefs([]));
+		expect(updatesOf(id)).toEqual([]);
+		await repositories.digest.linkArticles(
+			id,
+			[await addArticle('Avalor dam: third report', '2026-11-13T00:50:00.000Z')],
+			1,
+			new Date(clock.getTime() + 1000).toISOString()
+		);
+		clock = new Date(clock.getTime() + 60 * 1000);
+		await digest(withRefs(['a1', 'a4']));
+		expect(updatesOf(id)).toEqual([]);
+
+		const fourth = await addArticle('Avalor dam: fourth report', '2026-11-13T00:55:00.000Z');
+		await repositories.digest.linkArticles(
+			id,
+			[fourth],
+			1,
+			new Date(clock.getTime() + 1000).toISOString()
+		);
+		clock = new Date(clock.getTime() + 60 * 1000);
+		await digest(withRefs(['a5']));
+		const stored = updatesOf(id);
+		expect(stored).toHaveLength(1);
+		expect(stored[0]!.evidence_refs).toEqual([{ article_id: fourth }]);
+	});
+
 	it('keep_published (the gates rejected the re-summary) adds no update', async () => {
 		const { id } = await publishedEventWithNewArticle();
 		await digest(withUpdate('อ่านต่อที่ https://x.example'));

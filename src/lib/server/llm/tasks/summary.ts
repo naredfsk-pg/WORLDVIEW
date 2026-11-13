@@ -12,7 +12,9 @@ import {
 // summary@2 (Wave 2 review): title and summary state only facts every source agrees on.
 // summary@3 (Wave 3): allegations about a person stay attributed claims; optional `update_th`
 // (one timeline line on what the new articles add) and `previous.new_refs` in the input.
-export const SUMMARY_PROMPT_VERSION = 'summary@3';
+// summary@4 (Wave 3 review): `update_refs` ties the line to its evidence; both timeline fields
+// are lenient, so a bad value only drops the timeline row and never fails the summary.
+export const SUMMARY_PROMPT_VERSION = 'summary@4';
 
 const scoreSchema = z.literal([0, 1, 2, 3]);
 
@@ -35,7 +37,12 @@ const outputSchema: z.ZodType<SummaryOutput> = z.object({
 	update_th: textSchema(300)
 		.nullable()
 		.default(null)
-		.describe('one Thai line on what previous.new_refs add, or null')
+		.catch(null)
+		.describe('one Thai line on what previous.new_refs add, or null'),
+	update_refs: refListSchema
+		.default([])
+		.catch([])
+		.describe('the refs from previous.new_refs that update_th is based on')
 });
 
 export const summaryTask = defineTask({
@@ -55,7 +62,8 @@ All *_th fields are in neutral, plain Thai (proper names may stay in their usual
 - impact_breadth and thailand_relevance: integers 0-3.
 - cited_refs: refs of every article your text relies on (at least one).
 If <data>.previous is not null, keep its wording where the facts have not changed.
-- update_th: when <data>.previous is not null and previous.new_refs is not empty, one short Thai sentence (a timeline entry) saying what the articles in previous.new_refs add to the story, with the same attribution rules; otherwise null. Use null when they add nothing new.`,
+- update_th: when <data>.previous is not null and previous.new_refs is not empty, one short Thai sentence (a timeline entry, at most 300 characters) saying what the articles in previous.new_refs add to the story, with the same attribution rules; otherwise null. Use null when they add nothing new.
+- update_refs: the refs from previous.new_refs that update_th is based on (at least one when update_th is not null); [] when update_th is null.`,
 	outputSchema,
 	maxArticles: MAX_ARTICLES_PER_CALL,
 	findUnknownRefs(output, input) {

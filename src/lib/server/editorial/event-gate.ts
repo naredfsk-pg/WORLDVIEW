@@ -87,7 +87,10 @@ function autoGateReasons(input: EventGateInput): Set<ReviewReason> {
 
 	// G2, G3
 	if (!hasRequiredThaiFields(summary, input.category)) reasons.add('missing_thai_fields');
-	if (hasUrlInText(summary)) reasons.add('url_in_generated_text');
+	// `update_th` is only used for a published event (its timeline), so only then is it checked.
+	if (hasUrlInText(summary, input.current_status === 'published')) {
+		reasons.add('url_in_generated_text');
+	}
 
 	// G5: every evidence list is non-empty and resolves to stored articles.
 	const evidenceLists = [
@@ -128,7 +131,7 @@ function hasRequiredThaiFields(
 	].every(isThaiText);
 }
 
-function hasUrlInText(summary: SummaryOutput): boolean {
+function hasUrlInText(summary: SummaryOutput, includeUpdate = false): boolean {
 	const fields = [
 		summary.title_th,
 		summary.summary_th,
@@ -136,7 +139,7 @@ function hasUrlInText(summary: SummaryOutput): boolean {
 		summary.why_it_matters_th,
 		summary.background_th,
 		summary.uncertain_th,
-		summary.update_th,
+		includeUpdate ? summary.update_th : null,
 		...summary.claims_th.flatMap((claim) => [claim.claimant_th, claim.claim_th])
 	];
 	return fields.some(containsUrl);
