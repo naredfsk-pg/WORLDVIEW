@@ -44,6 +44,9 @@
 		{#if data.category}
 			<input type="hidden" name="category" value={data.category} />
 		{/if}
+		{#if data.region}
+			<input type="hidden" name="region" value={data.region} />
+		{/if}
 		<label for="archive-date" class="text-xs text-muted-foreground">เลือกวันที่</label>
 		<input
 			id="archive-date"
@@ -60,7 +63,7 @@
 		</Button>
 	</form>
 	<Button
-		href={resolve(`/archive?${queryString({ category: data.category })}`)}
+		href={resolve(`/archive?${queryString({ category: data.category, region: data.region })}`)}
 		variant="outline"
 		class="min-h-11 rounded-[11px] bg-card px-[15px] text-xs font-bold"
 	>
@@ -76,6 +79,7 @@
 		selected={data.selected_date}
 		available={data.available_dates}
 		category={data.category}
+		region={data.region}
 	/>
 
 	<section class="min-w-0" aria-labelledby="archive-headline" aria-live="polite">
@@ -103,14 +107,14 @@
 		<FilterChips
 			selected={data.category}
 			action="/archive"
-			keep={{ date: data.selected_date, region: data.region }}
+			keep={{ month: data.month, date: data.selected_date, region: data.region }}
 		/>
 		{#if data.region}
 			<p class="-mt-2 mb-3 text-xs text-muted-foreground">
 				ภูมิภาค: {regionsLabel([data.region])} ·
 				<a
 					href={resolve(
-						`/archive?${queryString({ date: data.selected_date, category: data.category })}`
+						`/archive?${queryString({ month: data.month, date: data.selected_date, category: data.category })}`
 					)}
 					class="text-primary underline"
 				>

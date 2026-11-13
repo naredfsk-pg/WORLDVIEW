@@ -9,17 +9,19 @@
 		monthGrid,
 		queryString
 	} from '#lib/components/format.js';
-	import type { BriefDate, CategorySlug, YearMonth } from '#lib/types/domain.js';
+	import type { BriefDate, CategorySlug, RegionSlug, YearMonth } from '#lib/types/domain.js';
 
 	interface Props {
 		month: YearMonth;
 		selected: BriefDate | null;
 		/** Dates in `month` with a published brief: the only selectable days. */
 		available: BriefDate[];
+		/** Active filters, carried through every calendar link. */
 		category: CategorySlug | null;
+		region: RegionSlug | null;
 	}
 
-	let { month, selected, available, category }: Props = $props();
+	let { month, selected, available, category, region }: Props = $props();
 
 	const WEEKDAYS = [
 		['อา', 'อาทิตย์'],
@@ -42,7 +44,7 @@
 >
 	<div class="mb-[18px] flex items-center justify-between gap-2">
 		<a
-			href={resolve(`/archive?${queryString({ month: addMonths(month, -1), category })}`)}
+			href={resolve(`/archive?${queryString({ month: addMonths(month, -1), category, region })}`)}
 			class="grid size-11 place-items-center rounded-[10px] text-muted-foreground hover:bg-surface-2"
 			aria-label="เดือนก่อนหน้า"
 			data-sveltekit-noscroll
@@ -51,7 +53,7 @@
 		</a>
 		<h2 id="calendar-title" class="m-0 text-[15px] font-bold">{formatThaiMonth(month)}</h2>
 		<a
-			href={resolve(`/archive?${queryString({ month: addMonths(month, 1), category })}`)}
+			href={resolve(`/archive?${queryString({ month: addMonths(month, 1), category, region })}`)}
 			class="grid size-11 place-items-center rounded-[10px] text-muted-foreground hover:bg-surface-2"
 			aria-label="เดือนถัดไป"
 			data-sveltekit-noscroll
@@ -78,7 +80,7 @@
 							{#if cell && availableSet.has(cell.date)}
 								{@const isSelected = cell.date === selected}
 								<a
-									href={resolve(`/archive?${queryString({ date: cell.date, category })}`)}
+									href={resolve(`/archive?${queryString({ date: cell.date, category, region })}`)}
 									aria-current={isSelected ? 'date' : undefined}
 									aria-label="{formatThaiDate(cell.date, 'long')} มีสรุปข่าว"
 									data-date={cell.date}
