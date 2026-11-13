@@ -14,8 +14,10 @@ import {
 	gte,
 	inArray,
 	isNull,
+	lt,
 	max,
 	ne,
+	not,
 	notInArray,
 	or,
 	sql,
@@ -167,6 +169,9 @@ export function createDigestRepository(db: Db): DigestRepository {
 							)
 						)
 				);
+				// An editor's flag on a published event is final for the pipeline (the gate would only
+				// answer keep_published), so it is not even sent to the LLM.
+				const hasManualFlag = sql`EXISTS (SELECT 1 FROM json_each(${events.review_reasons}) WHERE value = 'manual_flag')`;
 				const rows = tx
 					.select()
 					.from(events)
@@ -174,10 +179,10 @@ export function createDigestRepository(db: Db): DigestRepository {
 						or(
 							eq(events.status, 'draft'),
 							and(eq(events.status, 'pending_review'), onlyLlmFailed),
-							and(eq(events.status, 'published'), linkedAfterSummary)
+							and(eq(events.status, 'published'), linkedAfterSummary, not(hasManualFlag))
 						)
 					)
-					.orderBy(desc(events.last_updated_at))
+					.orderBy(desc(events.last_updated_at), asc(events.id))
 					.limit(limit)
 					.all();
 				return withArticles(tx, rows);
@@ -259,7 +264,8 @@ export function createDigestRepository(db: Db): DigestRepository {
 							})
 							.run();
 					}
-					return { status, admin_fields_kept: [...adminFields].sort() };
+					const stored = tx.select().from(events).where(eq(events.id, eventId)).get()!;
+					return { status, admin_fields_kept: [...adminFields].sort(), event: stored };
 				},
 				{ behavior: 'immediate' }
 			);
@@ -273,16 +279,30 @@ export function createDigestRepository(db: Db): DigestRepository {
 				.run();
 		},
 
+		async markContentChecked(eventId, checkedAt) {
+			// Only moves forward, and only for published events (their text stays as it is).
+			db.update(events)
+				.set({ summarized_at: checkedAt })
+				.where(
+					and(
+						eq(events.id, eventId),
+						eq(events.status, 'published'),
+						or(isNull(events.summarized_at), lt(events.summarized_at, checkedAt))
+					)
+				)
+				.run();
+		},
+
 		async mergeDraftEvent(sourceEventId, targetEventId, confidence, now) {
-			db.transaction(
+			return db.transaction(
 				(tx) => {
 					const source = tx
-						.select({ status: events.status })
+						.select({ status: events.status, is_demo: events.is_demo })
 						.from(events)
 						.where(eq(events.id, sourceEventId))
 						.get();
 					const target = tx
-						.select({ status: events.status })
+						.select({ status: events.status, is_demo: events.is_demo })
 						.from(events)
 						.where(eq(events.id, targetEventId))
 						.get();
@@ -293,6 +313,11 @@ export function createDigestRepository(db: Db): DigestRepository {
 							`mergeDraftEvent: cannot merge a ${source.status} event into a ${target.status} event`
 						);
 					}
+					if (source.is_demo !== target.is_demo) {
+						throw new Error('mergeDraftEvent: real and demo events are never merged');
+					}
+					// Deleting the draft would delete an editor's work: leave both events as they are.
+					if (hasAdminRevision(tx, sourceEventId)) return false;
 
 					tx.update(eventArticles)
 						.set({ event_id: targetEventId, relation_confidence: confidence, linked_at: now })
@@ -301,6 +326,7 @@ export function createDigestRepository(db: Db): DigestRepository {
 					// A draft has no public content; its updates, relations and links cascade away.
 					tx.delete(events).where(eq(events.id, sourceEventId)).run();
 					recomputeDerivedFields(tx, targetEventId, now);
+					return true;
 				},
 				{ behavior: 'immediate' }
 			);
@@ -525,6 +551,21 @@ function adminEditedContentFields(tx: Executor, eventId: string): Set<string> {
 		}
 	}
 	return fields;
+}
+
+function hasAdminRevision(tx: Executor, eventId: string): boolean {
+	const row = tx
+		.select({ id: contentRevisions.id })
+		.from(contentRevisions)
+		.where(
+			and(
+				eq(contentRevisions.entity_type, 'event'),
+				eq(contentRevisions.entity_id, eventId),
+				ne(contentRevisions.changed_by, SYSTEM_ACTOR)
+			)
+		)
+		.get();
+	return row !== undefined;
 }
 
 function assertEventExists(tx: Executor, eventId: string): void {

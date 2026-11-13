@@ -3,12 +3,19 @@
  * save. Every outcome, including every LLM failure, is decided by `evaluateEventForPublish`:
  * - `published` / `pending_review` with LLM output → `saveEventContent` (text + taxonomy + status)
  * - `pending_review` without output → `markEventForReview` (text unchanged)
- * - `keep_published` / `keep_hidden` → nothing is written
+ * - `keep_published` after a transient LLM failure (`[llm_failed]`) → nothing is written, so the
+ *   next digest retries; any other `keep_published` → `markContentChecked`, so the event comes
+ *   back only when newer evidence is linked
+ * - `keep_hidden` → nothing is written
+ * `summarized_at` (and the checked marker) is the time the events were listed, so an article
+ * linked while the LLM was working still triggers the next re-summary.
  */
 import type {
 	CategorySlug,
 	CountryCode,
 	EditorialSignals,
+	IsoUtc,
+	NewsEvent,
 	RegionSlug,
 	ReviewReason,
 	Tag
@@ -35,16 +42,22 @@ export const MAX_LLM_ARTICLES = 12;
 export const MAX_EVENT_TAGS = 10;
 
 export interface ContentDeps {
-	digest: Pick<DigestRepository, 'saveEventContent' | 'markEventForReview'>;
+	digest: Pick<DigestRepository, 'saveEventContent' | 'markEventForReview' | 'markContentChecked'>;
 	runTask: RunTask;
 	now: () => Date;
 	logger: Logger;
-	/** Why this run's tagging failed, if it did: an event with no tagged article cannot be categorized. */
+	/** When the events were listed: the evidence up to here is what the LLM saw. */
+	checkedAt: IsoUtc;
+	/**
+	 * Why tagging this event's articles failed, when it did: an event with no tagged article cannot
+	 * be categorized. Null → the gate records `llm_failed` (retried by the next digest).
+	 */
 	taggingErrorKind: LlmErrorKind | null;
 }
 
+/** `published` carries the row as stored (admin-kept fields included) for the links step. */
 export type ContentResult =
-	| { outcome: 'published'; content: EventContentWrite }
+	| { outcome: 'published'; event: NewsEvent }
 	| { outcome: 'pending_review' | 'unchanged'; review_reasons: ReviewReason[] };
 
 export interface EventTaxonomy {
@@ -102,6 +115,11 @@ export async function generateEventContent(
 	};
 
 	if (decision.status === 'keep_published' || decision.status === 'keep_hidden') {
+		const isTransient =
+			decision.review_reasons.length === 1 && decision.review_reasons[0] === 'llm_failed';
+		if (decision.status === 'keep_published' && !isTransient) {
+			await deps.digest.markContentChecked(event.id, deps.checkedAt);
+		}
 		deps.logger.info('event content kept', logFields);
 		return { outcome: 'unchanged', review_reasons: decision.review_reasons };
 	}
@@ -134,7 +152,7 @@ export async function generateEventContent(
 		tags: taxonomy.tags,
 		signals,
 		occurred_at: extraction.occurred_at,
-		summarized_at: now,
+		summarized_at: deps.checkedAt,
 		status: decision.status,
 		review_reasons: decision.review_reasons,
 		new_updates: []
@@ -148,7 +166,7 @@ export async function generateEventContent(
 		admin_fields_kept: saved.admin_fields_kept
 	});
 	return saved.status === 'published'
-		? { outcome: 'published', content }
+		? { outcome: 'published', event: saved.event }
 		: { outcome: 'pending_review', review_reasons: decision.review_reasons };
 }
 

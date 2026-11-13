@@ -149,7 +149,8 @@ export interface DigestRepository {
 	/**
 	 * Events whose content must be (re)generated:
 	 * status 'draft'; or 'pending_review' with review_reasons exactly ['llm_failed'];
-	 * or 'published' with an article linked after summarized_at.
+	 * or 'published' without `manual_flag` and with an article linked after summarized_at.
+	 * Newest evidence first, id as tie-break.
 	 */
 	listEventsNeedingContent(limit: number): Promise<EventWithArticles[]>;
 	// CONTRACT-CHANGE (Wave 2): content fields an admin ever edited (a `content_revisions` row
@@ -160,18 +161,28 @@ export interface DigestRepository {
 		eventId: string,
 		content: EventContentWrite,
 		now: IsoUtc
-	): Promise<{ status: 'published' | 'pending_review'; admin_fields_kept: string[] }>;
+	): Promise<{
+		status: 'published' | 'pending_review';
+		admin_fields_kept: string[];
+		/** The row as stored (admin-kept fields included), for the steps that follow. */
+		event: NewsEvent;
+	}>;
+	// CONTRACT-CHANGE: added (Wave 2 review). A published event whose re-summary was rejected by
+	// the gates (not a transient LLM failure) keeps its text; `summarized_at` moves to
+	// `checkedAt` so it returns only when newer evidence is linked. No-op for other statuses.
+	markContentChecked(eventId: string, checkedAt: IsoUtc): Promise<void>;
 	/** LLM/gate failure on a non-published event: status → pending_review with these reasons; text unchanged. */
 	markEventForReview(eventId: string, reasons: ReviewReason[], now: IsoUtc): Promise<void>;
 	// CONTRACT-CHANGE: added (Wave 2). The LLM `clustering` task said a draft event reports the
 	// same happening as `targetEventId`: move its articles there and delete the draft, in one
-	// transaction. Throws unless the source is a `draft` and the target exists and is not hidden.
+	// transaction. Throws unless the source is a `draft`, the target exists and is not hidden, and
+	// both have the same is_demo. Resolves false (nothing changed) when an admin edited the draft.
 	mergeDraftEvent(
 		sourceEventId: string,
 		targetEventId: string,
 		confidence: number,
 		now: IsoUtc
-	): Promise<void>;
+	): Promise<boolean>;
 	/**
 	 * Published events of the last `since` window, excluding `eventId`, that share a tag or a
 	 * region other than `global` with it (and its is_demo), for relation suggestions.

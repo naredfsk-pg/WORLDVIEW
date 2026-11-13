@@ -399,3 +399,67 @@ describe('DigestRepository.mergeDraftEvent', () => {
 		expect(getEvent(draft).status).toBe('draft');
 	});
 });
+
+describe('review fixes in DigestRepository', () => {
+	const now = '2026-11-13T02:00:00.000Z';
+	const editor = { changed_by: 'editor@example.com', change_reason: 'fix', public_note_th: null };
+
+	it('mergeDraftEvent refuses to merge away a draft an admin edited, and never mixes demo and real', async () => {
+		const target = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-13T00:00:00.000Z')],
+			1,
+			now
+		);
+		const edited = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-13T00:05:00.000Z')],
+			1,
+			now
+		);
+		await repos.admin.updateEvent(edited, { title_th: 'หัวข้อของบรรณาธิการ' }, editor, now);
+		const demo = await repos.digest.createDraftEvent(
+			[
+				await addArticle('2026-11-13T00:10:00.000Z', {
+					source: 'demo-wire',
+					publisher: 'Demo Wire'
+				})
+			],
+			1,
+			now
+		);
+
+		expect(await repos.digest.mergeDraftEvent(edited, target, 0.9, now)).toBe(false);
+		expect(getEvent(edited).title_th).toBe('หัวข้อของบรรณาธิการ');
+		await expect(repos.digest.mergeDraftEvent(demo, target, 0.9, now)).rejects.toThrow(
+			/real and demo/
+		);
+		expect(await repos.digest.mergeDraftEvent(target, edited, 0.9, now)).toBe(true);
+	});
+
+	it('markContentChecked moves summarized_at forward on published events only', async () => {
+		const id = await repos.digest.createDraftEvent(
+			[await addArticle('2026-11-13T00:00:00.000Z')],
+			1,
+			now
+		);
+		await repos.digest.markContentChecked(id, '2026-11-13T05:00:00.000Z');
+		expect(getEvent(id).summarized_at).toBeNull();
+
+		await repos.digest.saveEventContent(id, content(), now);
+		await repos.digest.markContentChecked(id, '2026-11-13T05:00:00.000Z');
+		await repos.digest.markContentChecked(id, '2026-11-13T04:00:00.000Z');
+		expect(getEvent(id)).toMatchObject({
+			summarized_at: '2026-11-13T05:00:00.000Z',
+			title_th: content().title_th
+		});
+	});
+
+	it('listEventsNeedingContent breaks last_updated_at ties by id', async () => {
+		const sameTime = '2026-11-13T00:00:00.000Z';
+		const ids = [];
+		for (let index = 0; index < 3; index++) {
+			ids.push(await repos.digest.createDraftEvent([await addArticle(sameTime)], 1, sameTime));
+		}
+		const listed = await repos.digest.listEventsNeedingContent(10);
+		expect(listed.map((item) => item.event.id)).toEqual([...ids].sort());
+	});
+});

@@ -7,15 +7,11 @@
  *   → `replaceLessonLinks`
  * A failed LLM call stores nothing and keeps the previous links.
  */
-import type { AcademyLessonRow, BriefDate, NewsEvent } from '#lib/types/domain.js';
+import type { AcademyLessonRow, CategorySlug, NewsEvent, Tag } from '#lib/types/domain.js';
 import type { JobCounters, Logger } from '#lib/types/jobs.js';
 import type { EventRefInput } from '#lib/types/llm.js';
 import type { ArticleWithSource } from '#lib/types/news.js';
-import type {
-	DigestRepository,
-	EventContentWrite,
-	EventWithArticles
-} from '#lib/types/repositories.js';
+import type { DigestRepository, EventWithArticles } from '#lib/types/repositories.js';
 import { evaluateRelation, mapRefsToArticleIds, selectLessonLinks } from '../editorial/index.js';
 import { toArticleRef, type RunTask } from './digest-llm.js';
 
@@ -42,15 +38,17 @@ export interface LinksDeps {
 	>;
 }
 
-/** The event as just saved: its stored row plus the new content. */
+/**
+ * The event as stored after `saveEventContent` (so admin-kept title, category and tags are what
+ * relations and lessons see), with the articles it was summarized from.
+ */
 export interface PublishedEvent {
-	id: string;
-	event_date: BriefDate;
-	content: EventContentWrite;
+	event: NewsEvent & { category: CategorySlug };
 	articles: ArticleWithSource[];
 }
 
-export async function linkRelatedEvents(event: PublishedEvent, deps: LinksDeps): Promise<void> {
+export async function linkRelatedEvents(published: PublishedEvent, deps: LinksDeps): Promise<void> {
+	const { event, articles } = published;
 	const since = new Date(deps.now().getTime() - RELATION_LOOKBACK_MS).toISOString();
 	const candidates = await deps.digest.listRelationCandidates(
 		event.id,
@@ -70,12 +68,12 @@ export async function linkRelatedEvents(event: PublishedEvent, deps: LinksDeps):
 
 	const eventInput: EventRefInput = {
 		ref: 'e1',
-		title_th: event.content.title_th,
-		summary_th: event.content.summary_th,
+		title_th: event.title_th,
+		summary_th: event.summary_th,
 		event_date: event.event_date,
-		category: event.content.category,
-		tags: event.content.tags,
-		articles: refArticles(event.articles)
+		category: event.category,
+		tags: event.tags,
+		articles: refArticles(articles)
 	};
 	const candidatesByRef = new Map<string, EventWithArticles>();
 	const candidateInputs = candidates.map((candidate, index): EventRefInput => {
@@ -99,7 +97,7 @@ export async function linkRelatedEvents(event: PublishedEvent, deps: LinksDeps):
 	});
 	if (!result.ok) return;
 
-	const eventArticleIds = event.articles.map((article) => article.id);
+	const eventArticleIds = articles.map((article) => article.id);
 	for (const relation of result.data.relations) {
 		const candidate = candidatesByRef.get(relation.candidate_ref);
 		const evidenceIds = mapRefsToArticleIds(relation.evidence, refToArticleId);
@@ -138,20 +136,20 @@ export async function linkRelatedEvents(event: PublishedEvent, deps: LinksDeps):
 }
 
 export async function linkAcademyLessons(
-	event: Pick<NewsEvent, 'id'> & { content: EventContentWrite },
+	event: PublishedEvent['event'],
 	catalog: readonly AcademyLessonRow[],
 	deps: LinksDeps
 ): Promise<void> {
-	const lessons = prefilterLessons(event.content, catalog);
+	const lessons = prefilterLessons(event, catalog);
 	if (lessons.length === 0) return;
 
 	const result = await deps.runTask('academy_linking', {
 		event: {
 			ref: 'e1',
-			title_th: event.content.title_th,
-			summary_th: event.content.summary_th,
-			category: event.content.category,
-			tags: event.content.tags
+			title_th: event.title_th,
+			summary_th: event.summary_th,
+			category: event.category,
+			tags: event.tags
 		},
 		lessons: lessons.map((lesson) => ({
 			lesson_id: lesson.id,
@@ -182,7 +180,7 @@ export async function linkAcademyLessons(
  * (earlier day on a tie). Lessons with neither are never offered.
  */
 export function prefilterLessons(
-	content: Pick<EventContentWrite, 'category' | 'tags'>,
+	content: { category: CategorySlug; tags: readonly Tag[] },
 	catalog: readonly AcademyLessonRow[]
 ): AcademyLessonRow[] {
 	const eventTags = new Set(content.tags);

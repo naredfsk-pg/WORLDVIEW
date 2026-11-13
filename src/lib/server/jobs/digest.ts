@@ -8,8 +8,11 @@
  * 4. per event: extraction → summary → publish gates → save (see digest-content.ts)
  * 5. per event published in this run: relations and Academy links (see digest-links.ts)
  * LLM failures never throw: each ends in a gate decision, and the run becomes `partial`.
+ * A failing step or unit (grouping, a tagging batch, a merge pair, an event, its links) is
+ * skipped, recorded in the run error and makes the run `partial`, never `failed`: an admin
+ * hide or another job writing at the same time must not stop the rest of the run.
  */
-import type { AcademyLessonRow } from '#lib/types/domain.js';
+import type { AcademyLessonRow, IsoUtc } from '#lib/types/domain.js';
 import type { JobContext, JobCounters, JobOutcome } from '#lib/types/jobs.js';
 import type { ClusteringInput, LLMProvider, LlmErrorKind } from '#lib/types/llm.js';
 import type { ArticleWithSource, EventMatchCandidate } from '#lib/types/news.js';
@@ -48,21 +51,26 @@ export async function runDigest(deps: DigestDeps, ctx: JobContext): Promise<JobO
 	const errors: string[] = [];
 	const limit = Math.max(1, Math.min(deps.maxEvents ?? MAX_CONTENT_EVENTS, MAX_CONTENT_EVENTS));
 
-	const grouped = await groupUnassignedArticles(deps.digest, ctx);
-	counters.articles_grouped = grouped.articles_grouped;
-	counters.events_created = grouped.events_created;
-	counters.events_updated = grouped.events_updated;
+	try {
+		const grouped = await groupUnassignedArticles(deps.digest, ctx);
+		counters.articles_grouped = grouped.articles_grouped;
+		counters.events_created = grouped.events_created;
+		counters.events_updated = grouped.events_updated;
+	} catch (error) {
+		// Articles stay unassigned; ingest or the next digest groups them.
+		errors.push(`grouping: ${sanitizeError(error)}`);
+	}
 
-	const tagging = { errorKind: null as LlmErrorKind | null };
-	let events = await prepareEvents(deps.digest, runTask, limit, tagging);
-	const merged = await mergeAmbiguousDrafts(deps.digest, runTask, events, ctx);
+	const taggingFailures = new Map<string, LlmErrorKind>();
+	let prepared = await prepareEvents(deps.digest, runTask, limit, taggingFailures, ctx, errors);
+	const merged = await mergeAmbiguousDrafts(deps.digest, runTask, prepared.events, ctx, errors);
 	if (merged > 0) {
 		counters.events_updated += merged;
-		events = await prepareEvents(deps.digest, runTask, limit, tagging);
+		prepared = await prepareEvents(deps.digest, runTask, limit, taggingFailures, ctx, errors);
 	}
 
 	const published: PublishedEvent[] = [];
-	for (const item of events) {
+	for (const item of prepared.events) {
 		if (ctx.signal.aborted) break;
 		try {
 			const result = await generateEventContent(item, {
@@ -70,14 +78,13 @@ export async function runDigest(deps: DigestDeps, ctx: JobContext): Promise<JobO
 				runTask,
 				now: ctx.now,
 				logger: ctx.logger,
-				taggingErrorKind: tagging.errorKind
+				checkedAt: prepared.listedAt,
+				taggingErrorKind: taggingErrorFor(item, taggingFailures)
 			});
-			if (result.outcome === 'published') {
+			if (result.outcome === 'published' && result.event.category !== null) {
 				counters.events_published++;
 				published.push({
-					id: item.event.id,
-					event_date: item.event.event_date,
-					content: result.content,
+					event: { ...result.event, category: result.event.category },
 					articles: item.articles
 				});
 			} else if (result.outcome === 'pending_review') {
@@ -95,9 +102,9 @@ export async function runDigest(deps: DigestDeps, ctx: JobContext): Promise<JobO
 		try {
 			await linkRelatedEvents(event, linksDeps);
 			catalog ??= await deps.digest.listLessonCatalog();
-			await linkAcademyLessons(event, catalog, linksDeps);
+			await linkAcademyLessons(event.event, catalog, linksDeps);
 		} catch (error) {
-			errors.push(`links ${event.id}: ${sanitizeError(error)}`);
+			errors.push(`links ${event.event.id}: ${sanitizeError(error)}`);
 		}
 	}
 
@@ -134,39 +141,65 @@ function emptyDigestCounters() {
 }
 
 /**
- * The events needing content, with their untagged articles tagged first. Lists again after
- * tagging so the events carry the stored taxonomy. Records the last tagging failure in `tagging`.
+ * The events needing content, with their untagged articles tagged first, and the time they were
+ * listed (the evidence the LLM sees is what was linked by then). Lists again after tagging so the
+ * events carry the stored taxonomy. A failed tagging batch records its error kind per article.
  */
 async function prepareEvents(
 	digest: DigestRepository,
 	runTask: RunTask,
 	limit: number,
-	tagging: { errorKind: LlmErrorKind | null }
-): Promise<EventWithArticles[]> {
+	taggingFailures: Map<string, LlmErrorKind>,
+	ctx: JobContext,
+	errors: string[]
+): Promise<{ events: EventWithArticles[]; listedAt: IsoUtc }> {
+	const listedAt = ctx.now().toISOString();
 	const listed = await digest.listEventsNeedingContent(limit);
 	const untagged = listed.flatMap((item) => item.articles).filter((a) => a.taxonomy === null);
-	if (untagged.length === 0) return listed;
+	if (untagged.length === 0) return { events: listed, listedAt };
 
 	let saved = 0;
 	for (let start = 0; start < untagged.length; start += TAGGING_BATCH_SIZE) {
+		if (ctx.signal.aborted) break;
 		const batch = untagged.slice(start, start + TAGGING_BATCH_SIZE);
 		const result = await runTask('tagging', {
 			articles: batch.map((article, index) => toArticleRef(article, `a${index + 1}`))
 		});
 		if (!result.ok) {
-			tagging.errorKind = result.error.kind;
+			batch.forEach((article) => taggingFailures.set(article.id, result.error.kind));
 			continue;
 		}
-		// Articles the model left out stay untagged and are retried by the next run.
-		for (const item of result.data.items) {
-			const article = batch[Number(item.ref.slice(1)) - 1];
-			if (!article) continue;
-			const { category, regions, countries, tags } = item;
-			await digest.saveArticleTaxonomy(article.id, { category, regions, countries, tags });
-			saved++;
+		try {
+			// Articles the model left out stay untagged and are retried by the next run.
+			for (const item of result.data.items) {
+				const article = batch[Number(item.ref.slice(1)) - 1];
+				if (!article) continue;
+				const { category, regions, countries, tags } = item;
+				await digest.saveArticleTaxonomy(article.id, { category, regions, countries, tags });
+				saved++;
+			}
+		} catch (error) {
+			errors.push(`tagging batch ${start / TAGGING_BATCH_SIZE + 1}: ${sanitizeError(error)}`);
 		}
 	}
-	return saved > 0 ? digest.listEventsNeedingContent(limit) : listed;
+	if (saved === 0) return { events: listed, listedAt };
+	return { events: await digest.listEventsNeedingContent(limit), listedAt };
+}
+
+/**
+ * The error to report for an event whose articles are all untagged. Only a request that can
+ * never succeed (`invalid_request`, `input_too_large`) is passed on, so a human looks at it;
+ * anything else, including untagged articles with no error, becomes `llm_failed` and is retried.
+ */
+function taggingErrorFor(
+	item: EventWithArticles,
+	taggingFailures: Map<string, LlmErrorKind>
+): LlmErrorKind | null {
+	for (const article of item.articles) {
+		const kind = taggingFailures.get(article.id);
+		if (kind === 'invalid_request' || kind === 'input_too_large') return kind;
+	}
+	return null;
 }
 
 /**
@@ -178,13 +211,20 @@ async function mergeAmbiguousDrafts(
 	digest: DigestRepository,
 	runTask: RunTask,
 	events: EventWithArticles[],
-	ctx: JobContext
+	ctx: JobContext,
+	errors: string[]
 ): Promise<number> {
 	const drafts = events.filter((item) => item.event.status === 'draft');
 	if (drafts.length === 0) return 0;
 
 	const since = new Date(ctx.now().getTime() - GROUPING_LOOKBACK_MS).toISOString();
-	const candidates = await digest.listMatchableEvents(since);
+	let candidates: EventMatchCandidate[];
+	try {
+		candidates = await digest.listMatchableEvents(since);
+	} catch (error) {
+		errors.push(`clustering: ${sanitizeError(error)}`);
+		return 0;
+	}
 	const pairs = findAmbiguousPairs(drafts, candidates).slice(0, MAX_CLUSTERING_PAIRS);
 	if (pairs.length === 0) return 0;
 
@@ -215,10 +255,26 @@ async function mergeAmbiguousDrafts(
 		const source = pair.draft.event.id;
 		const target = pair.other.event_id;
 		if (removed.has(source) || removed.has(target)) continue;
-		await digest.mergeDraftEvent(source, target, decision.confidence, ctx.now().toISOString());
-		removed.add(source);
-		merged++;
-		ctx.logger.info('ambiguous draft merged', { source_event_id: source, target_event_id: target });
+		const ids = { source_event_id: source, target_event_id: target };
+		try {
+			// One pair failing (the target was hidden meanwhile, another job linked or deleted an
+			// event) never stops the other pairs or the run.
+			const done = await digest.mergeDraftEvent(
+				source,
+				target,
+				decision.confidence,
+				ctx.now().toISOString()
+			);
+			if (!done) {
+				ctx.logger.info('merge skipped: the draft has admin edits', ids);
+				continue;
+			}
+			removed.add(source);
+			merged++;
+			ctx.logger.info('ambiguous draft merged', ids);
+		} catch (error) {
+			errors.push(`merge ${source}: ${sanitizeError(error)}`);
+		}
 	}
 	return merged;
 }
