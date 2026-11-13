@@ -83,6 +83,12 @@ Orchestrator verifies Wave 0 (`npm run dev`, `npm test`, `db:migrate`, `db:seed`
 | `data-scientist` (optional) | Tune clustering thresholds / editorial relevance on fixtures; Thai summary model bake-off |
 
 ### Wave 3 — Verification
+
+**Owner decisions carried into Wave 3 (2026-11-13):**
+- **Sensitive tags:** events that contain allegations about a named person's private life, or criminal or espionage allegations, may still auto-publish if they pass the gates (≥2 sources, attributed, uncertainty stated). They must **never get public tags derived from the allegation** (e.g. `extramarital-affair`, `alleged-spy`). Implement this as a deterministic tag filter plus prompt guidance for the tagging and summary tasks, and test it.
+- **WHO:** disabled (the owner declined the regional-only WHO Africa feed). IMF is disabled (no working feed).
+- **Excerpts:** internal-only (LLM input + admin view), never on public pages.
+
 `qa-tester` (tests for PRD §11 acceptance 1–12; Playwright 360/390/430/768/1024/1440, both themes) · `tester` (build/lint/test + minimal fixes) · `reviewer` + `/security-review` (secrets in bundle, XSS/markdown, SSRF, admin auth, prompt injection) · `code-reviewer` (over-engineering) · `debugger` on demand.
 
 ### Wave 4 — Ops & deploy
