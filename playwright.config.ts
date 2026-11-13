@@ -9,12 +9,24 @@ export default defineConfig({
 	globalSetup: './tests/e2e/admin-global-setup.ts',
 	use: { baseURL: E2E_BASE_URL },
 	projects: [
-		{ name: 'chromium', testIgnore: '**/admin*.e2e.ts', use: { ...devices['Desktop Chrome'] } },
+		{
+			name: 'chromium',
+			testIgnore: ['**/admin*.e2e.ts', '**/pipeline*.e2e.ts'],
+			use: { ...devices['Desktop Chrome'] }
+		},
 		// Admin tests publish and hide seeded events, so they run after the public suite.
 		{
 			name: 'admin',
 			testMatch: '**/admin*.e2e.ts',
 			dependencies: ['chromium'],
+			use: { ...devices['Desktop Chrome'] }
+		},
+		// The fixture pipeline (ingest → mock digest → briefs) writes new events and briefs into
+		// the e2e database, so it runs last (docs/qa/ACCEPTANCE.md #6).
+		{
+			name: 'pipeline',
+			testMatch: '**/pipeline*.e2e.ts',
+			dependencies: ['admin'],
 			use: { ...devices['Desktop Chrome'] }
 		}
 	],
