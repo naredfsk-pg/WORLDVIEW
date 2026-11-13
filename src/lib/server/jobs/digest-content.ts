@@ -118,7 +118,7 @@ export async function generateEventContent(
 		const isTransient =
 			decision.review_reasons.length === 1 && decision.review_reasons[0] === 'llm_failed';
 		if (decision.status === 'keep_published' && !isTransient) {
-			await deps.digest.markContentChecked(event.id, deps.checkedAt);
+			await deps.digest.markContentChecked(event.id, deps.checkedAt, deps.now().toISOString());
 		}
 		deps.logger.info('event content kept', logFields);
 		return { outcome: 'unchanged', review_reasons: decision.review_reasons };

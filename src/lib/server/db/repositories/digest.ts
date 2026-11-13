@@ -279,10 +279,11 @@ export function createDigestRepository(db: Db): DigestRepository {
 				.run();
 		},
 
-		async markContentChecked(eventId, checkedAt) {
+		async markContentChecked(eventId, checkedAt, now) {
 			// Only moves forward, and only for published events (their text stays as it is).
 			db.update(events)
-				.set({ summarized_at: checkedAt })
+				// updated_at is the admin editor's version token: every write to an event bumps it.
+				.set({ summarized_at: checkedAt, updated_at: now })
 				.where(
 					and(
 						eq(events.id, eventId),

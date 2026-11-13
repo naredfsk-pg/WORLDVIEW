@@ -441,15 +441,29 @@ describe('review fixes in DigestRepository', () => {
 			1,
 			now
 		);
-		await repos.digest.markContentChecked(id, '2026-11-13T05:00:00.000Z');
+		await repos.digest.markContentChecked(
+			id,
+			'2026-11-13T05:00:00.000Z',
+			'2026-11-13T06:00:00.000Z'
+		);
 		expect(getEvent(id).summarized_at).toBeNull();
 
 		await repos.digest.saveEventContent(id, content(), now);
-		await repos.digest.markContentChecked(id, '2026-11-13T05:00:00.000Z');
-		await repos.digest.markContentChecked(id, '2026-11-13T04:00:00.000Z');
+		await repos.digest.markContentChecked(
+			id,
+			'2026-11-13T05:00:00.000Z',
+			'2026-11-13T06:00:00.000Z'
+		);
+		await repos.digest.markContentChecked(
+			id,
+			'2026-11-13T04:00:00.000Z',
+			'2026-11-13T07:00:00.000Z'
+		);
 		expect(getEvent(id)).toMatchObject({
 			summarized_at: '2026-11-13T05:00:00.000Z',
-			title_th: content().title_th
+			title_th: content().title_th,
+			// The admin editor's version token moves with the write that changed the row.
+			updated_at: '2026-11-13T06:00:00.000Z'
 		});
 	});
 

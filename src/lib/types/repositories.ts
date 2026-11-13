@@ -170,7 +170,7 @@ export interface DigestRepository {
 	// CONTRACT-CHANGE: added (Wave 2 review). A published event whose re-summary was rejected by
 	// the gates (not a transient LLM failure) keeps its text; `summarized_at` moves to
 	// `checkedAt` so it returns only when newer evidence is linked. No-op for other statuses.
-	markContentChecked(eventId: string, checkedAt: IsoUtc): Promise<void>;
+	markContentChecked(eventId: string, checkedAt: IsoUtc, now: IsoUtc): Promise<void>;
 	/** LLM/gate failure on a non-published event: status → pending_review with these reasons; text unchanged. */
 	markEventForReview(eventId: string, reasons: ReviewReason[], now: IsoUtc): Promise<void>;
 	// CONTRACT-CHANGE: added (Wave 2). The LLM `clustering` task said a draft event reports the
