@@ -70,7 +70,10 @@ npm run dev                      # http://localhost:5173
 - [ ] ไม่มี proxy env (`HTTP_PROXY`, `HTTPS_PROXY`, `NODE_USE_ENV_PROXY`) ใน app/scheduler เพราะจะปิดการตรวจ IP ตอน connect ของ SafeFetch และไม่มี `NODE_OPTIONS` ที่มี `--inspect` (compose บังคับเป็นค่าว่าง)
 - [ ] `BODY_SIZE_LIMIT` ไม่เกิน `1M`
 - [ ] `OMNI_API_URL` / `LLM_BASE_URL` เป็น https (หรือ host ภายใน) และตั้ง `LLM_DAILY_MAX_REQUESTS` / `LLM_DAILY_MAX_TOKENS` ไว้ (อย่ายกเลิก cap) ส่วน `LLM_MAX_REQUESTS_PER_RUN` (default 80 ต่อ job) ปล่อยว่างได้
-- [ ] `EDITORIAL_AUTO_PUBLISH=multi_source` (ตามที่เจ้าของเลือก: เผยแพร่อัตโนมัติเฉพาะข่าวที่มี ≥2 แหล่ง) ถ้าไม่ตั้ง จะได้ `off` ทุกข่าวจะเข้า `/admin/review` ทั้ง `off` และ `multi_source` ไม่เขียนทับข้อความของข่าวที่เผยแพร่แล้ว หลักฐานใหม่จะขึ้นเป็น `new_evidence_pending` ให้ admin ยืนยัน (อย่าใช้ `all` ใน production)
+- [ ] `EDITORIAL_AUTO_PUBLISH=all` (เจ้าของตัดสินใจ 2026-11-13: เผยแพร่อัตโนมัติทั้งหมด ไม่ต้องให้คนอนุมัติข่าว แต่ติด**ป้ายความน่าเชื่อถือ**แทน) ถ้าไม่ตั้ง จะได้ `off` ทุกข่าวจะเข้า `/admin/review` ข่าวที่ไม่ผ่านเกณฑ์จริง (ไม่มีแหล่งข่าว ข้อความไทยไม่ครบ มี URL/เบอร์ติดต่อ อ้างอิงไม่ถูกต้อง AI สรุปไม่สำเร็จ) ยังเข้า `/admin/review` เหมือนเดิมทุกโหมด
+  - ป้ายบนหน้าเว็บ (บอกสถานะของ**คำกล่าวอ้างในข่าว** ไม่ใช่การประเมินสำนักข่าว): "ยังไม่ได้รับการยืนยัน" (เช่น ประเด็นอ่อนไหวที่มีแหล่งข่าวเดียว ระบบติดป้ายนี้ให้อัตโนมัติเป็นอย่างน้อย) · "ข้อมูลขัดแย้งกัน" (แหล่งข่าวรายงานไม่ตรงกัน) · "อาจเป็นข้อมูลเท็จ" (มีสัญญาณชัดเจนเท่านั้น และจะไม่ขึ้นอันดับ 1–3 ของสรุปข่าว) AI เป็นผู้ประเมิน และแก้ป้ายเองได้ที่ `/admin/events/[id]` (ช่อง "ป้ายความน่าเชื่อถือ" ต้องใส่เหตุผลการแก้ไข มีบันทึก revision)
+  - `RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE` (default `0.8`, ใช้เฉพาะ `all`): ความเชื่อมโยงระหว่างข่าวที่ AI ให้ความมั่นใจ ≥ ค่านี้จะเผยแพร่เลย (ติดป้าย "AI วิเคราะห์ความเชื่อมโยง") ต่ำกว่านี้จะถูกทิ้ง ไม่เข้าคิว ถ้า admin เคยปฏิเสธความเชื่อมโยงของคู่ข่าวใด คู่นั้นจะไม่ถูกสร้างอีก
+  - หลังเปลี่ยนนโยบาย ให้รัน `reevaluate_pending` หนึ่งครั้งเพื่อเคลียร์รายการที่ค้างจากนโยบายเดิม (ดูข้อ 6)
 - [ ] `TUNNEL_TOKEN` ตั้งใน `.env` (ถึงแค่ `cloudflared`) และ public hostname ของ tunnel ชี้ไป `http://app:3000`
 
 ถ้าอยากแยก secret ของ tunnel ออกจากไฟล์ของ app ในภายหลัง ให้ย้ายบรรทัด `TUNNEL_TOKEN=...` ไปไว้ในไฟล์ `cloudflared.env` (อยู่ใน `.gitignore` แล้ว) แล้วเปลี่ยน service `cloudflared` ให้ใช้ `env_file: cloudflared.env` แทน `environment:` ตอนนี้ยังไม่จำเป็น เพราะ app ไม่ได้รับไฟล์ `.env` ทั้งไฟล์อยู่แล้ว
@@ -158,7 +161,11 @@ docker compose exec scheduler node build/scripts/job.js digest
 docker compose exec scheduler node build/scripts/job.js ingest --dry-run      # ดึง feed อย่างเดียว ไม่เขียน DB
 docker compose exec scheduler node build/scripts/job.js brief_morning --date 2026-11-13 --force
 docker compose exec scheduler node build/scripts/job.js archive_snapshot --date 2026-11-12 --force
+docker compose exec scheduler node build/scripts/job.js reevaluate_pending --dry-run   # ดูก่อนว่าจะเปลี่ยนอะไร ไม่เขียน DB
+docker compose exec scheduler node build/scripts/job.js reevaluate_pending --manual    # ใช้นโยบายปัจจุบันกับรายการที่ค้าง
 ```
+
+**`reevaluate_pending`** (ไม่อยู่ใน crontab รันเองเมื่อเปลี่ยน `EDITORIAL_AUTO_PUBLISH`) ไม่เรียก AI เลย: ข่าวที่รอตรวจเพราะ**นโยบายอย่างเดียว** (`auto_publish_disabled`, `sensitive_single_source`) จะถูกตรวจ G1–G3 กับข้อความที่เก็บไว้อีกครั้งแล้วเผยแพร่พร้อมป้ายความน่าเชื่อถือ ข่าวที่มีเหตุผลอื่น (ไม่ผ่านเกณฑ์จริง) ยังค้างอยู่ ในโหมด `all` ยังล้าง `new_evidence_pending` ของข่าวที่เผยแพร่แล้ว (digest รอบถัดไปจะสรุปใหม่พร้อมข่าวที่เพิ่มเข้ามา) และตรวจความเชื่อมโยงที่ค้าง (ความมั่นใจถึงเกณฑ์ → เผยแพร่, ต่ำกว่า → ลบ โดยเก็บข้อมูลเดิมไว้ใน revision) ทุกการเปลี่ยนแปลงบันทึกใน `content_revisions` ชื่อผู้แก้ `system:policy` รันซ้ำได้ปลอดภัย (รอบที่สองจะไม่มีอะไรเปลี่ยน) ดู log บรรทัด `event re-evaluated` / `relation re-evaluated` และ counters ใน `dry-run finished` / `job finished`
 
 Exit code: `0` สำเร็จ/ข้าม · `2` partial · `1` failed · `64` ใช้คำสั่งผิด (`--fixtures` ถูกปฏิเสธใน production เป็นเรื่องปกติ)
 

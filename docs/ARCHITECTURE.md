@@ -1,6 +1,6 @@
 # WORLDVIEW — Architecture Contract (MVP)
 
-> Owner: `software-eng` (step 0.1) · 2026-11-13 · Status: **binding for Wave 0–3** (§1, §2, §14 refreshed in Wave 3; §5, §6, §8–§11, §14 updated by the security wave)
+> Owner: `software-eng` (step 0.1) · 2026-11-13 · Status: **binding for Wave 0–3** (§1, §2, §14 refreshed in Wave 3; §5, §6, §8–§11, §14 updated by the security wave; §4–§6, §8–§12, §14, §16, §18 by the auto-publish wave)
 > Precedence: [`AGENT_PLAN.md` §1 locked decisions](AGENT_PLAN.md) > **this document** > PRD / UI spec where this document reconciles them.
 > Types live in [`src/lib/types/`](../src/lib/types/index.ts) (pure TS, no runtime deps). If code and this doc disagree, raise it; do not fork the contract silently.
 
@@ -117,7 +117,7 @@ Every route is server-rendered and none is prerendered: the root layout reads fr
 
 Every admin action requires `change_reason` (3–300 chars) and writes `content_revisions` through `AdminRepository` in the same transaction as the change. State transitions are checked inside that transaction (`AdminTransitionResult`: `not_found` / `invalid_state` / `conflict` / `gate_failed`).
 
-**Admin-edited text (contract for the digest side):** every `?/save` appends `content_revisions` with `entity_type = 'event'`, `entity_id = events.id`, `changed_by = <admin email>` (automated writers use `'system'`, so "admin" = `changed_by <> 'system'`), `changed_at` = UTC ISO (same format as `events.summarized_at`, so they compare as strings), and `before_after.after` holding exactly the edited keys (`title_th`, `summary_th`, `what_happened_th`, `why_it_matters_th`, `background_th`, `uncertain_th`, `category`). Status actions (publish/hide/flag) also write `entity_type = 'event'` rows, but their `after` holds only `status` / `review_reasons`. So "admin-owned text newer than the last summary" is: `EXISTS (SELECT 1 FROM content_revisions WHERE entity_type = 'event' AND entity_id = ? AND changed_by <> 'system' AND changed_at > events.summarized_at AND json_extract(before_after, '$.after.title_th') IS NOT NULL ...)` (OR over the edited keys), served by the `(entity_type, entity_id, changed_at)` index.
+**Admin-edited text (contract for the digest side):** every `?/save` appends `content_revisions` with `entity_type = 'event'`, `entity_id = events.id`, `changed_by = <admin email>` (automated writers use `'system'`, and other automated policies `'system:<name>'` such as `'system:policy'` (auto-publish wave), so "admin" = `changed_by <> 'system' AND changed_by NOT LIKE 'system:%'`, the `byAdmin()` predicate in `repositories/shared.ts`), `changed_at` = UTC ISO (same format as `events.summarized_at`, so they compare as strings), and `before_after.after` holding exactly the edited keys (`title_th`, `summary_th`, `what_happened_th`, `why_it_matters_th`, `background_th`, `uncertain_th`, `category`, and since the auto-publish wave `credibility_level` + `credibility_reason_th`, always written together). Status actions (publish/hide/flag) also write `entity_type = 'event'` rows, but their `after` holds only `status` / `review_reasons`. So "admin-owned text newer than the last summary" is: `EXISTS (SELECT 1 FROM content_revisions WHERE entity_type = 'event' AND entity_id = ? AND changed_by <> 'system' AND changed_at > events.summarized_at AND json_extract(before_after, '$.after.title_th') IS NOT NULL ...)` (OR over the edited keys), served by the `(entity_type, entity_id, changed_at)` index.
 
 Non-content admin operations (manual job reruns) go to the append-only `admin_actions` table (`id`, `created_at`, `action`, `actor`, `target`, `reason`), migration `0002_admin_actions`; migration `0004_admin_rerun_actions` widens the `action` CHECK to one `rerun_{job_type}` per job type.
 
@@ -207,6 +207,7 @@ Storage: ids are TEXT (`crypto.randomUUID()`; slugs for sources and lessons). Ti
 | `events.background`, `why_it_matters`, `uncertainty` | Renamed `background_th`, `why_it_matters_th`, `uncertain_th` | Follows the UI spec names plus the `_th` convention |
 | `events` + `what_happened_th`, `claims: AttributedClaim[]` | Added | FR-02 "What happened?" (confirmed facts) and attributed claims (PRD §9.2) |
 | `events` + `tags`, `signals`, `event_date`, `published_at`, `summarized_at`, `source_count`, `is_demo`, `review_reasons`, `created_at`, `updated_at` | Added | Tags link events to the Academy; `signals` feed ranking (PRD §4.4); `event_date` is indexed for archive and search; `summarized_at` triggers re-summary when new articles arrive; `source_count` drives the single-source label; `is_demo` drives `DemoNotice`; `review_reasons` feed the admin queue; `updated_at` (row edits) is kept separate from `last_updated_at` (newest evidence). |
+| `events` + `credibility_level`, `credibility_reason_th` (auto-publish wave, migration 0005) | Added: `CredibilityLevel` (`none` default · `unverified` · `disputed` · `possible_misinformation`, inline CHECK) and one Thai sentence or null | The public credibility label of the event's claims (§11), shown on every card and detail page. Added columns (no table rebuild, so the FTS triggers stay). Content fields: an admin override is kept by re-summaries. |
 | `articles` + `publisher_name`, `language`, `taxonomy` | Added | `publisher_name` separates the discovery source from the cited publisher (PRD §4.2). `taxonomy` holds tagging output used for grouping and event taxonomy. |
 | `sources` + `kind`, `allow_excerpt`, `is_demo`, `last_success_at`, `last_error_at`, `last_error` | Added | Adapter selection, licensing, the demo label, and provider health (FR-06) |
 | `event_relations` + `id`, `confidence`, `created_at`, `reviewed_at`, `reviewed_by`; `explanation` → `explanation_th` | Added / renamed | UI `reviewed` = `reviewed_at !== null` |
@@ -223,11 +224,12 @@ Storage: ids are TEXT (`crypto.randomUUID()`; slugs for sources and lessons). Ti
 | Enum | Values | Source |
 |---|---|---|
 | `EventStatus` | `draft` · `pending_review` · `published` · `hidden` | `EVENT_STATUSES` |
-| `ReviewReason` | `no_source` · `llm_failed` · `invalid_llm_output` · `llm_request_rejected` · `unsupported_claim` · `url_in_generated_text` · `contact_in_generated_text` (security wave) · `sensitive_single_source` · `missing_thai_fields` · `possible_duplicate` (Wave 3) · `auto_publish_disabled` (security wave) · `new_evidence_pending` (security wave, on a **published** event) · `manual_flag` | `REVIEW_REASONS` |
+| `ReviewReason` | `no_source` · `llm_failed` · `invalid_llm_output` · `llm_request_rejected` · `unsupported_claim` · `url_in_generated_text` · `contact_in_generated_text` (security wave) · `sensitive_single_source` (only with policy `off` / `multi_source` since the auto-publish wave) · `missing_thai_fields` · `possible_duplicate` (Wave 3) · `auto_publish_disabled` (security wave) · `new_evidence_pending` (security wave, on a **published** event) · `manual_flag` | `REVIEW_REASONS` |
 | `RelationType` | `same_topic` · `follow_up` · `response_to` · `background_of` · `potential_impact` (no `causes` in MVP) | `RELATION_TYPES`; causal = `response_to`, `potential_impact` |
 | `RelationStatus` | `pending_review` · `published` · `rejected` | `RELATION_STATUSES` |
 | `BriefEdition` / `BriefStatus` | `morning` · `evening` · `daily_snapshot` / `draft` · `published` · `hidden` | `BRIEF_EDITIONS`, `BRIEF_STATUSES` |
-| `JobType` | `ingest` · `digest` · `brief_morning` · `brief_evening` · `archive_snapshot` | `JOB_TYPES` |
+| `JobType` | `ingest` · `digest` · `brief_morning` · `brief_evening` · `archive_snapshot` · `reevaluate_pending` (auto-publish wave, manual only) | `JOB_TYPES` |
+| `CredibilityLevel` | `none` · `unverified` · `disputed` · `possible_misinformation` (auto-publish wave) | `CREDIBILITY_LEVELS`, Thai labels `CREDIBILITY_LABEL_TH` |
 | `JobStatus` / `JobTrigger` | `running` · `succeeded` · `partial` · `failed` / `cron` · `manual` | `JOB_STATUSES`, `JOB_TRIGGERS` |
 
 ```mermaid
@@ -235,6 +237,8 @@ stateDiagram-v2
   [*] --> draft: digest groups articles
   draft --> published: all auto gates pass and EDITORIAL_AUTO_PUBLISH allows it
   draft --> pending_review: auto_publish_disabled (policy off, or multi_source with 1 source)
+  draft --> pending_review: sensitive_single_source (policy off / multi_source only)
+  pending_review --> published: reevaluate_pending under a policy that now allows it (only when reasons ⊆ [auto_publish_disabled, sensitive_single_source])
   draft --> pending_review: any gate fails / LLM fails / possible duplicate of a published event
   pending_review --> published: next digest retry passes (only when reasons == [llm_failed])
   pending_review --> published: admin publish (hard gates)
@@ -246,7 +250,7 @@ stateDiagram-v2
 ```
 
 - A published event is **never** auto-demoted. If its re-summary fails, the previous text stays (`keep_published`), and the event is retried on the next digest.
-- Relations are visible only when `status = published` **and** both events are published. Since the security wave every new relation is stored `pending_review`; only an admin publishes one.
+- Relations are visible only when `status = published` **and** both events are published. With policy `all` (auto-publish wave) a validated relation at or above `RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE` is stored `published` (`reviewed_at` null, so the UI shows no editor badge, only "AI วิเคราะห์ความเชื่อมโยง") and one below it is dropped; with `off` / `multi_source` every new relation is stored `pending_review` and only an admin publishes it (security wave).
 - `new_evidence_pending` is the only reason a published event carries. It stays public; `/admin/review` lists it, and the admin confirms the text (`publishEvent` on a published event clears it, same G1–G3) or edits or hides it.
 - A brief with zero eligible events is stored as `draft`, and the UI falls back to the previous brief.
 
@@ -289,6 +293,7 @@ When formatting a `BriefDate`, interpret it as Bangkok noon so it never shifts b
 npm run job -- <ingest|digest|brief_morning|brief_evening|archive_snapshot> [--date YYYY-MM-DD] [--force] [--manual]
 npm run job -- ingest [--fixtures] [--dry-run]
 npm run job -- digest [--max-events N]
+npm run job -- reevaluate_pending [--dry-run] [--force] [--manual]
 ```
 
 `scripts/job.ts` is a thin CLI over **`runJobByType(type, { date, force, manual, dryRun, fixtures, maxEvents, signal, allowOpenWindow, onClaimed })`** in `src/lib/server/jobs/registry.ts` (Wave 2), which returns `{ status, exitCode, counters, runId?, reason? }`. `onClaimed(run)` fires once the slot is claimed (the admin page answers then). The registry is the jobs composition root: the one file under `server/jobs` that reads config and opens the concrete database (one connection per call, closed at the end). Job bodies still see repository interfaces only. It never throws: setup failures return `failed`/1, usage errors `usage_error`/64. The admin lane calls it too. `--max-events N` bounds how many events digest gives content to (bounded smoke runs); `--dry-run` fetches and normalizes without any database access.
@@ -302,6 +307,7 @@ Exit codes: `0` succeeded or skipped (already done, or running elsewhere) · `2`
 | `ingest`, `digest` | `{type}:{hourSlot(now)}` e.g. `ingest:2026-11-13T06` | start of that Bangkok hour | — |
 | `brief_morning` / `brief_evening` | `{type}:{date}` e.g. `brief_morning:2026-11-13` | `date` 07:00 / 19:00 ICT | `todayBriefDate(now)` |
 | `archive_snapshot` | `archive_snapshot:{date}` | `date + 1` 01:00 ICT | `addDays(today, -1)` |
+| `reevaluate_pending` | `reevaluate_pending:{hourSlot(now)}` | start of that Bangkok hour | — (not in the crontab) |
 
 **Claim** (`JobRunRepository.claim`, atomic):
 - No row → insert `running` with `attempts = 1`.
@@ -331,6 +337,8 @@ A forced rerun therefore never duplicates anything (PRD §11 #4).
 Jobs themselves never auto-retry. The next slot, or a manual rerun from `/admin`, picks up leftovers (digest re-processes drafts and failed events). A `pending_review [llm_failed]` event is retried only when its row was last written at least `LLM_FAILED_RETRY_DELAY_MS` (11 h) ago, about twice a day with the four digest runs. An LLM budget stop (`budget_exceeded`, daily or per run) writes nothing for the event and ends the content step, so the rest stay as they are (not failed) for the next run.
 
 Security-wave counters: ingest `items_capped` (new items left by the per-source cap); digest `events_new_evidence` (published events flagged `new_evidence_pending`) and `events_skipped` (rows that changed while the LLM worked, so nothing was saved). Job errors in `job_runs.error` and logs go through the SQL-redacting sanitizer `server/errors.ts` shared with `handleError`.
+
+**`reevaluate_pending`** (auto-publish wave, `server/jobs/reevaluate.ts` + `ReevaluationRepository`): applies the current policy to work an older policy left waiting, **without any LLM call**. (1) `pending_review` events whose reasons are non-empty and all in `POLICY_REVIEW_REASONS` (`auto_publish_disabled`, `sensitive_single_source`) get `evaluateStoredEventForAutoPublish` (G1–G3 on the stored text incl. the credibility reason, G6 from the stored signals, sticky reasons, policy; the stored text passed G4/G5 when it was saved) and the label from `assessCredibility` on the stored label plus the floor. Published → `published_at` set once, pipeline tags pass `filterAllegationTags`, admin-edited credibility/tags kept; still pending → reasons rewritten only when they changed. Events with any other reason are not listed (real failures stay). (2) Policy `all` only: published events with `new_evidence_pending` lose the flag and `summarized_at` moves back to the last content save (later of `published_at` and the last `automatic re-summary` revision), so the next digest re-summarizes them under the normal LLM budget (≤ 30 events per run); that re-summary brings the model's own credibility assessment. (3) Policy `all` only: pending relations are re-checked with the relation gate on the stored row (evidence ⊆ both events' articles, Thai explanation, G3, confidence) → `published` (`reviewed_at` stays null), or deleted when below the threshold or when an admin rejected the pair; a relation whose event carries `possible_duplicate` stays pending (it belongs to that review). Every write re-checks the listed row (`updated_at` + `status`) and appends `content_revisions` by `system:policy` (`entity_type` `event` or `event_relation`; a dropped relation keeps its full row in `before`). Counters: `events_reevaluated`, `events_published`, `events_pending_review`, `events_requeued`, `events_skipped`, `relations_reevaluated`, `relations_published`, `relations_dropped`, `relations_pending_review`. `--dry-run` runs the same planning read-only (no writes, no `job_runs` claim) and logs one line per item (`event_id` / `relation_id`, decision, reasons). Idempotent: a second run finds nothing to change; the hourly slot makes a repeat in the same hour `already_done` unless `--force`. Also available on `/admin/jobs` (`rerun_reevaluate_pending` in `admin_actions`).
 
 **Schedule** (PRD §4.1). Production runs it in the `scheduler` container (supercronic, `docker/crontab`, §17). Crontab lines are in UTC (ICT = UTC+7, no DST). `CRON_TZ=Asia/Bangkok` is an option if the host's cron supports it.
 
@@ -364,7 +372,8 @@ The two steps are joined with `;`, not `&&`, so digest still processes earlier a
 Ranking (`rankBriefCandidates`, pure) lives in `server/jobs/brief-ranking.ts` (Wave 2; `editorial` was outside that lane):
 - Score = 3·`impact_breadth` + 3·`thailand_relevance` + 2·recency (1 at the window end, 0 a day earlier) + 1.5·`is_continuing` + source diversity (`source_count` − 1, max 3). Credibility is not scored separately: every source is owner-approved.
 - Region quota: no region except `global` above 40% of the items while other candidates remain; leftover slots are then filled in score order.
-- Top slots (security wave): `impact_breadth` and `thailand_relevance` come only from the LLM, which an injected article can set to 3/3. Ranks 1–3 (`CORROBORATED_TOP_SLOTS`) go to events with `source_count ≥ 2`, best score first, whenever the brief has such events; the other items follow in score order. Which events enter the brief is unchanged. Residual: when every candidate is single-source the score order stands (with the default policy those events were all admin-published).
+- Top slots (security wave): `impact_breadth` and `thailand_relevance` come only from the LLM, which an injected article can set to 3/3. Ranks 1–3 (`CORROBORATED_TOP_SLOTS`) go to events with `source_count ≥ 2`, best score first, whenever the brief has such events; the other items follow in score order. Which events enter the brief is unchanged. Residual: when every candidate is single-source the score order stands.
+- Credibility (auto-publish wave): an event labelled `possible_misinformation` never takes ranks 1–3 (`TOP_SLOTS`). It goes after every other item, and is left out of the brief when fewer than three other items exist. Other labels do not change the ranking.
 - Output: at most `DAILY_EVENT_TARGET_MAX` items, never padded up to MIN (fewer than MIN is logged), each with a short Thai `selection_reason` built from the strongest signals (e.g. "ผลกระทบในวงกว้าง · รายงานจาก 3 แหล่งข่าว").
 - `saveBrief` keeps an admin-hidden brief hidden; a brief with no items is a `draft`.
 
@@ -431,11 +440,11 @@ To add late reports to a past day, run `archive_snapshot --date D --force`.
 1. Group unassigned articles (72 h, up to 200) by rules: `createDraftEvent` / `linkArticles`.
 2. Take up to 30 (or `--max-events`) `listEventsNeedingContent` (newest evidence first, id tie-break, then round-robin by the source of each event's first article so one busy feed cannot take every slot; `llm_failed` events only after the retry backoff (§8); published events with `manual_flag` are left out, since the gate could only keep them) and tag their articles `WHERE taxonomy IS NULL` (up to 20 per call), then `saveArticleTaxonomy`. Tagging errors are tracked per article: only `invalid_request` / `input_too_large` reach a human (`llm_request_rejected`); anything else, including articles the model left out, is retried as `llm_failed`.
 3. Ambiguous clustering for the drafts among them (see Grouping): merge into drafts / pending events, flag possible duplicates of published events; after any merge or flag, steps 2–3 list again.
-4. Per event: `extraction` → `summary` (with the previous wording for a published event) → `evaluateEventForPublish` (with `current_review_reasons`) → `saveEventContent` (output present) or `markEventForReview` (no output); nothing is written on `keep_hidden`, nor on `keep_published` after a transient `[llm_failed]` (retried next run); any other `keep_published` calls `markContentChecked`, so the event returns only when newer evidence is linked. `summarized_at` (and that marker) is the time the events were *listed*, so an article linked while the LLM works triggers the next re-summary. Claim evidence goes through `mapRefsToArticleIds`. `signals` = summary `impact_breadth` / `thailand_relevance` + extraction `sensitive`. An event with no tagged article skips the LLM and records the tagging failure (`llm_failed`, retried).
+4. Per event: `extraction` → `summary` (with the previous wording for a published event) → `evaluateEventForPublish` (with `current_review_reasons`) → `saveEventContent` (output present) or `markEventForReview` (no output); nothing is written on `keep_hidden`, nor on `keep_published` after a transient `[llm_failed]` (retried next run); any other `keep_published` calls `markContentChecked`, so the event returns only when newer evidence is linked. `summarized_at` (and that marker) is the time the events were *listed*, so an article linked while the LLM works triggers the next re-summary. Claim evidence goes through `mapRefsToArticleIds`. `signals` = summary `impact_breadth` / `thailand_relevance` + extraction `sensitive`. The credibility label (`assessCredibility`: the summary@5 level and reason, the floor, the reason checks) is saved with the content, whether the event is published or pending, so every re-summary recomputes it; an admin override is kept like any admin-edited field. An event with no tagged article skips the LLM and records the tagging failure (`llm_failed`, retried).
    - **Admin corrections win** (PRD FR-06, §9.2): `saveEventContent` never overwrites a content field that any admin revision of the event changed (a `content_revisions` row with `entity_type = 'event'` whose `changed_by` is not `system`; the fields are the keys of `before_after.after`). It checks every admin revision, not only those newer than `summarized_at`, so a field stays protected after later re-summaries. Untouched fields still follow the new evidence, a published event stays published, and the `system` revision notes "admin-edited fields kept". An unpublished event with admin edits is never auto-published: it stays `pending_review` with `manual_flag` until the admin publishes it. (Option (a) of the Wave 2 review. Option (b), skipping the re-summary and queueing the event, was not used: the review queue lists only `pending_review` events, and a published event is never auto-demoted.)
    - **Timeline** (Wave 3): when a **published** event is re-summarized because new articles were linked and the gates publish it again, `saveEventContent` appends one `event_updates` row: `update_text_th` = the summary's `update_th`, `evidence_refs` = the summary's `update_refs` (summary@4: the refs of `previous.new_refs` the line is based on; the input carries `previous.new_refs`, the refs of the new articles it sees), `reported_at` = the newest `published_at ?? ingested_at` of that evidence but never earlier than the event's latest stored update (repository), `occurred_at` = null. `editorial/event-update.ts` builds it and applies the gate checks (Thai text, no URL; evidence must be stored articles with an http(s) URL). G3 covers `update_th` only for a published event (a draft's line is unused), so there a URL keeps the old text (`keep_published`). Both fields are lenient in the schema (`.catch`): an overlong or wrongly typed value only drops the row. No row on a first publication, `keep_published`, `keep_hidden`, a null or non-Thai `update_th`, or `update_refs` that are empty or include a ref that is not new. Idempotent: the repository skips an update whose evidence set equals one already stored for the event. `EventWithArticles.new_article_ids` (articles linked after `summarized_at`) supplies the new articles.
 5. For events published or re-summarized in this run, using the row as stored (admin-kept title, category and tags), not the LLM output:
-   - `relations`: up to 8 published events from the last 14 days that share a tag or a region other than `global` (and the same `is_demo`), 3 articles each, then the relation gate, then `upsertRelation` on `store`.
+   - `relations`: up to 8 published events from the last 14 days that share a tag or a region other than `global` (and the same `is_demo`), 3 articles each, then the relation gate (with the policy and `RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE`), then `upsertRelation` on `store`.
    - `academy_linking`: up to 8 lessons sharing a tag (2 points) or the category (1 point), then `selectLessonLinks(links, existing ids)` → `replaceLessonLinks`. A failed call keeps the previous links.
 
 Every LLM call passes `{ job_run_id, signal }`; no failure throws.
@@ -455,7 +464,7 @@ interface LLMProvider {
   run<T extends LlmTask>(task: T, input: LlmInput<T>, options?: LlmCallOptions): Promise<LlmResult<LlmOutput<T>>>;
 }
 ```
-- Tasks: `tagging | clustering | extraction | summary | relations | academy_linking`. Each has typed input and output in `LlmTaskMap`, and a Zod schema plus a `PROMPT_VERSIONS[task]` in `server/llm`. Bump the version whenever the prompt or schema changes; the version is part of the cache key. Current (Wave 3): `tagging@2`, `clustering@3`, `extraction@1`, `summary@4`, `relations@1`, `academy_linking@1`.
+- Tasks: `tagging | clustering | extraction | summary | relations | academy_linking`. Each has typed input and output in `LlmTaskMap`, and a Zod schema plus a `PROMPT_VERSIONS[task]` in `server/llm`. Bump the version whenever the prompt or schema changes; the version is part of the cache key. Current (auto-publish wave): `tagging@2`, `clustering@3`, `extraction@1`, `summary@5`, `relations@1`, `academy_linking@1`. `summary@5` adds `credibility_level` (enum, `.default('none').catch('none')`) and `credibility_reason_th` (`textSchema(200)`, `.nullable().default(null).catch(null)`, so normalized like every text field): a bad value never fails the summary. The prompt asks about the claims in `<data>` only, never to judge an outlet by name or reputation and never to accuse a news organisation; `possible_misinformation` only with a clear signal in the data.
 - Expected failures come back as `{ ok: false, error: { kind } }` and are never thrown. Callers map them to `pending_review` (`llm_failed` / `invalid_output`).
 
 **Model routing** (task model = `LLM_MODEL_<TASK> ?? LLM_MODEL_ID`, with `LLM_MODEL_ACADEMY_LINKING` added; when unset → `not_configured`):
@@ -512,7 +521,7 @@ interface LLMProvider {
 | G3 | No URL and no contact details in any generated or edited text field. Checked on a normalized copy (NFKC, `\p{Cf}` removed, lower case, `。`/`[.]`/`(dot)`/`evil . com` turned back into `.`): `https?://`, `www.`, bare domains, Thai IDN-like `label.ไทย` / `label.คอม`; contacts: international (`+66…`) and Thai (`0x-xxx-xxxx`) phone numbers, a call word (`โทร`, `สายด่วน`, `tel`) with 4+ digits, LINE ids (`line: x`, `ไลน์ x`), `@handles`, e-mail. Decimals, dates, times, percentages, years, `U.S.` and one-letter Thai abbreviations pass (test table in `editorial/text.test.ts`). | auto + admin | `url_in_generated_text` / `contact_in_generated_text` |
 | G4 | Extraction and summary are present and schema-valid | auto | `llm_failed` (transient, auto-retried) / `invalid_llm_output` / `llm_request_rejected` (deterministic: auth, 400, empty or too-large input — needs a human) |
 | G5 | Every fact and claim has evidence; all refs resolve to supplied articles; `cited_refs` is non-empty | auto | `unsupported_claim` / `invalid_llm_output` |
-| G6 | `signals.sensitive` and fewer than 2 distinct registry sources (`countDistinctSources`, by `source_id`) → needs human review (PRD §4.3 #6) | auto | `sensitive_single_source` |
+| G6 | `signals.sensitive` and fewer than 2 distinct registry sources (`countDistinctSources`, by `source_id`) → needs human review (PRD §4.3 #6). **Policy `all` (auto-publish wave): no reason; the event publishes with at least the `unverified` label (credibility floor).** | auto (`off` / `multi_source`) | `sensitive_single_source` |
 
 Outcomes:
 - All gates pass → `published`.
@@ -524,9 +533,11 @@ Outcomes:
 
 | Value | New / draft / retried event that passes every gate | Published event with new articles |
 |---|---|---|
-| `off` (**default**) | `pending_review [auto_publish_disabled]` | text kept, `new_evidence_pending` added, no LLM call |
-| `multi_source` (owner's production choice) | `published` only with ≥ 2 distinct registry sources, else `pending_review [auto_publish_disabled]` | as `off` |
-| `all` (previous behaviour) | `published` | re-summarized and published again (or `keep_published`) |
+| `off` (**default**) | `pending_review [auto_publish_disabled]` (or `[sensitive_single_source]`) | text kept, `new_evidence_pending` added, no LLM call |
+| `multi_source` | `published` only with ≥ 2 distinct registry sources, else `pending_review [auto_publish_disabled]`; G6 holds sensitive single-source events | as `off` |
+| `all` (**production since 2026-11-13**, owner decision: no human approval of news) | `published`, with the credibility label; G6 does not hold it | re-summarized and published again (or `keep_published`), label recomputed |
+
+With every policy G1–G5 failures (no source, missing Thai fields, URL/contact in generated text, unsupported or invalid refs, LLM failure) still send an event to `pending_review`: they are failures, not approvals. `manual_flag` / `possible_duplicate` stay sticky. Relations follow the same switch (relation gate below).
 
 The gate treats an omitted policy as `off`. Design choice for re-summaries: the simplest correct option is to not call the LLM at all (nothing would be stored), flag the published row with a reason the existing review queue can list (`listReviewQueue` = `pending_review` events + published events with `new_evidence_pending`) and let the admin confirm (`publishEvent` on a published event with that reason), edit or hide. The event is never demoted.
 
@@ -535,8 +546,20 @@ Other pure rules in `server/editorial` (Wave 3, details in §9): `filterAllegati
 **Relation gate** (`evaluateRelation(input: RelationGateInput): RelationGateDecision`):
 - `evidence_article_ids` must be non-empty and every id must belong to the from-event's or to-event's articles. `explanation_th` must be Thai and contain no URL. Failing either → `drop`, so **no relation exists without evidence**.
 - `explanation_th` must also have no contact details (G3 rules), else `drop`.
-- MVP decision (security wave): **every** stored relation is `pending_review`, whatever its type and confidence, because the model-written explanation can assert cause and effect under any type. An admin approves each one.
+- Policy `off` / `multi_source` (security wave, unchanged): **every** stored relation is `pending_review`, whatever its type and confidence, because the model-written explanation can assert cause and effect under any type. An admin approves each one.
+- Policy `all` (auto-publish wave): a relation that passed the checks above is `published` when `confidence ≥ RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE` (default 0.8, the same bar as `CLUSTERING_MERGE_MIN_CONFIDENCE`, the other confident model decision that changes public content) and **dropped** (not stored) below it. Chosen over a separate relation switch so that one setting means "no human approval" and dev/tests (default `off`) keep the reviewed behaviour. The UI marks every relation "AI วิเคราะห์ความเชื่อมโยง"; `potential_impact` keeps its "possible" wording. The `possible_duplicate` relation of clustering never goes through this gate and stays pending.
 - An admin rejection of any relation between two events blocks that pair, in either direction and for every type: later `upsertRelation` calls store nothing (counted as `relations_dropped`).
+
+**Credibility label** (auto-publish wave, owner decision 2026-11-13; `editorial/credibility.ts`, pure): the label describes the **claims** in the event, never the outlet.
+
+| Level | Public label | When |
+|---|---|---|
+| `none` | — (no badge) | the usual case |
+| `unverified` | "ยังไม่ได้รับการยืนยัน" | a sensitive or contested claim from a single source, a claim from one involved party only, or the outlet says it could not verify; also the deterministic floor |
+| `disputed` | "ข้อมูลขัดแย้งกัน" | the event's sources report conflicting facts or figures |
+| `possible_misinformation` | "อาจเป็นข้อมูลเท็จ" | only clear signals: contradicted by another cited source, reported as debunked/false, viral unverified material |
+
+`assessCredibility({ assessed, sensitive, distinct_sources })`: level = max(model level, floor), floor = `unverified` when sensitive with fewer than 2 registry sources. When the floor raised the level, the reason is the fixed `SINGLE_SOURCE_FLOOR_REASON_TH`; otherwise the model's reason if it is Thai and passes G3 (`containsLinkOrContact`), else null (or the floor reason when the level equals the floor). It never blocks publishing, and the auto gate does not check the reason (it is cleaned here instead); the stored-text gate (admin publish, `reevaluate_pending`) does run G3 on it. Admin override: `/admin/events/[id]` saves both fields together (zod: enum, reason ≤ 300 chars, Thai, no URL/contact), with the usual optimistic concurrency and revision; re-summaries keep it. The wording never uses "ข่าวปลอม".
 
 **Labelling rules the UI must render:**
 - `source_count === 1` → "มีแหล่งข่าวเดียว".
@@ -545,6 +568,8 @@ Other pure rules in `server/editorial` (Wave 3, details in §9): `filterAllegati
 - `potential_impact` → "อาจส่งผล (ยังไม่ยืนยัน)".
 - `corrections[]` are listed.
 - Every event detail and brief carries an AI-assisted disclosure ("สรุปโดยมี AI ช่วย ตรวจสอบได้จากแหล่งข่าวต้นทาง").
+- `credibility_level !== 'none'` → `CredibilityLabel` badge (text, not colour only) on every card (`EventLabels`: StoryCard, FeaturedStory, briefs, archive, search, lesson events, relation endpoints) and the detail page, where the reason and a no-JS `<details>` "ป้ายนี้หมายถึงอะไร" explain the levels.
+- Every relation → "AI วิเคราะห์ความเชื่อมโยง" (plus "ตรวจโดยบรรณาธิการแล้ว" when `reviewed`).
 
 ## 12. Repository interfaces (`types/repositories.ts`)
 
@@ -560,6 +585,7 @@ TS interfaces only. `server/db` implements them and exports `getRepositories()` 
 | `LlmCallRepository` | write | `server/llm` (injected) |
 | `AcademyCatalogRepository` | write | `scripts/academy-sync.ts` |
 | `AdminRepository` | write + audit | `/admin/*` actions. Every write appends `content_revisions` in the same transaction. |
+| `ReevaluationRepository` (auto-publish wave) | write + audit | `jobs/reevaluate.ts`. Every write re-checks the listed row and appends a `system:policy` revision in the same transaction. |
 
 All methods are async, and each method is one transaction. Freshness staleness is computed outside the repository (`utils/freshness.ts computeFreshness(timestamps, now): Freshness`).
 
@@ -633,7 +659,8 @@ Raw `process.env` reads outside `config.ts` (the only ones): `hooks.server.ts` p
 | `LLM_TEMPERATURE` | float 0–2 | 0.1 | config → `llm/provider.ts` |
 | `LLM_DAILY_MAX_REQUESTS` / `LLM_DAILY_MAX_TOKENS` | int | 300 / 600000 | config → `llm/provider.ts` caps; `routes/admin/+page.server.ts` usage view |
 | `LLM_MAX_REQUESTS_PER_RUN` | int | 80 | config → `llm/provider.ts` (per `job_run_id`, security wave) |
-| `EDITORIAL_AUTO_PUBLISH` | `all\|multi_source\|off` | **off** | config → `jobs/registry.ts` → digest / event gate (§11). The owner chose `multi_source` for production (set in the real `.env`). |
+| `EDITORIAL_AUTO_PUBLISH` | `all\|multi_source\|off` | **off** | config → `jobs/registry.ts` → digest / event gate / relation gate / `reevaluate_pending` (§11). Production uses `all` since 2026-11-13 (owner decision; set in the real `.env`). |
+| `RELATIONS_AUTO_PUBLISH_MIN_CONFIDENCE` | float 0–1 | 0.8 | config → `jobs/registry.ts` → digest links / `reevaluate_pending` → relation gate; only with policy `all` (§11) |
 | `INGEST_MAX_NEW_ITEMS_PER_SOURCE` | int | 40 | config → `jobs/registry.ts` → ingest (§9) |
 | `APP_TIMEZONE` | `Asia/Bangkok` only | Asia/Bangkok | config (validated literal; code never reads the host zone) |
 | `DATABASE_URL` | `file:<path>` or `:memory:` | `file:./data/worldview.db` | config → `db/client.ts` `getDb()` (routes), `jobs/registry.ts`, `scripts/migrate.ts`, `seed.ts`, `db-reset.ts` |
@@ -690,7 +717,7 @@ Unit tests sit next to the code as `src/**/*.test.ts` (Vitest; DB tests use `ope
 | 5 | Timezones | `toBriefDate('2026-11-12T16:59:59.999Z') === '2026-11-12'` and `'…17:00:00.000Z' → '2026-11-13'`; `briefWindow` edges; `parseFeedTimestamp` returns null for zone-less input |
 | 6 | Briefs | Fake clock 07:00 / 19:00 → morning and evening rows; E2E `/brief/2026-11-12` |
 | 7 | Citations | Gate G1/G3 unit tests; repo test that `SourceRef.url` comes from the `articles` join; an LLM output containing URLs → `pending_review` |
-| 8 | Relations | No or foreign evidence → `drop`; causal → `pending_review`; E2E `potential_impact` label |
+| 8 | Relations | No or foreign evidence → `drop`; `off`/`multi_source` → `pending_review`; `all` → published at the threshold, dropped below; E2E `potential_impact` and AI labels |
 | 9 | Failure | Fake transport timeout → events `pending_review`, published events keep their text; E2E pages render with the LLM env unset |
 | 10 | Security | Grep `build/client` for secret env names and value patterns; `/admin` GET and POST without the header → 403; a wrong `aud` → 403 |
 | 11 | Ops | `/health` contract test; job_runs visible on `/admin`; backup/restore: `src/lib/server/db/backup.test.ts` (seeded DB → backup → restore → equal row counts + `integrity_check`), runbook in README (Wave 4) |
@@ -738,3 +765,5 @@ Files: `Dockerfile`, `docker-compose.yml`, `docker/start-app.sh`, `docker/cronta
 | 16 | PRD module paths use `$lib`; the scaffold uses SvelteKit 3 `#lib` subpath imports | `#lib/*` everywhere, which also works for the CLI under `tsx` |
 | 17 | Thai full-text search: FTS5 `unicode61` cannot tokenize Thai | `trigram` tokenizer plus a `LIKE` fallback for short queries |
 | 18 | `Event` type name | `NewsEvent`, to avoid shadowing the DOM `Event` |
+| 19 | Auto-publish wave: human approval (security wave) vs the owner's "fully automated, labelled" decision (2026-11-13) | `EDITORIAL_AUTO_PUBLISH=all` in production: G6 becomes a credibility floor, relations publish by confidence (0.8) or drop, the backlog is cleared by `reevaluate_pending`. Hard gates G1–G5, sticky admin reasons, allegation-tag filtering and admin rejections of relation pairs stay. Code default stays `off`. |
+| 20 | Migration 0005 rebuilds `job_runs` (CHECK) while `llm_calls.job_run_id` references it with `ON DELETE SET NULL`; drizzle's migrator runs inside one transaction, where `PRAGMA foreign_keys=OFF` is ignored | The migration saves `llm_calls (id, job_run_id)` in a temp table before the drop and writes it back after the rename (`migration-0005.test.ts`). `events` is only altered with `ADD COLUMN` (a rebuild would drop the FTS triggers); its credibility CHECK is inline in the SQL, not in `schema.ts`. |
