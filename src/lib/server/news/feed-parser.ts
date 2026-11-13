@@ -29,10 +29,16 @@ const parser = new XMLParser({
 
 export function parseFeed(xml: string): RawFeedItem[] {
 	const text = xml.replace(/^\uFEFF/, '');
-	if (/<!DOCTYPE/i.test(text)) throw parseError('DOCTYPE is not allowed in feeds');
-	if (XMLValidator.validate(text) !== true) throw parseError('malformed XML');
+	if (hasDoctypeOutsideTextSections(text)) throw parseError('DOCTYPE is not allowed in feeds');
 
-	const document = parser.parse(text) as XmlNode;
+	let document: XmlNode;
+	try {
+		if (XMLValidator.validate(text) !== true) throw new Error('invalid');
+		document = parser.parse(text) as XmlNode;
+	} catch {
+		// Library messages can quote feed-supplied tag names; never pass them on.
+		throw parseError('malformed XML');
+	}
 	const rss = asNode(document['rss']);
 	if (rss) return parseRss(asNode(rss['channel']));
 	const atom = asNode(document['feed']);
@@ -40,6 +46,17 @@ export function parseFeed(xml: string): RawFeedItem[] {
 	const rdf = asNode(document['rdf:RDF']);
 	if (rdf) return parseRdf(rdf);
 	throw parseError('not an RSS or Atom feed');
+}
+
+/**
+ * True when `<!DOCTYPE` appears anywhere except inside a CDATA section or a comment. Not only the
+ * prolog: the validator accepts a DOCTYPE after or inside the root element. One leftmost
+ * left-to-right pass, as an XML tokenizer would, so a comment cannot hide a CDATA opener (or
+ * vice versa); an unterminated section is left in place and fails closed.
+ */
+function hasDoctypeOutsideTextSections(text: string): boolean {
+	const outside = text.replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->/g, '');
+	return /<!DOCTYPE/i.test(outside);
 }
 
 function parseRss(channel: XmlNode | null): RawFeedItem[] {

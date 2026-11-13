@@ -296,6 +296,38 @@ describe('createSafeFetch', () => {
 		await expectFetchError(pending, { kind: 'network', retryable: false });
 	});
 
+	it('maps the connect-time address refusal to a non-retryable not_allowed', async () => {
+		const transport: HttpTransport = async () => {
+			throw Object.assign(new Error('address not allowed'), { code: 'EADDRNOTALLOWED' });
+		};
+		const safeFetch = createSafeFetch({
+			allowedHosts: ['feeds.example.com'],
+			transport,
+			resolveHost: fakeDns()
+		});
+		await expectFetchError(safeFetch('https://feeds.example.com/rss.xml'), {
+			kind: 'not_allowed',
+			retryable: false
+		});
+	});
+
+	it.each([204, 205, 304])(
+		'returns an empty response for HTTP %i without throwing',
+		async (status) => {
+			const { transport } = fakeTransport({
+				'https://feeds.example.com/rss.xml': () => new Response(null, { status })
+			});
+			const safeFetch = createSafeFetch({
+				allowedHosts: ['feeds.example.com'],
+				transport,
+				resolveHost: fakeDns()
+			});
+			const response = await safeFetch('https://feeds.example.com/rss.xml');
+			expect(response.status).toBe(status);
+			expect(await response.text()).toBe('');
+		}
+	);
+
 	it('rejects unexpected content types', async () => {
 		const { transport } = fakeTransport({
 			'https://feeds.example.com/rss.xml': () =>

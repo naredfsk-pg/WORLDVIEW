@@ -28,6 +28,24 @@ describe('parseFeedTimestamp', () => {
 		expect(parseFeedTimestamp(input, now)).toBeNull();
 	});
 
+	it.each([
+		['31 Feb in RFC 822 (would roll over to 3 Mar)', 'Tue, 31 Feb 2026 10:00:00 GMT'],
+		['30 Feb in ISO', '2026-02-30T10:00:00Z'],
+		['29 Feb in a non-leap year', '2026-02-29T10:00:00Z'],
+		['31 Nov', '31 Nov 2026 10:00:00 +0700'],
+		['hour 25', 'Thu, 12 Nov 2026 25:00:00 GMT'],
+		['minute 61', '2026-11-12T10:61:00Z'],
+		['an unknown month name', '12 Foo 2026 10:00:00 GMT']
+	])('rejects an impossible date or time: %s', (_name, input) => {
+		expect(parseFeedTimestamp(input, now)).toBeNull();
+	});
+
+	it('accepts 29 Feb in a leap year', () => {
+		expect(parseFeedTimestamp('2028-02-29T10:00:00Z', new Date('2028-03-01T00:00:00Z'))).toBe(
+			'2028-02-29T10:00:00.000Z'
+		);
+	});
+
 	it('accepts up to 1 h of future clock skew', () => {
 		expect(parseFeedTimestamp('2026-11-13T01:00:00Z', now)).toBe('2026-11-13T01:00:00.000Z');
 	});

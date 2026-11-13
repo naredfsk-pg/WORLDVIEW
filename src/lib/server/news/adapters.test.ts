@@ -80,8 +80,8 @@ describe('rss adapter', () => {
 		expect(result.items.map((item) => item.title)).toEqual(['One']);
 	});
 
-	it('treats 304 Not Modified as no new items', async () => {
-		const safeFetch: SafeFetch = async () => new Response(null, { status: 304 });
+	it.each([204, 205, 304])('treats HTTP %i as no new items', async (status) => {
+		const safeFetch: SafeFetch = async () => new Response(null, { status });
 		const result = await createRssAdapter().fetch(source({ kind: 'rss' }), context(safeFetch));
 		expect(result.items).toEqual([]);
 	});
@@ -100,6 +100,28 @@ describe('decodeFeedBytes', () => {
 		const utf8 = new TextEncoder().encode('<t>ข่าว</t>');
 		expect(decodeFeedBytes(utf8, null)).toBe('<t>ข่าว</t>');
 		expect(decodeFeedBytes(utf8, 'text/xml; charset="utf-8"')).toBe('<t>ข่าว</t>');
+	});
+
+	it('lets a byte-order mark win over a wrong Content-Type charset', () => {
+		const utf8WithBom = new Uint8Array([
+			0xef,
+			0xbb,
+			0xbf,
+			...new TextEncoder().encode('<t>ข่าว</t>')
+		]);
+		expect(decodeFeedBytes(utf8WithBom, 'text/xml; charset=iso-8859-1')).toBe('<t>ข่าว</t>');
+	});
+
+	it('decodes UTF-16 with a byte-order mark', () => {
+		const text = '<t>ข่าว</t>';
+		const littleEndian = [0xff, 0xfe];
+		const bigEndian = [0xfe, 0xff];
+		for (const codeUnit of Array.from(text, (char) => char.charCodeAt(0))) {
+			littleEndian.push(codeUnit & 0xff, codeUnit >> 8);
+			bigEndian.push(codeUnit >> 8, codeUnit & 0xff);
+		}
+		expect(decodeFeedBytes(new Uint8Array(littleEndian), 'application/xml')).toBe(text);
+		expect(decodeFeedBytes(new Uint8Array(bigEndian), null)).toBe(text);
 	});
 
 	it('rejects an unknown charset as a parse error', () => {

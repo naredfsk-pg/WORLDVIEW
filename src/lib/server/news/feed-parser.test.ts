@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+
+const BOM = String.fromCharCode(0xfeff);
 import { NewsFetchError } from './errors';
 import { MAX_ITEMS_PER_FEED, parseFeed } from './feed-parser';
 
@@ -115,8 +117,34 @@ describe('parseFeed: untrusted and malformed input', () => {
 		expectParseError('<rss version="2.0"></rss>', /no channel/);
 	});
 
+	it('accepts a DOCTYPE inside CDATA or a comment (it is text there)', () => {
+		const xml = `<rss><channel><!-- <!DOCTYPE x> --><item><title><![CDATA[How to write <!DOCTYPE html>]]></title><link>https://x.example/1</link></item></channel></rss>`;
+		expect(parseFeed(xml)[0]!.title).toBe('How to write <!DOCTYPE html>');
+	});
+
+	it('rejects a DOCTYPE after or inside the root element, and one hidden behind a fake CDATA opener in a comment', () => {
+		expectParseError('<rss><channel/></rss><!DOCTYPE x [<!ENTITY a "b">]>', /DOCTYPE/);
+		expectParseError('<rss><channel><!DOCTYPE x [<!ENTITY a "b">]></channel></rss>', /DOCTYPE/);
+		expectParseError(
+			'<!-- <![CDATA[ --><!DOCTYPE x [<!ENTITY a "b">]><!-- ]]> --><rss><channel/></rss>',
+			/DOCTYPE/
+		);
+	});
+
+	it('reports library failures as a generic parse error without feed-supplied names', () => {
+		let thrown: unknown;
+		try {
+			parseFeed('<rss><channel><__proto__><polluted>1</polluted></__proto__></channel></rss>');
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toMatchObject({ kind: 'parse_error', message: expect.any(String) });
+		expect((thrown as Error).message).not.toContain('proto');
+		expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+	});
+
 	it('handles a byte-order mark and an empty channel', () => {
-		expect(parseFeed('﻿<rss><channel><title>x</title></channel></rss>')).toEqual([]);
+		expect(parseFeed(`${BOM}<rss><channel><title>x</title></channel></rss>`)).toEqual([]);
 	});
 
 	it(`caps the number of items at ${MAX_ITEMS_PER_FEED}`, () => {

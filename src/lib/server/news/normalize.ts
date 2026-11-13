@@ -42,7 +42,8 @@ export function normalizeFeedItem(
 
 	return {
 		source_id: source.id,
-		source_url: link,
+		// Serialized by URL (validated, percent-encoded), never the raw feed string.
+		source_url: new URL(link).href,
 		canonical_url: canonicalUrl,
 		publisher_name: publisherName,
 		title,
@@ -68,14 +69,37 @@ export function cleanFeedText(raw: string | null, maxLength: number): string {
 			.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
 			.replace(/<!--[\s\S]*?-->/g, ' ')
 	);
-	const text = stripTags(decodeEntities(withoutMarkup))
-		// C0/C1 controls (incl. tab/newline → collapsed below) and bidi overrides/isolates.
-		// eslint-disable-next-line no-control-regex -- matching control characters is the point
-		.replace(/[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g, ' ')
+	const text = stripInvisible(stripTags(decodeEntities(withoutMarkup)))
 		.replace(/\s+/g, ' ')
 		.trim();
 	return truncate(text, maxLength);
 }
+
+/**
+ * C0/C1 controls (tab/newline included) become a space; invisible format characters vanish:
+ * ALM U+061C, ZWSP/ZWNJ/ZWJ/LRM/RLM U+200B–U+200F, bidi embeddings/overrides U+202A–U+202E,
+ * word joiner U+2060, bidi isolates U+2066–U+2069 and BOM U+FEFF. Removing ZWSP keeps Thai words
+ * joined as displayed; removing ZWJ only splits emoji sequences, which titles do not need.
+ */
+export function stripInvisible(text: string): string {
+	return (
+		text
+			// eslint-disable-next-line no-control-regex -- matching control characters is the point
+			.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')
+			.replace(INVISIBLE_FORMAT_CHARS, '')
+	);
+}
+
+const INVISIBLE_FORMAT_CHARS = new RegExp(
+	'[' +
+		[0x061c, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f]
+			.concat([0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2060])
+			.concat([0x2066, 0x2067, 0x2068, 0x2069, 0xfeff])
+			.map((codePoint) => String.fromCharCode(codePoint))
+			.join('') +
+		']',
+	'g'
+);
 
 function hasCredentials(link: string): boolean {
 	try {
@@ -93,7 +117,7 @@ function normalizeLanguage(raw: string | null): string | null {
 
 /** Only the allowed metadata (`guid`, `author`, `categories`); never bodies. */
 function buildRawMetadata(raw: RawFeedItem): JsonObject {
-	const guid = raw.guid?.trim().slice(0, MAX_GUID_LENGTH) || null;
+	const guid = cleanFeedText(raw.guid, MAX_GUID_LENGTH) || null;
 	const author = cleanFeedText(raw.author, MAX_AUTHOR_LENGTH) || null;
 	// Cap the raw input first, so hundreds of hostile categories cost no cleanup work.
 	const rawCategories = raw.categories
@@ -116,6 +140,8 @@ const ANY_TAG = /<\/?[a-zA-Z][^<>]*>/g;
 function stripTags(text: string): string {
 	return text.replace(BLOCK_TAG, ' ').replace(ANY_TAG, '');
 }
+
+const REPLACEMENT_CHAR = String.fromCharCode(0xfffd);
 
 const NAMED_ENTITIES: Record<string, string> = {
 	amp: '&',
@@ -148,7 +174,7 @@ function decodeEntities(text: string): string {
 		const codePoint = Number.parseInt(body.slice(isHex ? 2 : 1), isHex ? 16 : 10);
 		const isValid =
 			codePoint > 0 && codePoint <= 0x10ffff && (codePoint < 0xd800 || codePoint > 0xdfff);
-		return isValid ? String.fromCodePoint(codePoint) : '�';
+		return isValid ? String.fromCodePoint(codePoint) : REPLACEMENT_CHAR;
 	});
 }
 

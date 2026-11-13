@@ -9,6 +9,10 @@ import {
 } from './normalize';
 
 const now = new Date('2026-11-13T00:00:00.000Z');
+const REPLACEMENT_CHAR = String.fromCharCode(0xfffd);
+const CONTROL_NUL = String.fromCharCode(0x00);
+const CONTROL_BEL = String.fromCharCode(0x07);
+const RLO = String.fromCharCode(0x202e);
 
 const source: SourceDefinition = {
 	id: 'wire-a',
@@ -110,6 +114,22 @@ describe('normalizeFeedItem', () => {
 		expect(kept.every((category) => Array.from(category).length <= 80)).toBe(true);
 	});
 
+	it('stores source_url as the serialized URL, not the raw feed string', () => {
+		const article = normalizeFeedItem(
+			source,
+			raw({ link: ' HTTPS://Wire-A.example/ข่าว/a b?q=1 ' }),
+			now
+		);
+		expect(article?.source_url).toBe(
+			'https://wire-a.example/%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%A7/a%20b?q=1'
+		);
+	});
+
+	it('cleans the guid like other feed text (controls and bidi characters removed)', () => {
+		const guid = `  id${RLO}-1${CONTROL_NUL}  `;
+		expect(normalizeFeedItem(source, raw({ guid }), now)?.raw_metadata['guid']).toBe('id-1');
+	});
+
 	it('drops an invalid language tag', () => {
 		expect(
 			normalizeFeedItem(source, raw({ language: 'not a language' }), now)?.language
@@ -135,12 +155,28 @@ describe('cleanFeedText (untrusted feed text)', () => {
 		['strips entity-encoded markup', '&lt;b&gt;bold&lt;/b&gt;', 'bold'],
 		['keeps a literal less-than', 'a < b and c > d', 'a < b and c > d'],
 		['decodes only one level', '&amp;lt;b&amp;gt;', '&lt;b&gt;'],
-		['replaces invalid code points', 'x&#xD800;y', 'x�y'],
-		['removes control and bidi override characters', 'safe\u0000‮text\u0007', 'safe text'],
+		['replaces invalid code points', 'x&#xD800;y', `x${REPLACEMENT_CHAR}y`],
+		[
+			'removes control and bidi override characters',
+			`safe${CONTROL_NUL}${RLO}text${CONTROL_BEL}`,
+			'safe text'
+		],
 		['collapses whitespace', '  many \n\t spaces  ', 'many spaces'],
 		['keeps Thai text intact', '<p>ข่าวด่วน&nbsp;วันนี้</p>', 'ข่าวด่วน วันนี้']
 	])('%s', (_name, input, expected) => {
 		expect(cleanFeedText(input, 500)).toBe(expected);
+	});
+
+	it('removes every invisible format character and keeps Thai text intact', () => {
+		const invisible = [
+			0x061c, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+			0x2060, 0x2066, 0x2067, 0x2068, 0x2069, 0xfeff
+		].map((codePoint) => String.fromCharCode(codePoint));
+		for (const char of invisible) {
+			expect(cleanFeedText(`ข่าว${char}ด่วน`, 100)).toBe('ข่าวด่วน');
+		}
+		// Thai vowels and tone marks (combining marks) are not format characters.
+		expect(cleanFeedText('น้ำท่วมเชียงใหม่ ไม่ใช่ข่าวปลอม', 100)).toBe('น้ำท่วมเชียงใหม่ ไม่ใช่ข่าวปลอม');
 	});
 
 	it('returns empty for null', () => {

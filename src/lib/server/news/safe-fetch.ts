@@ -4,6 +4,13 @@
  * credentials, and resolve only to public IP addresses. The default transport re-checks the
  * address at connect time (no DNS-rebinding gap) and never follows redirects itself.
  * Timeout, body cap and content-type are enforced here; transport and DNS are injectable.
+ *
+ * Operational notes (documented, not handled):
+ * - Proxies: with `HTTPS_PROXY` / `NODE_USE_ENV_PROXY` set, Node connects to the proxy, so the
+ *   connect-time check sees the proxy's address, not the feed's. The pre-flight DNS check still
+ *   runs, but the rebinding guard is gone. Do not set a proxy env for the app/job container.
+ * - NAT64: all of `64:ff9b::/96` (and `64:ff9b:1::/48`) is blocked. On an IPv6-only host behind
+ *   DNS64 every feed resolves into that range, so every fetch fails closed (`not_allowed`).
  */
 import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
 import { lookup as dnsLookupAsync } from 'node:dns/promises';
@@ -30,6 +37,10 @@ const FEED_CONTENT_TYPES = new Set([
 	'application/x-rss+xml'
 ]);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+/** Answers without a body: returned as an empty `Response`, never parsed. */
+export const NO_BODY_STATUSES = new Set([204, 205, 304]);
+/** Error code of the connect-time address check in the default transport. */
+const CONNECT_BLOCKED_CODE = 'EADDRNOTALLOWED';
 
 /** Performs exactly one request. Must not follow redirects or decompress. */
 export type HttpTransport = (
@@ -80,9 +91,9 @@ export function createSafeFetch(options: SafeFetchOptions): SafeFetch {
 					url = parseUrl(location, url);
 					continue;
 				}
-				if (response.status === 304) {
+				if (NO_BODY_STATUSES.has(response.status)) {
 					await response.body?.cancel();
-					return new Response(null, { status: 304, headers: response.headers });
+					return new Response(null, { status: response.status, headers: response.headers });
 				}
 				if (response.status < 200 || response.status > 299) {
 					await response.body?.cancel();
@@ -270,6 +281,9 @@ function toNewsFetchError(
 	}
 	// Transport errors (DNS, TLS, reset). `code` is safe to log; the raw message may not be.
 	const code = (error as { code?: unknown })?.code;
+	if (code === CONNECT_BLOCKED_CODE) {
+		return notAllowed('connection to a non-public address refused');
+	}
 	return new NewsFetchError({
 		kind: 'network',
 		retryable: true,
@@ -337,7 +351,7 @@ const nodeHttpsTransport: HttpTransport = (url, { headers, signal }) =>
 						responseHeaders.append(name, item);
 					}
 				}
-				const hasNoBody = status === 204 || status === 205 || status === 304;
+				const hasNoBody = NO_BODY_STATUSES.has(status);
 				if (hasNoBody) incoming.destroy();
 				const body = hasNoBody ? null : (Readable.toWeb(incoming) as ReadableStream<Uint8Array>);
 				resolve(new Response(body, { status, headers: responseHeaders }));
@@ -358,7 +372,9 @@ function publicOnlyLookup(hostname: string, options: object, callback: LookupCal
 		if (error) return callback(error, []);
 		const blocked = addresses.some((entry) => isBlockedAddress(entry.address));
 		if (blocked || addresses.length === 0) {
-			const refused = Object.assign(new Error('address not allowed'), { code: 'EADDRNOTALLOWED' });
+			const refused = Object.assign(new Error('address not allowed'), {
+				code: CONNECT_BLOCKED_CODE
+			});
 			return callback(refused, []);
 		}
 		if ((options as { all?: boolean }).all) return callback(null, addresses);

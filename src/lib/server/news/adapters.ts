@@ -8,7 +8,7 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import type { NewsSourceAdapter } from '#lib/types/news.js';
 import { NewsFetchError } from './errors.js';
 import { parseFeed } from './feed-parser.js';
-import { SAFE_FETCH_DEFAULTS } from './safe-fetch.js';
+import { NO_BODY_STATUSES, SAFE_FETCH_DEFAULTS } from './safe-fetch.js';
 
 const FEED_ACCEPT =
 	'application/rss+xml, application/atom+xml, application/rdf+xml, application/xml;q=0.9, text/xml;q=0.8';
@@ -24,8 +24,8 @@ export function createRssAdapter(): NewsSourceAdapter {
 				headers: { accept: FEED_ACCEPT }
 			});
 			const fetchedAt = ctx.now.toISOString();
-			// 304 only happens when the caller sent a validator; nothing new to parse.
-			if (response.status === 304) return { items: [], fetched_at: fetchedAt };
+			// 204/205, or 304 when the caller sent a validator: nothing to parse.
+			if (NO_BODY_STATUSES.has(response.status)) return { items: [], fetched_at: fetchedAt };
 
 			const bytes = new Uint8Array(await response.arrayBuffer());
 			const xml = decodeFeedBytes(bytes, response.headers.get('content-type'));
@@ -77,14 +77,17 @@ export function createFixtureAdapter(repoRoot: string): NewsSourceAdapter {
 }
 
 /**
- * Decodes with the charset from Content-Type, else the XML declaration, else UTF-8.
- * Thai feeds still use TIS-620 / windows-874 sometimes.
+ * Picks the encoding in WHATWG order: byte-order mark, then the Content-Type charset, then the
+ * XML declaration, else UTF-8. Thai feeds still use TIS-620 / windows-874 sometimes.
  */
 export function decodeFeedBytes(bytes: Uint8Array, contentType: string | null): string {
-	const fromHeader = /charset\s*=\s*"?([\w.:-]+)/i.exec(contentType ?? '')?.[1];
-	const head = new TextDecoder('latin1').decode(bytes.subarray(0, 256));
-	const fromDeclaration = /<\?xml[^>]*encoding\s*=\s*["']([\w.:-]+)["']/i.exec(head)?.[1];
-	const charset = fromHeader ?? fromDeclaration ?? 'utf-8';
+	const charset =
+		charsetFromBom(bytes) ??
+		/charset\s*=\s*"?([\w.:-]+)/i.exec(contentType ?? '')?.[1] ??
+		/<\?xml[^>]*encoding\s*=\s*["']([\w.:-]+)["']/i.exec(
+			new TextDecoder('latin1').decode(bytes.subarray(0, 256))
+		)?.[1] ??
+		'utf-8';
 	try {
 		return new TextDecoder(charset).decode(bytes);
 	} catch {
@@ -95,4 +98,12 @@ export function decodeFeedBytes(bytes: Uint8Array, contentType: string | null): 
 			message: `unsupported charset ${charset.slice(0, 40)}`
 		});
 	}
+}
+
+/** TextDecoder drops the BOM itself once the matching encoding is chosen. */
+function charsetFromBom(bytes: Uint8Array): string | null {
+	if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return 'utf-8';
+	if (bytes[0] === 0xfe && bytes[1] === 0xff) return 'utf-16be';
+	if (bytes[0] === 0xff && bytes[1] === 0xfe) return 'utf-16le';
+	return null;
 }
