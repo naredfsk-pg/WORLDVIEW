@@ -36,7 +36,7 @@ export function normalizeFeedItem(
 	if (!title) return null;
 
 	const excerpt = source.allow_excerpt
-		? cleanFeedText(raw.summary, MAX_EXCERPT_LENGTH) || null
+		? cleanFeedText(stripFeedBoilerplate(raw.summary), MAX_EXCERPT_LENGTH) || null
 		: null;
 	const publisherName = source.name;
 
@@ -73,6 +73,57 @@ export function cleanFeedText(raw: string | null, maxLength: number): string {
 		.replace(/\s+/g, ' ')
 		.trim();
 	return truncate(text, maxLength);
+}
+
+/**
+ * Removes common feed navigation from an excerpt's HTML, before the length cap, so the cap keeps
+ * article text (Wave 3; seen in Guardian descriptions). Conservative: only these shapes go, and
+ * plain sentences (English or Thai) are never touched:
+ * - the trailing "Continue reading..." link (or the same words with an ellipsis at the very end)
+ * - list items that are only links plus navigation labels ("Full report: …", "Analysis: …",
+ *   "Explainer: …", "… – latest updates", "Get our … email, … app or … podcast")
+ * - paragraphs that are only links behind a navigation label ("Related: …")
+ * Each item is searched within a bounded length, so a hostile feed cannot make it slow.
+ */
+export function stripFeedBoilerplate(raw: string | null): string {
+	if (!raw) return '';
+	return raw
+		.slice(0, MAX_RAW_TEXT_LENGTH)
+		.replace(CONTINUE_READING_LINK, ' ')
+		.replace(CONTINUE_READING_AT_END, '$1')
+		.replace(LIST_ITEM, (item, inner: string) => (isNavigation(inner, false) ? ' ' : item))
+		.replace(PARAGRAPH, (paragraph, inner: string) =>
+			isNavigation(inner, true) ? ' ' : paragraph
+		);
+}
+
+const CONTINUE_READING_LINK =
+	/<a\b[^<>]*>\s*Continue reading(?:\.{3}|…|&hellip;|&#8230;)?\s*<\/a\s*>/g;
+const CONTINUE_READING_AT_END =
+	/(^|[\s>])Continue reading(?:\.{3}|…|&hellip;|&#8230;)\s*(?:<\/[a-z]+\s*>\s*)*$/;
+/** Navigation items are short; a longer item is article text and is kept. */
+const LIST_ITEM = /<li\b[^<>]*>([\s\S]{0,600}?)<\/li\s*>/gi;
+const PARAGRAPH = /<p\b[^<>]*>([\s\S]{0,600}?)<\/p\s*>/gi;
+const LINK = /<a\b[^<>]*>[\s\S]*?<\/a\s*>/gi;
+/** What may remain of a navigation item once its links are removed (letters only, lower case). */
+const NAVIGATION_RESIDUE =
+	/^(?:(?:full report|analysis|explainer|live|latest updates|latest|related|read more|see also|get our|sign up(?: to| for)?|or|and)(?: |$))*$/;
+const NAVIGATION_LABEL =
+	/\b(?:full report|analysis|explainer|related|read more|see also|get our|sign up)\b/;
+
+/**
+ * True for an item made of links and navigation words only. A list item may be a bare link; a
+ * paragraph needs a label too, since a paragraph that is one link can be article text.
+ */
+function isNavigation(inner: string, needsLabel: boolean): boolean {
+	if (!/<a\b/i.test(inner)) return false;
+	const residue = decodeEntities(stripTags(inner.replace(LINK, ' ')))
+		.normalize('NFKC')
+		.toLowerCase()
+		.replace(/[^\p{L}\p{N}]+/gu, ' ')
+		.trim();
+	if (!NAVIGATION_RESIDUE.test(residue)) return false;
+	return !needsLabel || NAVIGATION_LABEL.test(residue);
 }
 
 /**

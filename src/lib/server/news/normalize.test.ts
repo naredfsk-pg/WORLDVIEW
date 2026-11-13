@@ -5,7 +5,8 @@ import {
 	cleanFeedText,
 	MAX_EXCERPT_LENGTH,
 	MAX_TITLE_LENGTH,
-	normalizeFeedItem
+	normalizeFeedItem,
+	stripFeedBoilerplate
 } from './normalize';
 
 const now = new Date('2026-11-13T00:00:00.000Z');
@@ -181,5 +182,97 @@ describe('cleanFeedText (untrusted feed text)', () => {
 
 	it('returns empty for null', () => {
 		expect(cleanFeedText(null, 10)).toBe('');
+	});
+});
+
+/** Excerpt as stored: boilerplate stripped, then the usual cleanup and the 500-char cap. */
+const excerptOf = (summary: string) =>
+	normalizeFeedItem(source, raw({ summary }), now)?.excerpt ?? null;
+const GU = 'https://www.theguardian.com';
+
+describe('feed boilerplate in excerpts (Guardian-shaped samples)', () => {
+	it('drops a live-blog navigation list and the trailing "Continue reading..." link', () => {
+		const summary =
+			'<p>Former chief executive and the commerce secretary are expected to appear before Congress</p>' +
+			`<ul><li><p> <a href="${GU}/technology/live/2026/nov/13/chip-maker-live">Chip maker scandal – latest updates</a></p></li>` +
+			`<li><p><a href="${GU}/technology/2026/nov/12/analysis">Analysis: The founder built an AI kingdom. Will its walls hold?</a></p></li></ul>` +
+			'<p>The ousted chief executive is expected to testify in the coming weeks, as the fallout spreads.</p>' +
+			` <a href="${GU}/technology/2026/nov/13/story">Continue reading...</a>`;
+		expect(excerptOf(summary)).toBe(
+			'Former chief executive and the commerce secretary are expected to appear before Congress ' +
+				'The ousted chief executive is expected to testify in the coming weeks, as the fallout spreads.'
+		);
+	});
+
+	it('drops "Full report: … Analysis: … Explainer: …" items, labelled inside or outside the link', () => {
+		const summary =
+			'<p>Rescue teams reach the flooded valley.</p><ul>' +
+			`<li><a href="${GU}/world/a">Full report: Floods cut off mountain towns</a></li>` +
+			`<li>Analysis: <a href="${GU}/world/b">Why the valley floods every decade</a></li>` +
+			`<li><p><a href="${GU}/world/c">Explainer: How flood warnings work</a></p></li></ul>` +
+			'<p>Officials said 40 villages were cut off.</p>';
+		expect(excerptOf(summary)).toBe(
+			'Rescue teams reach the flooded valley. Officials said 40 villages were cut off.'
+		);
+	});
+
+	it('drops the newsletter promo item and a "Related:" paragraph', () => {
+		const summary =
+			'<p>Royal commission hears from a contractor employee</p>' +
+			`<ul><li><p>Get our <a href="${GU}/email-newsletters">breaking news email</a>, <a href="https://app.example.com/x">free app</a> or <a href="${GU}/podcast">daily news podcast</a></p></li></ul>` +
+			`<p>Related: <a href="${GU}/a">Earlier hearing</a>, <a href="${GU}/b">Timeline</a></p>` +
+			'<p>The inquiry heard workers were fearful of the union.</p>';
+		expect(excerptOf(summary)).toBe(
+			'Royal commission hears from a contractor employee The inquiry heard workers were fearful of the union.'
+		);
+	});
+
+	it('strips the boilerplate before the 500-char cap, so article text survives the cap', () => {
+		const longLabel = 'Analysis: ' + 'a very long headline of another story '.repeat(6);
+		const summary =
+			'<ul>' +
+			[1, 2, 3].map((n) => `<li><a href="${GU}/x/${n}">${longLabel}</a></li>`).join('') +
+			'</ul><p>The minister resigned on Friday.</p>';
+		expect(longLabel.length * 3).toBeGreaterThan(MAX_EXCERPT_LENGTH);
+		expect(excerptOf(summary)).toBe('The minister resigned on Friday.');
+	});
+
+	it('keeps content lists, link-led sentences and the words "continue reading" inside a sentence', () => {
+		const summary =
+			'<ul><li><p>Move is a further tightening of current rules</p></li>' +
+			`<li><p>Athletes from <a href="${GU}/world/x">two countries</a> are affected</p></li></ul>` +
+			`<p><a href="https://festival.example.org">See My World</a>, a day for independent creators, takes place on 21 November.</p>` +
+			'<p>Officials said they would continue reading the report... </p>';
+		expect(excerptOf(summary)).toBe(
+			'Move is a further tightening of current rules Athletes from two countries are affected ' +
+				'See My World, a day for independent creators, takes place on 21 November. ' +
+				'Officials said they would continue reading the report...'
+		);
+	});
+
+	it('leaves Thai text and plain English sentences untouched', () => {
+		const thai = '<p>รัฐบาลประกาศมาตรการช่วยเหลือผู้ประสบภัยน้ำท่วม อ่านต่อได้ที่หน้าเว็บ</p>';
+		const english =
+			'Delegations met on Monday. Analysis of the data continues; related talks resume.';
+		expect(stripFeedBoilerplate(thai)).toBe(thai);
+		expect(stripFeedBoilerplate(english)).toBe(english);
+		expect(excerptOf(thai)).toBe('รัฐบาลประกาศมาตรการช่วยเหลือผู้ประสบภัยน้ำท่วม อ่านต่อได้ที่หน้าเว็บ');
+	});
+
+	it('removes a bare "Continue reading..." only at the very end', () => {
+		expect(stripFeedBoilerplate('<p>The talks ended.</p> Continue reading...')).toBe(
+			'<p>The talks ended.</p> '
+		);
+		expect(stripFeedBoilerplate('<p>Continue reading…</p>')).toBe('<p>');
+		expect(stripFeedBoilerplate('Continue reading... the rest')).toBe(
+			'Continue reading... the rest'
+		);
+	});
+
+	it('stays fast on hostile input', () => {
+		const hostile = '<li><a>'.repeat(5_000) + '<p><a>'.repeat(5_000);
+		const started = performance.now();
+		stripFeedBoilerplate(hostile);
+		expect(performance.now() - started).toBeLessThan(500);
 	});
 });
