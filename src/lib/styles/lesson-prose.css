@@ -94,3 +94,46 @@
 	background: var(--surface-2);
 	font-weight: 700;
 }
+
+/* Folded remainder of a long section ("อ่านต่อ"), from `renderLessonMarkdown`. */
+.lesson-prose .lesson-more > * + * {
+	margin-top: 1em;
+}
+
+.lesson-prose .lesson-more > summary {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-height: 44px;
+	padding: 0 14px;
+	border: 1px solid var(--stroke);
+	border-radius: 11px;
+	background: var(--surface);
+	color: var(--accent);
+	font-size: 14px;
+	font-weight: 700;
+	cursor: pointer;
+	list-style: none;
+}
+
+.lesson-prose .lesson-more > summary::-webkit-details-marker {
+	display: none;
+}
+
+.lesson-prose .lesson-more > summary::after {
+	content: '▾';
+	font-size: 12px;
+}
+
+.lesson-prose .lesson-more[open] > summary::after {
+	content: '▴';
+}
+
+.lesson-prose .lesson-more > summary:hover {
+	border-color: var(--accent);
+}
+
+.lesson-prose .lesson-more[open] > summary .lesson-more-open,
+.lesson-prose .lesson-more:not([open]) > summary .lesson-more-close {
+	display: none;
+}

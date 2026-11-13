@@ -582,9 +582,44 @@ further_reading: [{ title: "…", publisher: "…", url: "…" | null, note: "TO
 related_tags: ["nato", "cold-war"]   # kebab-case English
 related_categories: ["geopolitics"]  # from the 5 slugs
 last_reviewed_at: "2026-11-13"
+takeaways: ["…", "…", "…"]           # 3–5 one-line key points ("สรุปใน 30 วินาที"), ≤140 chars
+infographics:                        # 1–2 diagram specs; the first is the main one
+  - type: "hub"                      # flow | cycle | timeline | compare | hub | stats | layers
+    title: "…"                       # ≤80
+    summary: "…"                     # ≤200, caption + accessible description
+    source: "…"                      # optional; required for stats (name the period when the lesson gives one)
+    center: { label: "…", detail: "…" }
+    spokes: [{ label: "…", detail: "…" }]
 ---
 (markdown body, Thai, with ## headings for in-page TOC)
 ```
+
+**Infographic specs** (`src/lib/content/infographic.ts`, type `Infographic` in `types/domain.ts`). Zod strict
+objects (an unknown or misspelled key fails), validated inside `lessonFrontmatterSchema`, so a bad spec
+makes the strict loader, `academy:sync` and the site fail with the file path and field. A node is
+`{ label ≤60, detail? ≤160 }` (UTF-16 units; Thai marks count).
+
+| `type` | Data | Rendered as |
+| --- | --- | --- |
+| `flow` | `steps`: 2–6 nodes | numbered cards + arrows; one row when ≤4 steps and the figure is ≥36rem |
+| `cycle` | `steps`: 3–6 nodes | numbered cards + a return bracket; the loop is also stated in text |
+| `timeline` | `events`: 3–8 `{ date ≤24, label, detail? }`, oldest first | vertical line with date chips |
+| `compare` | `columns`: 2–3 `{ title, points: 1–5 strings ≤120 }` | side-by-side titled lists (stacked when narrow) |
+| `hub` | `center` node, `spokes`: 3–8 nodes | centre with spokes left/right (≥36rem) or below; one `<ul>` either way |
+| `stats` | `items`: 2–6 `{ value ≤16, unit?, label, detail? }`, `source` required | number tiles; a leading `~` / `<` / `>` is also read out as ประมาณ / น้อยกว่า / มากกว่า |
+| `layers` | `layers`: 2–6 nodes, top first; `variant`: `stack` (default) or `pyramid` | stacked bars (numbered for `stack`), pyramid narrows upward |
+
+The `Infographic` type is written by hand for readability; `SCHEMA_MATCHES_TYPE` in `infographic.ts`
+fails `npm run check` if it and the schema output drift apart. Takeaways replace the closing
+"## สรุปสั้น" section that lessons used to have (removed in the review fixes, 2026-11-13).
+
+Components: `components/infographic/*` (one per type, plus `Infographic.svelte` as the `<figure>` with
+`aria-labelledby` title / `aria-describedby` caption). Diagrams are HTML lists laid out with CSS grid and
+container queries; SVG is only decorative (arrows, `aria-hidden`), so Thai text wraps naturally and screen
+readers get the lists. All spec text is plain text escaped by Svelte; no `{@html}`, no assets, no JS.
+`LessonTakeaways.svelte` renders the takeaways; `AcademyRoadmap.svelte` shows the 30 days on `/academy`.
+`toAcademyLessonRows` appends the takeaways and every infographic string to `search_text`, so
+`lessons_fts` finds them.
 
 Type: `LessonFrontmatter` / `Lesson`. **`src/lib/content` API:**
 
@@ -592,7 +627,7 @@ Type: `LessonFrontmatter` / `Lesson`. **`src/lib/content` API:**
 // academy.ts (pure)
 export const ACADEMY_WEEKS: AcademyWeekMeta[];                       // 4 themes from PRD FR-01
 export function parseLessonFile(path: string, raw: string): Lesson;   // YAML frontmatter + Zod; throws with file path
-export function renderLessonMarkdown(md: string): { html: string; toc: TocItem[] };
+export function renderLessonMarkdown(md: string): { html: string; toc: TocItem[]; folded: boolean };
 // academy.server.ts (node:fs, memoized per process)
 export function loadAllLessons(contentDir?: string): Lesson[];        // validates 30 unique ids/days, week/day consistency
 export function listLessonSummaries(): LessonSummary[];
@@ -604,6 +639,13 @@ export function toAcademyLessonRows(lessons: Lesson[]): AcademyLessonRow[];
 Rendering:
 - Use markdown-it with `html: false` (raw HTML is escaped) and links restricted to http(s) or relative.
 - `##` and `###` headings get ids `section-{n}` (Thai text makes poor slugs).
+- Skimmable reading path: each `##` section keeps its heading and first block visible; when the rest has
+  ≥280 characters of text it is wrapped in a native `<details class="lesson-more">` ("อ่านต่อ", with the
+  heading in an sr-only span). Whole top-level blocks only, nothing is removed. `folded` (→
+  `LessonDetail.has_folded_sections`) says whether any section was folded. `LessonArticle` then shows an
+  "open all" button (`aria-expanded`) and opens the folded section that holds an in-page anchor target (TOC click,
+  `hashchange`, deep link on load) and scrolls to it.
+- Tables get `tabindex="0"` because they scroll horizontally inside themselves on phones.
 - `LessonDetail.html` is the **only** `{@html}` in the app. Event text is plain text and Svelte escapes it.
 - A `further_reading` entry with `url: null` renders as a citation without a link.
 - `academy:sync` runs at container start and after content changes.

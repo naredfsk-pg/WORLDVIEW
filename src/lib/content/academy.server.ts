@@ -9,6 +9,7 @@ import {
 	parseLessonFile,
 	renderLessonMarkdown
 } from './academy';
+import { infographicText } from './infographic';
 
 export const DEFAULT_ACADEMY_DIR = 'content/academy';
 const EXPECTED_LESSON_COUNT = 30;
@@ -56,7 +57,7 @@ export function getLessonDetail(week: number, day: number): LessonDetail | null 
 	const cached = cachedDetails.get(lesson.id);
 	if (cached) return cached;
 
-	const { html, toc } = renderLessonMarkdown(lesson.content_markdown);
+	const { html, toc, folded } = renderLessonMarkdown(lesson.content_markdown);
 	const detail: LessonDetail = {
 		...toLessonSummary(lesson),
 		learning_objectives: lesson.learning_objectives,
@@ -65,8 +66,11 @@ export function getLessonDetail(week: number, day: number): LessonDetail | null 
 		further_reading: lesson.further_reading,
 		related_tags: lesson.related_tags,
 		last_reviewed_at: lesson.last_reviewed_at,
+		takeaways: lesson.takeaways,
+		infographics: lesson.infographics,
 		html,
-		toc
+		toc,
+		has_folded_sections: folded
 	};
 	cachedDetails.set(lesson.id, detail);
 	return detail;
@@ -118,8 +122,14 @@ export function toAcademyLessonRows(lessons: Lesson[]): AcademyLessonRow[] {
 		content_path: lesson.content_path,
 		tags: lesson.related_tags,
 		categories: lesson.related_categories,
-		search_text: markdownToSearchText(lesson.content_markdown)
+		search_text: lessonSearchText(lesson)
 	}));
+}
+
+/** Lesson body plus the takeaways and infographic text, so search finds what the page shows. */
+function lessonSearchText(lesson: Lesson): string {
+	const visual = [...lesson.takeaways, ...lesson.infographics.flatMap(infographicText)];
+	return `${markdownToSearchText(lesson.content_markdown)} ${visual.join(' ')}`.trim();
 }
 
 /** Repo-relative, forward-slash paths of `week-*\/day-*.md`, in name order. */

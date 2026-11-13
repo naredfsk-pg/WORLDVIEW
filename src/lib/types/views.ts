@@ -11,6 +11,7 @@ import type {
 	CountryCode,
 	FurtherReading,
 	GlossaryEntry,
+	Infographic,
 	IsoUtc,
 	NewsEvent,
 	RegionSlug,
@@ -158,9 +159,13 @@ export interface LessonDetail extends LessonSummary {
 	further_reading: FurtherReading[];
 	related_tags: Tag[];
 	last_reviewed_at: string;
+	takeaways: string[];
+	infographics: Infographic[];
 	/** Sanitized HTML rendered server-side by `#lib/content`. The only `{@html}` allowed in the app. */
 	html: string;
 	toc: TocItem[];
+	/** `html` folds some long section remainders into `<details class="lesson-more">`. */
+	has_folded_sections: boolean;
 }
 
 export interface AcademyWeekMeta {
