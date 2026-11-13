@@ -1,0 +1,168 @@
+name: worldview
+
+# WORLDVIEW on Docker Desktop + Cloudflare Tunnel (README "Deploy", ARCHITECTURE §17).
+#
+# Settings and secrets live in .env in this folder (copy .env.example). Compose reads .env only to
+# fill the ${...} values below; no service uses `env_file`, so each container receives exactly the
+# variables listed for it. TUNNEL_TOKEN is therefore only in the cloudflared container, never in
+# app or scheduler (least privilege, ARCHITECTURE §14). A new app variable must be added to
+# x-app-environment as well as to .env.
+#
+#   docker compose build
+#   docker compose up -d                      # app + scheduler only: local check, not public
+#   docker compose --profile tunnel up -d     # + cloudflared: the site goes live
+
+x-app-environment: &app-environment # Fixed for production (never taken from .env).
+  NODE_ENV: production
+  ORIGIN: https://worldview.nared-fu.com
+  ADDRESS_HEADER: CF-Connecting-IP
+  DATABASE_URL: file:/data/worldview.db
+  HOST: 0.0.0.0
+  PORT: '3000'
+  BACKUP_DIR: /backups
+  BACKUP_KEEP: ${BACKUP_KEEP:-}
+  # App settings from .env (empty = the app default, ARCHITECTURE §14).
+  APP_TIMEZONE: ${APP_TIMEZONE:-}
+  DAILY_EVENT_TARGET_MIN: ${DAILY_EVENT_TARGET_MIN:-}
+  DAILY_EVENT_TARGET_MAX: ${DAILY_EVENT_TARGET_MAX:-}
+  PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-https://worldview.nared-fu.com}
+  PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:-worldview.nared-fu.com}
+  BODY_SIZE_LIMIT: ${BODY_SIZE_LIMIT:-}
+  # Admin (Cloudflare Access). Unset = /admin answers 403 for everyone (fails closed).
+  CF_ACCESS_TEAM_DOMAIN: ${CF_ACCESS_TEAM_DOMAIN:-}
+  CF_ACCESS_AUD: ${CF_ACCESS_AUD:-}
+  ADMIN_ALLOWED_EMAILS: ${ADMIN_ALLOWED_EMAILS:-}
+  # LLM (omniroute). Scheduler jobs and admin reruns both need them; unset = LLM not configured.
+  OMNI_API_URL: ${OMNI_API_URL:-}
+  OMNI_API_KEY: ${OMNI_API_KEY:-}
+  LLM_BASE_URL: ${LLM_BASE_URL:-}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_API_COMPATIBILITY: ${LLM_API_COMPATIBILITY:-}
+  LLM_MODEL_ID: ${LLM_MODEL_ID:-}
+  LLM_MODEL_TAGGING: ${LLM_MODEL_TAGGING:-}
+  LLM_MODEL_CLUSTERING: ${LLM_MODEL_CLUSTERING:-}
+  LLM_MODEL_EXTRACTION: ${LLM_MODEL_EXTRACTION:-}
+  LLM_MODEL_SUMMARY: ${LLM_MODEL_SUMMARY:-}
+  LLM_MODEL_RELATIONS: ${LLM_MODEL_RELATIONS:-}
+  LLM_MODEL_ACADEMY_LINKING: ${LLM_MODEL_ACADEMY_LINKING:-}
+  LLM_MODEL_FALLBACK: ${LLM_MODEL_FALLBACK:-}
+  LLM_MODEL_FALLBACK_SECONDARY: ${LLM_MODEL_FALLBACK_SECONDARY:-}
+  LLM_OMIT_TEMPERATURE_FOR: ${LLM_OMIT_TEMPERATURE_FOR:-}
+  LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-}
+  LLM_MAX_CONCURRENCY: ${LLM_MAX_CONCURRENCY:-}
+  LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-}
+  LLM_MAX_INPUT_TOKENS: ${LLM_MAX_INPUT_TOKENS:-}
+  LLM_MAX_OUTPUT_TOKENS: ${LLM_MAX_OUTPUT_TOKENS:-}
+  LLM_TEMPERATURE: ${LLM_TEMPERATURE:-}
+  LLM_DAILY_MAX_REQUESTS: ${LLM_DAILY_MAX_REQUESTS:-}
+  LLM_DAILY_MAX_TOKENS: ${LLM_DAILY_MAX_TOKENS:-}
+  # Proxy variables would bypass SafeFetch's connect-time address check (security review S2), and
+  # NODE_OPTIONS could add --inspect. Forced empty, so neither .env nor a Docker Desktop proxy
+  # setting can inject them.
+  HTTP_PROXY: ''
+  HTTPS_PROXY: ''
+  http_proxy: ''
+  https_proxy: ''
+  NODE_USE_ENV_PROXY: ''
+  NODE_OPTIONS: ''
+
+# Log rotation for every service (json-file, at most 5 x 10 MB per container).
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '5'
+
+# Shared by app and scheduler: one image, read-only root, no privileges, bounded resources.
+# Memory: the web process idles at about 50 MB; a job run peaks at about 100 MB RSS (bundled
+# scripts, no tsx). The app also runs admin reruns in-process, hence the larger limit.
+x-worldview-service: &worldview-service
+  build: .
+  image: worldview-app:local
+  environment: *app-environment
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  pids_limit: 256
+  cpus: 1.0
+  logging: *logging
+  restart: unless-stopped
+
+services:
+  app:
+    <<: *worldview-service
+    container_name: worldview_app
+    mem_limit: 512m
+    volumes:
+      - worldview-data:/data
+    # No published ports: only cloudflared reaches it, as http://app:3000 on the `tunnel` network.
+    expose:
+      - '3000'
+    networks:
+      - tunnel
+    # Healthcheck: the image's HEALTHCHECK (node fetch of http://127.0.0.1:3000/health).
+    stop_grace_period: 30s
+
+  scheduler:
+    <<: *worldview-service
+    container_name: worldview_scheduler
+    mem_limit: 384m
+    # Jobs on the ARCHITECTURE §8 schedule (UTC crontab) plus the daily backup. Shares the
+    # database volume with app: SQLite WAL is safe across containers on the same Docker VM
+    # (same kernel, shared-memory -shm file on one volume). -passthrough-logs keeps the JSON
+    # job lines unwrapped on stdout. umask 077: files the jobs create (database side files,
+    # backups) are private to the node user. `exec`: supercronic receives SIGTERM directly.
+    command: ['sh', '-c', 'umask 077 && exec supercronic -passthrough-logs docker/crontab']
+    volumes:
+      - worldview-data:/data
+      - ./backups:/backups
+    # Own network (outbound only: RSS feeds and the LLM). Not on `tunnel`, no ports: nothing can
+    # reach it, and it cannot reach cloudflared.
+    networks:
+      - jobs
+    healthcheck:
+      disable: true
+    depends_on:
+      app:
+        condition: service_healthy
+    # supercronic waits for a running job on SIGTERM; jobs stop themselves after 20 min, and a
+    # killed run is reclaimed by the next slot after 30 min (ARCHITECTURE §8).
+    stop_grace_period: 60s
+
+  cloudflared:
+    # Same release this machine already runs for other projects; tag + index digest.
+    image: cloudflare/cloudflared:2026.8.2@sha256:0aa26e284f05e6c77ae375b8c9c11d9eb6a448fb7bcd8d40f31cb6176189eb38
+    container_name: worldview_cloudflared
+    # Not started by a plain `docker compose up`: add `--profile tunnel` (or COMPOSE_PROFILES=tunnel
+    # in .env) to go live.
+    profiles: [tunnel]
+    command: tunnel --no-autoupdate --protocol http2 run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env (only the cloudflared service receives it)}
+    networks:
+      - tunnel
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    pids_limit: 128
+    logging: *logging
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  # app <-> cloudflared only (public hostname -> http://app:3000). Project-scoped, not shared.
+  tunnel:
+  # scheduler egress only.
+  jobs:
+
+volumes:
+  worldview-data:
