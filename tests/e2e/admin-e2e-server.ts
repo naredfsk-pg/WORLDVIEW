@@ -7,13 +7,14 @@
  * The build must not see NODE_ENV=test: Vite would then produce a development build.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { E2E_DATABASE_URL, E2E_PORT, previewEnv } from './admin-auth';
+import { E2E_DATABASE_URL, E2E_PORT, llmSentinelEnv, previewEnv } from './admin-auth';
 
 const baseEnv: NodeJS.ProcessEnv = { ...process.env };
 delete baseEnv.NODE_ENV;
 
 runStep('npm run db:reset', { ...baseEnv, DATABASE_URL: E2E_DATABASE_URL });
-runStep('npm run build', baseEnv);
+// The build sees the sentinel LLM key too, so the bundle scan proves it is not inlined.
+runStep('npm run build', { ...baseEnv, ...llmSentinelEnv() });
 
 const preview = spawn(`npm run preview -- --port ${E2E_PORT} --strictPort`, {
 	shell: true,
