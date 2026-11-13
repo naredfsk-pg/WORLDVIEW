@@ -431,3 +431,90 @@ function lesson(
 		search_text: 'เนื้อหา'
 	};
 }
+
+describe('admin corrections survive the pipeline (PRD FR-06)', () => {
+	const editor = { changed_by: 'editor@example.com', change_reason: 'fix a factual error' };
+	const resummary = handlers({
+		summary: (input) => ({
+			...defaultSummary(input),
+			title_th: 'หัวข้อใหม่จากการสรุปซ้ำ',
+			summary_th: 'สรุปใหม่จากหลักฐานเพิ่มเติม'
+		})
+	});
+
+	async function linkNewArticle(eventId: string) {
+		clock = new Date(NOW.getTime() + 60 * 60 * 1000);
+		const articleId = await addArticle(`New evidence for ${eventId}`);
+		await repositories.digest.linkArticles(eventId, [articleId], 1, clock.toISOString());
+	}
+
+	it('keeps the admin-edited text of a published event when new evidence arrives', async () => {
+		await ingestFixtures();
+		await digest();
+		const id = allEvents()[0]!.id;
+		await repositories.admin.updateEvent(
+			id,
+			{ title_th: 'หัวข้อที่บรรณาธิการแก้ไขแล้ว' },
+			{ ...editor, public_note_th: 'แก้ไขข้อเท็จจริง' },
+			NOW.toISOString()
+		);
+
+		await linkNewArticle(id);
+		await digest(resummary);
+
+		expect(eventById(id)).toMatchObject({
+			status: 'published',
+			title_th: 'หัวข้อที่บรรณาธิการแก้ไขแล้ว',
+			// A field the admin did not touch is still refreshed from the new evidence.
+			summary_th: 'สรุปใหม่จากหลักฐานเพิ่มเติม',
+			summarized_at: clock.toISOString()
+		});
+
+		// Still kept on the next re-summary, after summarized_at has moved past the admin edit.
+		await linkNewArticle(id);
+		clock = new Date(NOW.getTime() + 2 * 60 * 60 * 1000);
+		await digest(resummary);
+		expect(eventById(id).title_th).toBe('หัวข้อที่บรรณาธิการแก้ไขแล้ว');
+	});
+
+	it('re-summarizes an event no admin edited, as before', async () => {
+		await ingestFixtures();
+		await digest();
+		const id = allEvents()[0]!.id;
+
+		await linkNewArticle(id);
+		await digest(resummary);
+
+		expect(eventById(id)).toMatchObject({
+			status: 'published',
+			title_th: 'หัวข้อใหม่จากการสรุปซ้ำ',
+			summary_th: 'สรุปใหม่จากหลักฐานเพิ่มเติม'
+		});
+	});
+
+	it('does not auto-publish an unpublished event an admin edited; it waits for the admin', async () => {
+		await ingestFixtures();
+		await digest(handlers({ extraction: () => mockLlmError('timeout') }));
+		const id = allEvents()[0]!.id;
+		expect(eventById(id)).toMatchObject({
+			status: 'pending_review',
+			review_reasons: ['llm_failed']
+		});
+		await repositories.admin.updateEvent(
+			id,
+			{ title_th: 'ร่างหัวข้อของบรรณาธิการ' },
+			{ ...editor, public_note_th: null },
+			NOW.toISOString()
+		);
+
+		clock = new Date(NOW.getTime() + 60 * 60 * 1000);
+		await digest(resummary);
+
+		expect(eventById(id)).toMatchObject({
+			status: 'pending_review',
+			review_reasons: ['manual_flag'],
+			title_th: 'ร่างหัวข้อของบรรณาธิการ',
+			summary_th: 'สรุปใหม่จากหลักฐานเพิ่มเติม'
+		});
+	});
+});

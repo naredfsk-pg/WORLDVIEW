@@ -139,9 +139,15 @@ export async function generateEventContent(
 		review_reasons: decision.review_reasons,
 		new_updates: []
 	};
-	await deps.digest.saveEventContent(event.id, content, now);
-	deps.logger.info('event content saved', logFields);
-	return decision.status === 'published'
+	// Fields an admin edited are kept by the repository, and an unpublished event an admin edited
+	// waits for the admin, so the written status can differ from the gate's.
+	const saved = await deps.digest.saveEventContent(event.id, content, now);
+	deps.logger.info('event content saved', {
+		...logFields,
+		saved_status: saved.status,
+		admin_fields_kept: saved.admin_fields_kept
+	});
+	return saved.status === 'published'
 		? { outcome: 'published', content }
 		: { outcome: 'pending_review', review_reasons: decision.review_reasons };
 }

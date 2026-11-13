@@ -44,6 +44,9 @@ import {
 } from '../schema';
 import { EntityNotFoundError, isPublicEvent, toJsonObject, type Executor } from './shared';
 
+/** `content_revisions.changed_by` of pipeline changes; every other actor is an admin email. */
+export const SYSTEM_ACTOR = 'system';
+
 export function createDigestRepository(db: Db): DigestRepository {
 	return {
 		async listUnassignedArticles(since, limit) {
@@ -182,7 +185,7 @@ export function createDigestRepository(db: Db): DigestRepository {
 		},
 
 		async saveEventContent(eventId, content, now) {
-			db.transaction(
+			return db.transaction(
 				(tx) => {
 					const before = tx.select().from(events).where(eq(events.id, eventId)).get();
 					if (!before) throw new EntityNotFoundError('event', eventId);
@@ -194,13 +197,26 @@ export function createDigestRepository(db: Db): DigestRepository {
 						throw new Error(`saveEventContent: published event ${eventId} cannot be demoted`);
 					}
 
-					const contentFields = pickContentFields(content);
-					const publishing = content.status === 'published';
+					// Admin corrections win over the pipeline (PRD FR-06, §9.2): fields an admin ever
+					// edited are never rewritten. Checked inside this transaction, so an admin save
+					// cannot slip in between the check and the write.
+					const adminFields = adminEditedContentFields(tx, eventId);
+					const contentFields = Object.fromEntries(
+						Object.entries(pickContentFields(content)).filter(([key]) => !adminFields.has(key))
+					) as Partial<ReturnType<typeof pickContentFields>>;
+					// An admin who edited an unpublished event publishes it themselves.
+					const awaitsAdmin =
+						adminFields.size > 0 && before.status !== 'published' && content.status === 'published';
+					const status = awaitsAdmin ? 'pending_review' : content.status;
+					const publishing = status === 'published';
+					let reviewReasons: ReviewReason[] = [];
+					if (awaitsAdmin) reviewReasons = ['manual_flag'];
+					else if (!publishing) reviewReasons = content.review_reasons;
 					tx.update(events)
 						.set({
 							...contentFields,
-							status: content.status,
-							review_reasons: publishing ? [] : content.review_reasons,
+							status,
+							review_reasons: reviewReasons,
 							summarized_at: content.summarized_at,
 							published_at: publishing ? (before.published_at ?? now) : before.published_at,
 							updated_at: now
@@ -230,8 +246,11 @@ export function createDigestRepository(db: Db): DigestRepository {
 								entity_type: 'event',
 								entity_id: eventId,
 								changed_at: now,
-								changed_by: 'system',
-								change_reason: 'automatic re-summary after new evidence',
+								changed_by: SYSTEM_ACTOR,
+								change_reason:
+									adminFields.size > 0
+										? 'automatic re-summary after new evidence; admin-edited fields kept'
+										: 'automatic re-summary after new evidence',
 								public_note_th: null,
 								before_after: {
 									before: toJsonObject(pickContentFields(before)),
@@ -240,6 +259,7 @@ export function createDigestRepository(db: Db): DigestRepository {
 							})
 							.run();
 					}
+					return { status, admin_fields_kept: [...adminFields].sort() };
 				},
 				{ behavior: 'immediate' }
 			);
@@ -480,10 +500,53 @@ function insertEventArticles(
 	return linked;
 }
 
+/**
+ * Content fields an admin ever changed on this event: the `after` keys of every event revision
+ * whose actor is not the pipeline. All of them, not only those newer than `summarized_at`: once
+ * a re-summary kept an admin field, `summarized_at` moves past the edit, and the next re-summary
+ * must still keep it.
+ */
+function adminEditedContentFields(tx: Executor, eventId: string): Set<string> {
+	const rows = tx
+		.select({ before_after: contentRevisions.before_after })
+		.from(contentRevisions)
+		.where(
+			and(
+				eq(contentRevisions.entity_type, 'event'),
+				eq(contentRevisions.entity_id, eventId),
+				ne(contentRevisions.changed_by, SYSTEM_ACTOR)
+			)
+		)
+		.all();
+	const fields = new Set<string>();
+	for (const row of rows) {
+		for (const key of Object.keys(row.before_after.after ?? {})) {
+			if (CONTENT_FIELD_KEYS.has(key)) fields.add(key);
+		}
+	}
+	return fields;
+}
+
 function assertEventExists(tx: Executor, eventId: string): void {
 	const row = tx.select({ id: events.id }).from(events).where(eq(events.id, eventId)).get();
 	if (!row) throw new EntityNotFoundError('event', eventId);
 }
+
+const CONTENT_FIELD_KEYS: ReadonlySet<string> = new Set([
+	'title_th',
+	'summary_th',
+	'what_happened_th',
+	'why_it_matters_th',
+	'background_th',
+	'uncertain_th',
+	'claims',
+	'category',
+	'regions',
+	'countries',
+	'tags',
+	'signals',
+	'occurred_at'
+]);
 
 function pickContentFields(source: EventContentWrite | typeof events.$inferSelect) {
 	return {

@@ -152,7 +152,15 @@ export interface DigestRepository {
 	 * or 'published' with an article linked after summarized_at.
 	 */
 	listEventsNeedingContent(limit: number): Promise<EventWithArticles[]>;
-	saveEventContent(eventId: string, content: EventContentWrite, now: IsoUtc): Promise<void>;
+	// CONTRACT-CHANGE (Wave 2): content fields an admin ever edited (a `content_revisions` row
+	// for the event whose actor is not "system") are never overwritten. An unpublished event with
+	// admin edits is not auto-published: it stays `pending_review` with `manual_flag`. Resolves to
+	// the status written and the fields kept. Was `Promise<void>`.
+	saveEventContent(
+		eventId: string,
+		content: EventContentWrite,
+		now: IsoUtc
+	): Promise<{ status: 'published' | 'pending_review'; admin_fields_kept: string[] }>;
 	/** LLM/gate failure on a non-published event: status → pending_review with these reasons; text unchanged. */
 	markEventForReview(eventId: string, reasons: ReviewReason[], now: IsoUtc): Promise<void>;
 	// CONTRACT-CHANGE: added (Wave 2). The LLM `clustering` task said a draft event reports the
