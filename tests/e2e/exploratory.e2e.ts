@@ -62,17 +62,18 @@ test.describe('archive calendar month boundaries', () => {
 			'href',
 			/month=2025-12/
 		);
-		await page.goto('/archive?month=2026-12');
+		// Past months only: future months are out of range since BUG-QA-007.
+		await page.goto('/archive?month=2025-12');
 		await expect(page.getByRole('link', { name: 'เดือนถัดไป' })).toHaveAttribute(
 			'href',
-			/month=2027-01/
+			/month=2026-01/
 		);
 	});
 
-	test('month lengths: Feb 2028 has 29 days, Feb 2027 has 28', async ({ page }) => {
+	test('month lengths: Feb 2024 has 29 days, Feb 2025 has 28', async ({ page }) => {
 		for (const [month, days] of [
-			['2028-02', 29],
-			['2027-02', 28],
+			['2024-02', 29],
+			['2025-02', 28],
 			['2026-04', 30]
 		] as const) {
 			await page.goto(`/archive?month=${month}`);
@@ -92,10 +93,19 @@ test.describe('archive calendar month boundaries', () => {
 		}
 	});
 
-	test.fixme('BUG-QA-007: a future date is not offered as "news of that day"', async ({ page }) => {
+	test('BUG-QA-007: a future date is not offered as "news of that day"', async ({ page }) => {
 		await page.goto('/archive?date=2099-01-01');
-		await expect(page.getByTestId('archive-headline')).not.toContainText('2099');
-		await page.goto('/archive');
+		const headline = page.getByTestId('archive-headline');
+		await expect(headline).not.toContainText('2099');
+		// Out of range is treated like an invalid date: the latest brief, with a clean Thai headline.
+		await expect(headline).toHaveText(/^ข่าวประจำวันที่ \d{1,2} [ก-๙.]+ \d{4}$/);
+
+		await page.goto('/archive?month=2099-01');
+		await expect(page.locator('#calendar-title')).not.toContainText('2099');
+
+		// No next-month link from the current Bangkok month.
+		await page.goto(`/archive?month=${currentBangkokMonth()}`);
+		await expect(page.getByRole('link', { name: 'เดือนก่อนหน้า' })).toHaveCount(1);
 		await expect(page.getByRole('link', { name: 'เดือนถัดไป' })).toHaveCount(0);
 	});
 });
@@ -130,3 +140,10 @@ test.describe('Thai text at 360 px', () => {
 		}
 	});
 });
+
+/** `YYYY-MM` of today in Asia/Bangkok (en-CA formats dates as YYYY-MM-DD). */
+function currentBangkokMonth(): string {
+	return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok' })
+		.format(new Date())
+		.slice(0, 7);
+}

@@ -13,6 +13,8 @@
 
 	interface Props {
 		month: YearMonth;
+		/** Last month offered by the next-month link (the current Bangkok month). */
+		maxMonth: YearMonth;
 		selected: BriefDate | null;
 		/** Dates in `month` with a published brief: the only selectable days. */
 		available: BriefDate[];
@@ -21,7 +23,7 @@
 		region: RegionSlug | null;
 	}
 
-	let { month, selected, available, category, region }: Props = $props();
+	let { month, maxMonth, selected, available, category, region }: Props = $props();
 
 	const WEEKDAYS = [
 		['อา', 'อาทิตย์'],
@@ -52,14 +54,19 @@
 			<ChevronLeft class="size-5" aria-hidden="true" />
 		</a>
 		<h2 id="calendar-title" class="m-0 text-[15px] font-bold">{formatThaiMonth(month)}</h2>
-		<a
-			href={resolve(`/archive?${queryString({ month: addMonths(month, 1), category, region })}`)}
-			class="grid size-11 place-items-center rounded-[10px] text-muted-foreground hover:bg-surface-2"
-			aria-label="เดือนถัดไป"
-			data-sveltekit-noscroll
-		>
-			<ChevronRight class="size-5" aria-hidden="true" />
-		</a>
+		{#if month < maxMonth}
+			<a
+				href={resolve(`/archive?${queryString({ month: addMonths(month, 1), category, region })}`)}
+				class="grid size-11 place-items-center rounded-[10px] text-muted-foreground hover:bg-surface-2"
+				aria-label="เดือนถัดไป"
+				data-sveltekit-noscroll
+			>
+				<ChevronRight class="size-5" aria-hidden="true" />
+			</a>
+		{:else}
+			<!-- No future months (BUG-QA-007); the spacer keeps the month name centred. -->
+			<span class="size-11" aria-hidden="true"></span>
+		{/if}
 	</div>
 
 	<table class="w-full table-fixed border-separate border-spacing-[5px]">

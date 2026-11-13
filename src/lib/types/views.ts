@@ -240,6 +240,8 @@ export interface LessonPageData {
 /** `/archive?month=YYYY-MM&date=YYYY-MM-DD&category=&region=` */
 export interface ArchivePageData {
 	month: YearMonth;
+	/** The current Bangkok month: the last month the calendar navigates to. */
+	max_month: YearMonth;
 	/** Dates in `month` with a published brief (calendar dots). */
 	available_dates: BriefDate[];
 	selected_date: BriefDate | null;

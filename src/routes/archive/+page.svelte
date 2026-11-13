@@ -76,6 +76,7 @@
 >
 	<ArchiveCalendar
 		month={data.month}
+		maxMonth={data.max_month}
 		selected={data.selected_date}
 		available={data.available_dates}
 		category={data.category}

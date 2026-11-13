@@ -9,21 +9,28 @@ import type { PageServerLoad } from './$types';
  * `/archive?month=&date=&category=&region=`. Invalid params fall back to defaults (no 400).
  * A valid `date` wins over `month`; with no date the latest brief in the month is selected.
  * Category/region filtering happens in the page so the SSR output matches the URL.
+ *
+ * Out of range counts as invalid (BUG-QA-007): a `date` after today or a `month` after the
+ * current month (Asia/Bangkok) is ignored like `2026-02-30`, so the page never presents a future
+ * day as "the news of that day". `max_month` stops the calendar's next-month link there.
  */
 export const load: PageServerLoad = async ({ url, parent }): Promise<ArchivePageData> => {
 	const { read } = getRepositories();
+	const { today } = await parent();
+	const maxMonth = monthOf(today);
 	const dateParam = url.searchParams.get('date');
 	const monthParam = url.searchParams.get('month');
-	const requestedDate = isBriefDate(dateParam) ? dateParam : null;
+	// Zero-padded ISO strings compare correctly as strings.
+	const requestedDate = isBriefDate(dateParam) && dateParam <= today ? dateParam : null;
 
 	let month;
 	if (requestedDate) {
 		month = monthOf(requestedDate);
-	} else if (isYearMonth(monthParam)) {
+	} else if (isYearMonth(monthParam) && monthParam <= maxMonth) {
 		month = monthParam;
 	} else {
 		const latest = await read.getLatestPublishedBriefDate();
-		month = monthOf(latest ?? (await parent()).today);
+		month = monthOf(latest ?? today);
 	}
 
 	const availableDates = await read.listBriefDatesInMonth(month);
@@ -33,6 +40,7 @@ export const load: PageServerLoad = async ({ url, parent }): Promise<ArchivePage
 
 	return {
 		month,
+		max_month: maxMonth,
 		available_dates: availableDates,
 		selected_date: selectedDate,
 		brief,
