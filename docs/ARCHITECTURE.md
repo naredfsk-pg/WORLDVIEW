@@ -103,28 +103,38 @@ Every route is server-rendered and none is prerendered: the root layout reads fr
 | `/connections` (`?category=`) | `ConnectionsPageData` | Published relations from the last 30 days, max 50, as a list. The graph is Phase 2. |
 | `/search` (`?q=&scope=&category=&region=&from=&to=&page=`) | `SearchPageData` | `q` is trimmed and capped at 100 chars; page size 20; an empty `q` → `query=null`. The header search button and `/` key open a dialog that submits a GET to `/search`. |
 | `/health` (`+server.ts` GET) | `HealthResponse` (JSON) | 200 `ok`; 200 `degraded` when stale; 503 `error` when the DB is unreachable. `no-store`, no auth, no secrets. |
-| `/admin` | `AdminDashboardData` | Action `?/rerun` (`job_type`, optional `date`) spawns a detached `scripts/job.ts <type> --force --manual` and returns immediately. |
-| `/admin/review` | `AdminReviewData` | Actions `?/publishEvent`, `?/hideEvent`, `?/publishRelation`, `?/rejectRelation`. Each action requires `change_reason`. |
-| `/admin/events/[id]` | `AdminEventEditData` | Actions `?/save` (an `AdminEventPatch` plus `change_reason` and optional `public_note_th`), `?/publish` (runs the admin gate first), `?/hide`. |
+| `/admin` | `AdminDashboardData` | Read-only: recent `job_runs`, source health, LLM usage today (requests, tokens, failures, cache hits vs `LLM_DAILY_MAX_*`), freshness, review backlog. |
+| `/admin/review` | `AdminReviewData` + `hidden_events` | Pending events with Thai `review_reasons`, plus hidden events. Actions `?/publish` (also unhide; admin gate G1–G3, reasons shown on failure), `?/hide`, `?/flag` (adds `manual_flag`). |
+| `/admin/events/[id]` | `AdminEventEditData` | Any status. Actions `?/save` (Thai fields + category, zod: length caps, required fields Thai, no URL/domain in any field; `change_reason`, optional `public_note_th`; only changed fields are written), `?/publish`, `?/hide`, `?/flag`. Shows revision history. |
+| `/admin/relations` | `{ relations: AdminRelationRow[] }` | Pending relations with evidence links. Actions `?/approve`, `?/reject` (pending only). |
+| `/admin/briefs` | `{ briefs: DailyBrief[] }` | Latest 30 briefs. Action `?/visibility` (published ↔ hidden). |
+| `/admin/jobs` | `{ runs, ingest_running }` | Run history. Action `?/rerunIngest`: `ingest --force --manual` started **in-process** (same claim as the CLI, so a live `running` slot is never started twice); returns once the claim is decided. Other job types are shown disabled until `server/jobs/registry.ts` (`runJobByType`) lands. |
 
-Errors: loads throw `error(status, thaiMessage)` and the root `+error.svelte` renders them. `handleError` in `hooks.server.ts` logs `{ status, path, message }` only, never stack traces with env values. SEO: every page sets `<title>`, a meta description and `og:url = PUBLIC_SITE_URL + path`.
+Every admin action requires `change_reason` (3–300 chars) and writes `content_revisions` through `AdminRepository` in the same transaction as the change. State transitions are checked inside that transaction (`AdminTransitionResult`: `not_found` / `invalid_state` / `gate_failed`).
+
+Errors: loads throw `error(status, thaiMessage)` and the root `+error.svelte` renders them. `handleError` in `hooks.server.ts` keeps app errors, translates framework errors (404 …) to Thai, and for unexpected errors logs `{ error_id, path, message }` (name + message, paths redacted, max 200 chars, never the stack) and returns a Thai message with the `error_id` (`App.Error.error_id`). SEO: every page sets `<title>`, a meta description and `og:url = PUBLIC_SITE_URL + path`.
 
 ## 4. Admin authentication (`/admin/*`)
 
-There are two layers. Cloudflare Access protects `/admin*` at the edge, and the app verifies the result in `hooks.server.ts`.
+There are two layers. Cloudflare Access protects `/admin*` at the edge, and the app verifies the result in `hooks.server.ts` (code: `src/lib/server/auth/`, a folder rather than the `auth.ts` file listed in §1).
 
-1. Matching: `pathname === '/admin' || pathname.startsWith('/admin/')`. This covers GET and POST (form actions).
+1. Matching: `pathname === '/admin' || pathname.startsWith('/admin/')`, after the same percent-decoding SvelteKit applies before routing (so `/%61dmin` matches) and case-insensitively; an undecodable path counts as admin. This covers GET, form POSTs and `__data.json`.
 2. Read the `Cf-Access-Jwt-Assertion` request header. If it is missing → **403**.
 3. Verify the JWT with `jose`:
-   - keys: `createRemoteJWKSet(new URL('/cdn-cgi/access/certs', teamUrl))`, cached in memory by `jose`
-   - checks: `jwtVerify(token, jwks, { issuer: teamUrl, audience: CF_ACCESS_AUD, algorithms: ['RS256'] })`
-   - `teamUrl`: `CF_ACCESS_TEAM_DOMAIN`, normalized to `https://<team>.cloudflareaccess.com` (the input may omit the scheme)
+   - keys: `createRemoteJWKSet(new URL('/cdn-cgi/access/certs', teamUrl))`, cached in memory by `jose` (5 s fetch timeout)
+   - checks: `jwtVerify(token, jwks, { issuer: teamUrl, audience: CF_ACCESS_AUD, algorithms: ['RS256'], clockTolerance: 60, requiredClaims: ['exp'] })`; `HS256` and `none` are refused
+   - `teamUrl`: `CF_ACCESS_TEAM_DOMAIN` (`team`, `team.cloudflareaccess.com` or with `https://`), normalized to `https://<team>.cloudflareaccess.com`. Any other host is rejected as missing config.
+   - The key set cannot be loaded (timeout, network error, non-200, bad JSON) → **503**. Every other failure → 403.
 4. The lower-cased `email` claim must appear in `ADMIN_ALLOWED_EMAILS`. Otherwise → 403.
-5. On success, set `event.locals.admin = { email }` (`AdminIdentity`; add `admin?: AdminIdentity` to `App.Locals`). Every admin write records this email in `content_revisions.changed_by`.
-6. **Fail closed.** Missing CF config in production → 403 for every request. One exception: in `vite dev` only, when `CF_ACCESS_AUD` is unset, `locals.admin = { email: 'dev@localhost' }` and the page shows a visible banner.
-7. CSRF: keep SvelteKit's origin check (`ORIGIN` must be the public URL). Do not expose JSON write endpoints; use form actions only.
+5. On success, set `event.locals.admin = { email }` (`AdminIdentity`). Every admin write records this email in `content_revisions.changed_by`. Admin loads and actions call `requireAdmin(locals)` again (defence in depth).
+6. **Fail closed.** Missing or invalid CF config → 403 for every request. Deny pages are static Thai HTML with no details; the server log records only the status, a reason code and the path (never the token or the claimed email).
+7. **Dev bypass:** `hooks.server.ts` passes `import.meta.env.DEV ? { email: 'dev@localhost' } : null`. Vite compiles that to `null` in `vite build`, so the bypass is not in a production build at all (the e2e suite greps the build for it). It also needs `NODE_ENV=development` and no `CF_ACCESS_AUD`. The admin layout then shows a banner.
+8. **E2E auth (test-only JWKS):** `CF_ACCESS_TEST_JWKS_URL` replaces the team JWKS URL only when **all** of these hold: `NODE_ENV=test`, `ORIGIN` is a loopback origin (`localhost`, `127.0.0.1`, `[::1]`; never the public hostname), and the JWKS URL itself is loopback. Issuer and audience checks stay. The production image runs with `NODE_ENV=production` and the public `ORIGIN`, so it is ignored there (unit-tested). `tests/e2e/admin-e2e-server.ts` builds with `NODE_ENV` unset (a real production build), then runs `vite preview` with the test env; the Playwright global setup serves a fresh per-run RSA public key on `127.0.0.1:E2E_JWKS_PORT`, and tests sign tokens with the private key.
+9. **Rate limit:** admin POSTs (form actions) pass an in-memory token bucket per client IP (`getClientAddress()`, i.e. `CF-Connecting-IP` via `ADDRESS_HEADER`): burst 10, then 1 every 2 s, at most 1000 tracked IPs (LRU). Over the limit → 429 with `Retry-After`. It runs before token verification and resets on restart.
+10. CSRF: keep SvelteKit's built-in origin check (`ORIGIN` must be the public URL). It runs before `handle`, so a cross-origin form POST is rejected even with a valid token (e2e). Do not expose JSON write endpoints; use form actions only.
+11. **Headers** on every response: `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()`, and `Content-Security-Policy: frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'`. There is no `script-src`/`style-src` yet: SvelteKit's inline hydration script and the theme script in `app.html` would need `kit.csp` (hash mode) in the SvelteKit config. `/admin*` responses also get `Cache-Control: private, no-store` and `X-Robots-Tag: noindex, nofollow`.
 
-Public routes are read-only. MVP rate limiting relies on Cloudflare; the app adds none.
+Public routes are read-only and not rate-limited by the app (Cloudflare covers them).
 
 ## 5. Entity model (PRD §7 → `types/domain.ts`)
 
