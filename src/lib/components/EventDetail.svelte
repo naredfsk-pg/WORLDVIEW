@@ -30,7 +30,7 @@
 
 <article class="max-w-[760px]" data-testid="event-detail">
 	<header class="mb-6">
-		<p class="text-[10px] font-bold tracking-[0.09em] text-primary">
+		<p class="text-meta font-bold tracking-[0.09em] text-primary">
 			{categoryLabel(event.category)}{regions ? ` · ${regions}` : ''}
 		</p>
 		<h1 class="mt-3 mb-3 text-[24px] leading-[1.45] font-bold tracking-[-0.03em] md:text-[30px]">
@@ -62,7 +62,7 @@
 					<dd class="font-semibold">{formatThaiDateTimeShort(event.published_at)}</dd>
 				</div>
 			</dl>
-			<p class="mt-2 mb-0 text-[11px] text-faint">เวลาทั้งหมดเป็น{TIMEZONE_LABEL}</p>
+			<p class="mt-2 mb-0 text-meta text-faint">เวลาทั้งหมดเป็น{TIMEZONE_LABEL}</p>
 		</div>
 	</header>
 
@@ -101,7 +101,7 @@
 		<section class="py-5" aria-labelledby="why">
 			{@render sectionHeading('why', 'ทำไมเรื่องนี้สำคัญ', 'Why it matters')}
 			<p class="text-[14px] leading-[1.9]">{event.why_it_matters_th}</p>
-			<p class="m-0 rounded-xl bg-surface-2 px-3 py-2 text-[11px] text-muted-foreground">
+			<p class="m-0 rounded-xl bg-surface-2 px-3 py-2 text-meta text-muted-foreground">
 				บทวิเคราะห์ส่วนนี้เรียบเรียงโดยมี AI ช่วย (AI-assisted) จากแหล่งข่าวด้านล่าง ควรอ่านประกอบกับแหล่งข่าวต้นทาง
 			</p>
 		</section>
@@ -138,7 +138,7 @@
 				<ol class="grid gap-3 border-l-2 border-accent-subtle pl-4">
 					{#each event.updates as update (update.id)}
 						<li class="text-[13px] leading-[1.8]">
-							<p class="m-0 text-[11px] font-bold text-primary">
+							<p class="m-0 text-meta font-bold text-primary">
 								รายงานเมื่อ {formatThaiDateTimeShort(update.reported_at)}
 								{#if update.occurred_at}
 									· เกิดเหตุ {formatThaiDateTimeShort(update.occurred_at)}

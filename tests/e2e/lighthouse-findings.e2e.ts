@@ -11,7 +11,7 @@ const MOBILE = { width: 412, height: 823 };
 test.describe('Lighthouse mobile findings', () => {
 	test.use({ viewport: MOBILE });
 
-	test.fixme('BUG-QA-009: at least 60 % of the text is 12 px or larger', async ({ page }) => {
+	test('BUG-QA-009: at least 60 % of the text is 12 px or larger', async ({ page }) => {
 		for (const route of ['/', '/archive', '/events/demo-evt-01']) {
 			await page.goto(route);
 			expect.soft(await legibleTextShare(page), route).toBeGreaterThanOrEqual(0.6);

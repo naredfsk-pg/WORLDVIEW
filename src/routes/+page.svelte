@@ -133,7 +133,7 @@
 					<ul class="mt-[15px] flex flex-wrap gap-[5px]" aria-label="แท็กยอดนิยม">
 						{#each topTags as tag (tag)}
 							<li
-								class="rounded-full bg-surface-2 px-[9px] py-[5px] text-[10px] text-muted-foreground"
+								class="rounded-full bg-surface-2 px-[9px] py-[5px] text-meta text-muted-foreground"
 							>
 								#{tag}
 							</li>

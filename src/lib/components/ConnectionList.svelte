@@ -16,7 +16,7 @@
 
 {#snippet endpoint(event: EventSummary)}
 	<span class="block min-w-0">
-		<span class="block text-[10px] font-bold text-primary">
+		<span class="block text-meta font-bold text-primary">
 			{categoryLabel(event.category)} · {formatThaiDate(event.event_date)}
 		</span>
 		{#if event.id === currentEventId}
@@ -42,7 +42,7 @@
 			{@render endpoint(relation.from_event)}
 			<p
 				class={[
-					'my-3 inline-flex rounded-[9px] px-3 py-1.5 text-[11px] font-bold',
+					'my-3 inline-flex rounded-[9px] px-3 py-1.5 text-meta font-bold',
 					possible
 						? 'border border-dashed border-gold/40 bg-gold-bg text-gold'
 						: 'bg-accent-subtle text-primary'
@@ -56,16 +56,16 @@
 				{relation.explanation_th}
 			</p>
 			{#if possible}
-				<p class="mb-2 text-[11px] text-gold">
+				<p class="mb-2 text-meta text-gold">
 					ความเชื่อมโยงนี้เป็นความเป็นไปได้ ยังไม่ได้รับการยืนยันว่าเป็นเหตุและผล
 				</p>
 			{/if}
-			<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+			<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-muted-foreground">
 				<EvidenceLinks urls={relation.evidence_source_urls} />
 				{#if relation.reviewed}
 					<Badge
 						variant="outline"
-						class="h-auto rounded-md px-2 py-0.5 text-[10px] text-muted-foreground"
+						class="h-auto rounded-md px-2 py-0.5 text-meta text-muted-foreground"
 					>
 						ตรวจโดยบรรณาธิการแล้ว
 					</Badge>

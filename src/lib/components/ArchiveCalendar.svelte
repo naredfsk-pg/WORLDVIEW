@@ -73,7 +73,7 @@
 		<thead>
 			<tr>
 				{#each WEEKDAYS as [short, full] (short)}
-					<th scope="col" abbr={full} class="pb-2 text-center text-[10px] font-normal text-faint">
+					<th scope="col" abbr={full} class="pb-2 text-center text-meta font-normal text-faint">
 						{short}
 					</th>
 				{/each}
@@ -115,7 +115,7 @@
 		</tbody>
 	</table>
 
-	<p class="mt-3.5 mb-0 border-t pt-[13px] text-[11px] text-muted-foreground">
+	<p class="mt-3.5 mb-0 border-t pt-[13px] text-meta text-muted-foreground">
 		<span class="text-primary" aria-hidden="true">•</span> จุดสีเขียวแสดงวันที่มีสรุปข่าว (เวลาไทย GMT+7)
 	</p>
 </section>

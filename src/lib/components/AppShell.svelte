@@ -184,7 +184,7 @@
 						style:width="{progressPercent}%"
 					></div>
 				</div>
-				<p class="mt-2.5 text-[11px] text-muted-foreground">
+				<p class="mt-2.5 text-meta text-muted-foreground">
 					{academyProgress.count === 0
 						? 'เริ่มต้นบทเรียนแรกของคุณ'
 						: `เรียนแล้ว ${academyProgress.count} จาก ${LESSON_TOTAL} บทเรียน`}
@@ -214,7 +214,7 @@
 			</a>
 			<div class="hidden flex-col gap-px lg:flex">
 				<p class="text-xs font-bold">{headerTitle}</p>
-				<p class="text-[11px] text-muted-foreground">ความรู้ที่ทำให้โลกเข้าใจง่ายขึ้น</p>
+				<p class="text-meta text-muted-foreground">ความรู้ที่ทำให้โลกเข้าใจง่ายขึ้น</p>
 			</div>
 			<div class="flex items-center gap-2">
 				<Button

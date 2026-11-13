@@ -16,6 +16,12 @@
 	--breakpoint-xl: 68.8125rem;
 	--breakpoint-2xl: 90rem;
 	--font-sans: 'Noto Sans Thai', Tahoma, 'Segoe UI', system-ui, sans-serif;
+
+	/* Thai small text (BUG-QA-009): metadata, labels and chips with Thai words are 12px, not
+	 * 10–11px, with a taller line for Thai vowel and tone marks. Short English all-caps eyebrows
+	 * keep the prototype's 10px. */
+	--text-meta: 0.75rem;
+	--text-meta--line-height: 1.6;
 }
 
 @theme inline {
