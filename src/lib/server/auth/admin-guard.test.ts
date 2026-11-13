@@ -4,7 +4,7 @@ import type { RequestEvent } from '@sveltejs/kit';
 import { exportJWK, generateKeyPair, SignJWT, type CryptoKey, type JWK } from 'jose';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parseConfig } from '../config';
-import { createAdminGuard, isAdminPath } from './admin-guard';
+import { createAdminGuard, isAdminPath, isAdminRequest } from './admin-guard';
 import {
 	createAccessVerifier,
 	normalizeTeamUrl,
@@ -21,6 +21,7 @@ const KID = 'test-key-1';
 let privateKey: CryptoKey;
 let jwksServer: Server;
 let jwksUrl: string;
+let cachedJwks: string;
 /** A loopback URL nobody listens on. */
 let deadJwksUrl: string;
 
@@ -34,6 +35,7 @@ beforeAll(async () => {
 		use: 'sig'
 	};
 
+	cachedJwks = JSON.stringify({ keys: [publicJwk] });
 	jwksServer = createServer((request, response) => {
 		if (request.url !== '/certs') {
 			response.writeHead(404).end();
@@ -86,9 +88,9 @@ function base64url(value: object): string {
 }
 
 function adminEvent(
-	options: { token?: string; method?: string; path?: string; ip?: string } = {}
+	options: { token?: string; method?: string; path?: string; ip?: string; origin?: string } = {}
 ): RequestEvent {
-	const url = new URL(options.path ?? '/admin', 'http://localhost:4273');
+	const url = new URL(options.path ?? '/admin', options.origin ?? 'http://localhost:4273');
 	const headers = new Headers();
 	if (options.token) headers.set('Cf-Access-Jwt-Assertion', options.token);
 	return {
@@ -107,6 +109,8 @@ function guardFor(
 	return createAdminGuard({
 		getConfig: () => config,
 		devBypassIdentity: options.devBypass ? { email: 'dev@localhost' } : null,
+		// The raw value: unset stays unset (parseConfig would default it to "development").
+		readNodeEnv: () => env.NODE_ENV,
 		limiter:
 			options.limiter ??
 			createTokenBucketLimiter({ capacity: 100, refillPerSecond: 1, maxKeys: 10 })
@@ -232,13 +236,15 @@ describe('admin guard (Cloudflare Access)', () => {
 describe('dev bypass', () => {
 	const devEnv = { NODE_ENV: 'development' };
 
-	it('works only with a dev identity, NODE_ENV=development and no CF_ACCESS_AUD', async () => {
-		const event = adminEvent();
-		const { response } = await run(guardFor(devEnv, { devBypass: true }), event);
+	it('works only with a dev identity, raw NODE_ENV=development, no AUD and a loopback host', async () => {
+		for (const origin of ['http://localhost:5273', 'http://127.0.0.1:5273', 'http://[::1]:5273']) {
+			const event = adminEvent({ origin });
+			const { response } = await run(guardFor(devEnv, { devBypass: true }), event);
 
-		expect(response.status).toBe(200);
-		expect(event.locals.admin).toEqual({ email: 'dev@localhost' });
-		expect(event.locals.adminDevBypass).toBe(true);
+			expect(response.status, origin).toBe(200);
+			expect(event.locals.admin).toEqual({ email: 'dev@localhost' });
+			expect(event.locals.adminDevBypass).toBe(true);
+		}
 	});
 
 	it('cannot be active in a production build: the dev identity is null there', async () => {
@@ -250,14 +256,114 @@ describe('dev bypass', () => {
 		}
 	});
 
-	it('is refused with NODE_ENV=production even if a dev identity were passed', async () => {
-		const guard = guardFor({ NODE_ENV: 'production' }, { devBypass: true });
-		expect((await run(guard, adminEvent())).response.status).toBe(403);
+	it('is inactive when NODE_ENV is unset, even though config defaults it to development', async () => {
+		const unset = { NODE_ENV: undefined };
+		expect(parseConfig(unset).nodeEnv).toBe('development');
+		const { response, resolve } = await run(guardFor(unset, { devBypass: true }), adminEvent());
+		expect(response.status).toBe(403);
+		expect(resolve).not.toHaveBeenCalled();
+	});
+
+	it('is inactive with NODE_ENV=production or test even if a dev identity were passed', async () => {
+		for (const NODE_ENV of ['production', 'test']) {
+			const guard = guardFor({ NODE_ENV }, { devBypass: true });
+			expect((await run(guard, adminEvent())).response.status, NODE_ENV).toBe(403);
+		}
+	});
+
+	it('is inactive for a non-loopback host', async () => {
+		for (const origin of [
+			'https://worldview.nared-fu.com',
+			'http://192.168.1.20:5273',
+			'http://localhost.evil.com'
+		]) {
+			const event = adminEvent({ origin });
+			const { response } = await run(guardFor(devEnv, { devBypass: true }), event);
+			expect(response.status, origin).toBe(403);
+			expect(event.locals.admin).toBeUndefined();
+		}
 	});
 
 	it('is off once CF_ACCESS_AUD is set: a token is required', async () => {
 		const env = { ...devEnv, CF_ACCESS_AUD: AUD };
 		expect((await run(guardFor(env, { devBypass: true }), adminEvent())).response.status).toBe(403);
+	});
+});
+
+describe('email matching', () => {
+	// Built at runtime (never typed as a literal or an escape): KELVIN SIGN lower-cases to "k".
+	const kelvin = String.fromCodePoint(0x212a);
+
+	it('rejects a non-ASCII look-alike of an allowed address', async () => {
+		const lookAlike = `${kelvin}ate@example.com`;
+		expect(lookAlike.toLowerCase()).toBe('kate@example.com');
+		const env = testEnv({ ADMIN_ALLOWED_EMAILS: 'kate@example.com' });
+
+		const forged = adminEvent({ token: await signToken({ email: lookAlike }) });
+		expect((await run(guardFor(env), forged)).response.status).toBe(403);
+		const genuine = adminEvent({ token: await signToken({ email: 'Kate@Example.com' }) });
+		expect((await run(guardFor(env), genuine)).response.status).toBe(200);
+	});
+
+	it('rejects email claims with whitespace instead of trimming them', async () => {
+		for (const email of [` ${ADMIN_EMAIL}`, `${ADMIN_EMAIL} `, 'editor @example.com']) {
+			const event = adminEvent({ token: await signToken({ email }) });
+			expect((await run(guardFor(testEnv()), event)).response.status, email).toBe(403);
+		}
+	});
+
+	it('refuses a non-ASCII address in ADMIN_ALLOWED_EMAILS at config time', () => {
+		expect(() => parseConfig({ ADMIN_ALLOWED_EMAILS: `${kelvin}ate@example.com` })).toThrow(
+			/ADMIN_ALLOWED_EMAILS/
+		);
+		const config = parseConfig({ ADMIN_ALLOWED_EMAILS: 'Kate@Example.com' });
+		expect(config.cloudflare.adminAllowedEmails).toEqual(['kate@example.com']);
+	});
+});
+
+describe('admin request matching', () => {
+	const request = (path: string, routeId: string | null) =>
+		({ url: new URL(path, 'http://localhost'), route: { id: routeId } }) as Parameters<
+			typeof isAdminRequest
+		>[0];
+
+	it('is admin when the matched route is admin, whatever the URL (reroute / base path)', () => {
+		expect(isAdminRequest(request('/somewhere-else', '/admin'))).toBe(true);
+		expect(isAdminRequest(request('/x', '/admin/events/[id]'))).toBe(true);
+		expect(isAdminRequest(request('/x', '/(staff)/admin/review'))).toBe(true);
+	});
+
+	it('is admin when the path is admin even with no matched route', () => {
+		expect(isAdminRequest(request('/admin/missing', null))).toBe(true);
+	});
+
+	it('is not admin for public routes', () => {
+		expect(isAdminRequest(request('/events/admin', '/events/[id]'))).toBe(false);
+		expect(isAdminRequest(request('/administrator', null))).toBe(false);
+		expect(isAdminRequest(request('/', '/'))).toBe(false);
+	});
+});
+
+describe('verifier reuse', () => {
+	it('builds the JWT verifier once, so the JWKS is fetched once', async () => {
+		let fetches = 0;
+		const counting = createServer((_request, response) => {
+			fetches++;
+			response.writeHead(200, { 'content-type': 'application/json' });
+			response.end(cachedJwks);
+		});
+		await new Promise<void>((resolve) => counting.listen(0, '127.0.0.1', resolve));
+		const url = `http://127.0.0.1:${(counting.address() as AddressInfo).port}/certs`;
+		try {
+			const guard = guardFor(testEnv({ CF_ACCESS_TEST_JWKS_URL: url }));
+			for (let i = 0; i < 3; i++) {
+				const event = adminEvent({ token: await signToken() });
+				expect((await run(guard, event)).response.status).toBe(200);
+			}
+			expect(fetches).toBe(1);
+		} finally {
+			await new Promise<void>((resolve) => counting.close(() => resolve()));
+		}
 	});
 });
 

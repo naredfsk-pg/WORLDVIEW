@@ -106,7 +106,10 @@ export function createAccessVerifier(settings: AccessSettings): AccessVerifier {
 				: { ok: false, status: 403, reason: 'invalid_token' };
 		}
 
-		const email = typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : '';
+		// Plain ASCII only, checked BEFORE lower-casing: Unicode case mapping would turn a Kelvin
+		// sign (U+212A) into "k" and let a look-alike address match the allowlist.
+		const claim = payload.email;
+		const email = typeof claim === 'string' && isAsciiEmail(claim) ? claim.toLowerCase() : '';
 		if (!email || !settings.allowedEmails.includes(email)) {
 			return { ok: false, status: 403, reason: 'email_not_allowed' };
 		}
@@ -125,12 +128,20 @@ function isJwksUnavailable(error: unknown): boolean {
 	return error.code === errors.JOSEError.code;
 }
 
+/** Printable ASCII with no whitespace (`!` to `~`) around one `@`: the shape of an allowed address. */
+export function isAsciiEmail(value: string): boolean {
+	return /^[!-?A-~]+@[!-?A-~]+$/.test(value);
+}
+
+/** `localhost`, `127.0.0.1` or `[::1]` exactly (URL hostnames are already lower-cased). */
+export function isLoopbackHost(hostname: string): boolean {
+	return LOOPBACK_HOSTS.has(hostname);
+}
+
 function isLoopbackUrl(value: string): boolean {
 	try {
 		const url = new URL(value);
-		return (
-			(url.protocol === 'http:' || url.protocol === 'https:') && LOOPBACK_HOSTS.has(url.hostname)
-		);
+		return (url.protocol === 'http:' || url.protocol === 'https:') && isLoopbackHost(url.hostname);
 	} catch {
 		return false;
 	}

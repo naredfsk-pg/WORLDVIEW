@@ -147,7 +147,11 @@ const envSchema = z.object({
 	// Test-only JWKS URL for e2e against a production build. `server/auth` ignores it unless
 	// NODE_ENV=test and both ORIGIN and this URL are loopback (ARCHITECTURE §4).
 	CF_ACCESS_TEST_JWKS_URL: z.url().optional(),
-	ADMIN_ALLOWED_EMAILS: commaList.pipe(z.array(z.email()))
+	// Plain ASCII only (same rule as the JWT email check in server/auth), so Unicode case
+	// mapping can never make two different addresses compare equal.
+	ADMIN_ALLOWED_EMAILS: commaList.pipe(
+		z.array(z.email().regex(/^[!-?A-~]+@[!-?A-~]+$/, 'must be a plain ASCII email address'))
+	)
 });
 
 function toAppConfig(env: z.infer<typeof envSchema>) {

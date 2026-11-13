@@ -12,7 +12,9 @@ import {
 	ACCESS_JWT_HEADER,
 	createAccessVerifier,
 	resolveAccessSettings,
+	isLoopbackHost,
 	type AccessDecision,
+	type AccessSettings,
 	type AccessVerifier
 } from './cloudflare-access';
 import type { RateLimiter } from './rate-limit';
@@ -22,13 +24,27 @@ export interface AdminGuardOptions {
 	/**
 	 * The `vite dev` identity, or null. `hooks.server.ts` passes
 	 * `import.meta.env.DEV ? { email: 'dev@localhost' } : null`, which a production build compiles
-	 * to `null`. It is used only when `CF_ACCESS_AUD` is unset and NODE_ENV is development.
+	 * to `null`. Even then it is used only when `CF_ACCESS_AUD` is unset, the raw NODE_ENV is
+	 * exactly `development` and the request host is loopback.
 	 */
 	devBypassIdentity: AdminIdentity | null;
+	/** The raw `process.env.NODE_ENV`, with no default (an unset value never enables the bypass). */
+	readNodeEnv: () => string | undefined;
 	limiter: RateLimiter;
 }
 
 type AdminAccess = AccessDecision & { devBypass?: boolean };
+
+/**
+ * Admin when the path OR the matched route is admin. The route id keeps the guard on even if a
+ * future `reroute` hook or base path maps another URL onto an admin route.
+ */
+export function isAdminRequest(event: Pick<RequestEvent, 'url' | 'route'>): boolean {
+	if (isAdminPath(event.url.pathname)) return true;
+	// Route groups such as `/(staff)/admin` do not appear in the URL.
+	const routeId = event.route.id?.replace(/\/\([^)]*\)/g, '') ?? null;
+	return routeId === '/admin' || routeId?.startsWith('/admin/') === true;
+}
 
 /** Same decoding SvelteKit applies before route matching, so `/%61dmin` is still admin. */
 export function isAdminPath(pathname: string): boolean {
@@ -43,7 +59,9 @@ export function isAdminPath(pathname: string): boolean {
 }
 
 export function createAdminGuard(options: AdminGuardOptions): Handle {
-	let cachedVerifier: { key: string; verify: AccessVerifier } | null = null;
+	// Config is cached for the whole process, so the settings and the verifier (with its JWKS
+	// cache) are built once, on the first admin request.
+	let access: { settings: AccessSettings; verify: AccessVerifier } | null | undefined;
 
 	return async ({ event, resolve }) => {
 		if (event.request.method === 'POST') {
@@ -53,39 +71,38 @@ export function createAdminGuard(options: AdminGuardOptions): Handle {
 			}
 		}
 
-		const access = await authenticate(event.request.headers.get(ACCESS_JWT_HEADER));
-		if (!access.ok) {
+		const decision = await authenticate(event);
+		if (!decision.ok) {
 			// Reason and path only: never the token or the claimed email.
 			console.warn('[admin-auth] denied', {
-				status: access.status,
-				reason: access.reason,
+				status: decision.status,
+				reason: decision.reason,
 				path: event.url.pathname
 			});
-			return denyPage(access.status);
+			return denyPage(decision.status);
 		}
 
-		event.locals.admin = access.admin;
-		event.locals.adminDevBypass = access.devBypass === true;
+		event.locals.admin = decision.admin;
+		event.locals.adminDevBypass = decision.devBypass === true;
 		return resolve(event);
 	};
 
-	async function authenticate(token: string | null): Promise<AdminAccess> {
+	async function authenticate(event: RequestEvent): Promise<AdminAccess> {
 		const config = options.getConfig();
-		const settings = resolveAccessSettings(config);
-		if (!settings) {
-			const bypass = options.devBypassIdentity;
-			const bypassAllowed =
-				bypass !== null && config.nodeEnv === 'development' && !config.cloudflare.accessAud;
-			if (bypassAllowed) return { ok: true, admin: bypass, devBypass: true };
-			return { ok: false, status: 403, reason: 'missing_config' };
+		if (access === undefined) {
+			const settings = resolveAccessSettings(config);
+			access = settings ? { settings, verify: createAccessVerifier(settings) } : null;
 		}
+		if (access) return access.verify(event.request.headers.get(ACCESS_JWT_HEADER));
 
-		// One verifier (and so one JWKS cache) per settings; config is fixed per process.
-		const key = JSON.stringify(settings);
-		if (cachedVerifier?.key !== key) {
-			cachedVerifier = { key, verify: createAccessVerifier(settings) };
-		}
-		return cachedVerifier.verify(token);
+		const bypass = options.devBypassIdentity;
+		const bypassAllowed =
+			bypass !== null &&
+			options.readNodeEnv() === 'development' &&
+			!config.cloudflare.accessAud &&
+			isLoopbackHost(event.url.hostname);
+		if (bypassAllowed) return { ok: true, admin: bypass, devBypass: true };
+		return { ok: false, status: 403, reason: 'missing_config' };
 	}
 }
 
