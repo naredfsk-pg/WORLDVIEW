@@ -19,8 +19,9 @@
  * is unchanged.
  *
  * Credibility (auto-publish wave): an event labelled `possible_misinformation` never takes ranks
- * 1–3. It is placed after every other item, and left out of the brief when even that would put it
- * in the top three (a brief with fewer than three other items).
+ * 1–3 (`keepMisinformationOutOfTopRanks`): it is placed after every other item, and left out of
+ * the brief when even that would put it in the top three. The public read path applies the same
+ * rule, for an event labelled after its brief was built.
  *
  * Region quota: no region (other than `global`) may take more than 40% of the items while other
  * candidates are left, so US/Europe news cannot crowd out every other region. Leftover slots are
@@ -28,12 +29,14 @@
  */
 import { REGION_LABEL_TH, type IsoUtc, type RegionSlug } from '#lib/types/domain.js';
 import type { BriefCandidate } from '#lib/types/repositories.js';
+import { keepMisinformationOutOfTopRanks, TOP_RANKS } from '#lib/utils/brief-order.js';
 
 export const REGION_MAX_SHARE = 0.4;
-/** Ranks reserved for corroborated events (≥ 2 registry sources), when the brief has any. */
-export const CORROBORATED_TOP_SLOTS = 3;
-/** Ranks a `possible_misinformation` event never takes. */
-export const TOP_SLOTS = 3;
+/**
+ * Ranks reserved for corroborated events (≥ 2 registry sources), when the brief has any: the same
+ * top ranks that `possible_misinformation` never takes (`TOP_RANKS`, utils/brief-order.ts).
+ */
+export const CORROBORATED_TOP_SLOTS = TOP_RANKS;
 const RECENCY_HORIZON_MS = 24 * 60 * 60 * 1000;
 /** Regions whose news usually dominates international feeds (PRD §4.4). */
 const DOMINANT_REGIONS: ReadonlySet<RegionSlug> = new Set(['americas', 'europe']);
@@ -91,12 +94,10 @@ export function rankBriefCandidates(
 	const top = eligible
 		.filter((entry) => entry.candidate.source_count >= 2)
 		.slice(0, CORROBORATED_TOP_SLOTS);
-	const ordered = [
-		...top,
-		...eligible.filter((entry) => !top.includes(entry)),
-		// Flagged events only below the top slots: with fewer eligible items they are left out.
-		...(eligible.length >= TOP_SLOTS ? byScore.filter(isFlagged) : [])
-	];
+	const ordered = keepMisinformationOutOfTopRanks(
+		[...top, ...eligible.filter((entry) => !top.includes(entry)), ...byScore.filter(isFlagged)],
+		(entry) => entry.candidate.credibility_level
+	);
 	return ordered.map((entry, index) => ({
 		event_id: entry.candidate.id,
 		rank: index + 1,

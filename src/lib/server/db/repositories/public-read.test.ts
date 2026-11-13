@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readLessonFiles, toAcademyLessonRows } from '../../../content/academy.server';
 import type { SearchQuery } from '../../../types/views';
 import type { Db } from '../client';
-import { articles } from '../schema';
+import { articles, events } from '../schema';
 import { seedDatabase } from '../seed';
 import { openTestDb } from '../test-db';
 import { createRepositories } from './index';
@@ -51,6 +51,31 @@ describe('briefs', () => {
 		expect(brief?.events[0]).toMatchObject({ id: 'demo-evt-01', is_demo: true });
 		expect(brief?.events.every((event) => event.selection_reason.length > 0)).toBe(true);
 		expect(brief?.events.some((event) => event.id === PENDING_EVENT)).toBe(false);
+	});
+
+	it('keeps an event labelled possible_misinformation after the brief was built out of ranks 1–3', async () => {
+		const label = (id: string, level: 'none' | 'possible_misinformation') =>
+			db.update(events).set({ credibility_level: level }).where(eq(events.id, id)).run();
+		label('demo-evt-01', 'possible_misinformation');
+		label('demo-evt-07', 'possible_misinformation');
+		try {
+			// Stored rank 1 → last; the shown ranks are renumbered (so not the home "featured" slot).
+			const morning = await read.getPublishedBrief('2026-11-13', 'morning');
+			expect(morning?.events.map((event) => [event.id, event.rank])).toEqual([
+				['demo-evt-02', 1],
+				['demo-evt-04', 2],
+				['demo-evt-03', 3],
+				['demo-evt-06', 4],
+				['demo-evt-05', 5],
+				['demo-evt-01', 6]
+			]);
+			// Only two other items: the flagged one is left out instead of moving up.
+			const evening = await read.getPublishedBrief('2026-11-12', 'evening');
+			expect(evening?.events.map((event) => event.id)).toEqual(['demo-evt-09', 'demo-evt-08']);
+		} finally {
+			label('demo-evt-01', 'none');
+			label('demo-evt-07', 'none');
+		}
 	});
 
 	it('navigates dates', async () => {

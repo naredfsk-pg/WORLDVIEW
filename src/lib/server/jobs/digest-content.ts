@@ -232,7 +232,8 @@ export async function generateEventContent(
 		occurred_at: extraction.occurred_at,
 		...assessCredibility({
 			assessed: { level: summary.credibility_level, reason_th: summary.credibility_reason_th },
-			sensitive: signals.sensitive,
+			// As G6: either the stored or the fresh signal marking it sensitive is enough.
+			sensitive: (event.signals?.sensitive ?? false) || extraction.sensitive,
 			distinct_sources: countDistinctSources(articles)
 		}),
 		summarized_at: deps.checkedAt,

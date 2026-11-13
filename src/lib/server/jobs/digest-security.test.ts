@@ -9,7 +9,7 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Db } from '#lib/server/db/client.js';
 import { createRepositories } from '#lib/server/db/repositories/index.js';
-import { eventRelations, events } from '#lib/server/db/schema.js';
+import { articles, eventRelations, events } from '#lib/server/db/schema.js';
 import { openTestDb } from '#lib/server/db/test-db.js';
 import type { AutoPublishPolicy } from '#lib/types/editorial.js';
 import type { LlmTask, MockLlmHandlers } from '#lib/types/llm.js';
@@ -338,6 +338,50 @@ describe('credibility label (auto-publish wave)', () => {
 		expect(eventById(single.id)).toMatchObject({
 			credibility_level: 'none',
 			credibility_reason_th: null
+		});
+
+		// "อัตโนมัติ": the release hands the label back; the next re-summary sets it again.
+		await repositories.admin.updateEventIfCurrent(
+			single.id,
+			eventById(single.id).updated_at,
+			{},
+			{ ...EDITOR, public_note_th: null },
+			clock.toISOString(),
+			{ releaseCredibility: true }
+		);
+		clock = new Date(clock.getTime() + 60 * 60 * 1000);
+		const later = await addArticle('fixture-wire-c', `Second follow-up ${single.id}`);
+		await repositories.digest.linkArticles(single.id, [later], 1, clock.toISOString());
+		await digest('all', labelled('disputed', reason));
+		expect(eventById(single.id)).toMatchObject({
+			credibility_level: 'disputed',
+			credibility_reason_th: reason
+		});
+	});
+
+	it('the floor also counts the stored sensitive signal (as G6 does)', async () => {
+		await ingestFixtures();
+		await digest('all', labelled('none', null));
+		const single = allEvents().find((row) => row.source_count === 1)!;
+		expect(single.signals?.sensitive).toBe(true);
+
+		clock = new Date(NOW.getTime() + 60 * 60 * 1000);
+		const detail = await repositories.read.getPublishedEventDetail(single.id);
+		const { source_id } = db
+			.select({ source_id: articles.source_id })
+			.from(articles)
+			.where(eq(articles.id, detail!.sources[0]!.article_id))
+			.get()!;
+		const joined = await addArticle(source_id, 'Same outlet follow-up');
+		await repositories.digest.linkArticles(single.id, [joined], 1, clock.toISOString());
+		// The fresh extraction no longer says sensitive; the stored signal still does.
+		const defaults = createDefaultMockHandlers();
+		await digest('all', defaults);
+
+		expect(eventById(single.id)).toMatchObject({
+			source_count: 1,
+			credibility_level: 'unverified',
+			credibility_reason_th: SINGLE_SOURCE_FLOOR_REASON_TH
 		});
 	});
 });
