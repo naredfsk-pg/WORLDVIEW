@@ -268,3 +268,49 @@ test('every page sets a title, description and og:url', async ({ page }) => {
 		);
 	}
 });
+
+test.describe('review fixes', () => {
+	test('search: huge or out-of-range page numbers never 500 and land on the last page', async ({
+		page,
+		request
+	}) => {
+		for (const value of ['1000000000000000000', '9'.repeat(400), '999']) {
+			const response = await request.get(`/search?q=AI&page=${value}`);
+			expect(response.status(), `page=${value.slice(0, 20)}`).toBe(200);
+		}
+		await page.goto('/search?q=AI&page=999');
+		const landed = Number(new URL(page.url()).searchParams.get('page'));
+		expect(landed).toBeGreaterThanOrEqual(1);
+		expect(landed).toBeLessThan(999);
+		await expect(
+			page.locator('[data-testid="story-card"], [data-testid="lesson-card"]').first()
+		).toBeVisible();
+	});
+
+	test('lesson URLs have one canonical form (no leading zeros)', async ({ request }) => {
+		expect((await request.get('/academy/week/1/day/1')).status()).toBe(200);
+		expect((await request.get('/academy/week/1/day/01')).status()).toBe(404);
+		expect((await request.get('/academy/week/01/day/1')).status()).toBe(404);
+	});
+
+	test('archive calendar and date form keep the region and category filters', async ({ page }) => {
+		await page.goto('/archive?date=2026-11-13&category=economy&region=global');
+		const dayLink = page.getByTestId('archive-calendar').locator('a[data-date="2026-11-12"]');
+		await expect(dayLink).toHaveAttribute('href', /region=global/);
+		await expect(dayLink).toHaveAttribute('href', /category=economy/);
+		await dayLink.click();
+		await expect(page).toHaveURL(/date=2026-11-12/);
+		await expect(page).toHaveURL(/region=global/);
+		await page.getByLabel('เลือกวันที่').fill('2026-11-11');
+		await page.getByRole('button', { name: 'ดูข่าว' }).click();
+		await expect(page).toHaveURL(/date=2026-11-11/);
+		await expect(page).toHaveURL(/region=global/);
+		await expect(page).toHaveURL(/category=economy/);
+	});
+
+	test('the last-update time is always shown in the shell', async ({ page }) => {
+		await page.goto('/academy');
+		await expect(page.getByTestId('freshness')).toContainText('อัปเดตล่าสุด');
+		await expect(page.getByTestId('demo-notice')).toContainText('มีข้อมูลตัวอย่าง');
+	});
+});
