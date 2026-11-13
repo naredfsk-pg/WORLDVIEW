@@ -4,11 +4,13 @@ import type { Db } from '../client';
 import { articles, contentRevisions, eventRelations, events } from '../schema';
 import { seedDatabase } from '../seed';
 import { openTestDb } from '../test-db';
+import { filterAllegationTags } from '../../editorial/tag-filter';
 import { createRepositories } from './index';
 
 let db: Db;
 let repos: ReturnType<typeof createRepositories>;
 const meta = { changed_by: 'admin@example.com', change_reason: 'review', public_note_th: null };
+const keepTags = (tags: string[]) => [...tags];
 
 beforeEach(() => {
 	db = openTestDb();
@@ -106,7 +108,8 @@ describe('AdminRepository state-checked transitions (Wave 2 admin)', () => {
 				return [];
 			},
 			meta,
-			now
+			now,
+			keepTags
 		);
 
 		expect(result).toEqual({ ok: true });
@@ -121,8 +124,53 @@ describe('AdminRepository state-checked transitions (Wave 2 admin)', () => {
 		});
 	});
 
+	it('publishEvent drops allegation tags of pipeline tags, with a system revision', async () => {
+		db.update(events)
+			.set({ tags: ['nvidia', 'extramarital-affair', 'alleged-spy', 'semiconductors'] })
+			.where(eq(events.id, 'demo-evt-13'))
+			.run();
+
+		const result = await repos.admin.publishEvent(
+			'demo-evt-13',
+			() => [],
+			meta,
+			now,
+			filterAllegationTags
+		);
+
+		expect(result).toEqual({ ok: true });
+		expect(db.select().from(events).where(eq(events.id, 'demo-evt-13')).get()).toMatchObject({
+			status: 'published',
+			tags: ['nvidia', 'semiconductors']
+		});
+		const tagRevision = revisionsFor('demo-evt-13').find((row) => row.changed_by === 'system');
+		expect(tagRevision?.before_after.after).toEqual({ tags: ['nvidia', 'semiconductors'] });
+	});
+
+	it('publishEvent keeps tags an admin edited, even allegation tags', async () => {
+		await repos.admin.updateEvent(
+			'demo-evt-13',
+			{ tags: ['nvidia', 'alleged-spy'] },
+			{ ...meta, change_reason: 'editor choice' },
+			now
+		);
+
+		await repos.admin.publishEvent('demo-evt-13', () => [], meta, now, filterAllegationTags);
+
+		expect(db.select().from(events).where(eq(events.id, 'demo-evt-13')).get()?.tags).toEqual([
+			'nvidia',
+			'alleged-spy'
+		]);
+	});
+
 	it('publishEvent writes nothing when the gate returns reasons', async () => {
-		const result = await repos.admin.publishEvent('demo-evt-13', () => ['no_source'], meta, now);
+		const result = await repos.admin.publishEvent(
+			'demo-evt-13',
+			() => ['no_source'],
+			meta,
+			now,
+			keepTags
+		);
 
 		expect(result).toEqual({ ok: false, error: 'gate_failed', reasons: ['no_source'] });
 		expect(db.select().from(events).where(eq(events.id, 'demo-evt-13')).get()?.status).toBe(
@@ -132,7 +180,7 @@ describe('AdminRepository state-checked transitions (Wave 2 admin)', () => {
 	});
 
 	it('rejects transitions from the wrong state and unknown ids', async () => {
-		expect(await repos.admin.publishEvent('demo-evt-01', () => [], meta, now)).toEqual({
+		expect(await repos.admin.publishEvent('demo-evt-01', () => [], meta, now, keepTags)).toEqual({
 			ok: false,
 			error: 'invalid_state'
 		});
@@ -157,7 +205,9 @@ describe('AdminRepository state-checked transitions (Wave 2 admin)', () => {
 		expect((await repos.admin.listHiddenEvents(10)).map((row) => row.id)).toEqual(['demo-evt-01']);
 
 		const gate = vi.fn(() => []);
-		expect(await repos.admin.publishEvent('demo-evt-01', gate, meta, now)).toEqual({ ok: true });
+		expect(await repos.admin.publishEvent('demo-evt-01', gate, meta, now, keepTags)).toEqual({
+			ok: true
+		});
 		expect(gate).toHaveBeenCalledOnce();
 		expect(await repos.read.getPublishedEventDetail('demo-evt-01')).not.toBeNull();
 		expect(revisionsFor('demo-evt-01')).toHaveLength(2);

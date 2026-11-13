@@ -7,7 +7,7 @@
 import { error, fail, type RequestEvent } from '@sveltejs/kit';
 import { z } from 'zod';
 import { getRepositories } from '#lib/server/db/repositories/index.js';
-import { evaluateEventForPublish } from '#lib/server/editorial/index.js';
+import { evaluateEventForPublish, filterAllegationTags } from '#lib/server/editorial/index.js';
 import type { ReviewReason } from '#lib/types/domain.js';
 import type {
 	AdminRepository,
@@ -128,7 +128,8 @@ export const eventStatusActions = {
 	publish: (event: RequestEvent) =>
 		runEventTransition(
 			event,
-			(admin, id, meta, now) => admin.publishEvent(id, adminPublishGate, meta, now),
+			(admin, id, meta, now) =>
+				admin.publishEvent(id, adminPublishGate, meta, now, filterAllegationTags),
 			'เผยแพร่แล้ว'
 		),
 	hide: (event: RequestEvent) =>

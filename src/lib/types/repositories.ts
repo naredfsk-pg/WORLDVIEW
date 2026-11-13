@@ -25,6 +25,7 @@ import type {
 	RelationStatus,
 	ReviewReason,
 	Source,
+	Tag,
 	YearMonth
 } from './domain';
 import type {
@@ -337,7 +338,10 @@ export interface AdminRepository {
 		id: string,
 		gate: (current: Pick<EventWithArticles, 'event' | 'articles'>) => ReviewReason[],
 		meta: RevisionMeta,
-		now: IsoUtc
+		now: IsoUtc,
+		// CONTRACT-CHANGE (Wave 3): the public tag filter (allegation tags, owner policy) applied to
+		// pipeline tags on publish; tags an admin edited are kept as they are.
+		publicTags: (tags: Tag[]) => Tag[]
 	): Promise<AdminTransitionResult>;
 	/** draft | pending_review | published → hidden. */
 	hideEvent(id: string, meta: RevisionMeta, now: IsoUtc): Promise<AdminTransitionResult>;
