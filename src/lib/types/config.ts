@@ -40,6 +40,9 @@ export const ENV_VAR_NAMES = [
 	'DAILY_EVENT_TARGET_MIN',
 	'DAILY_EVENT_TARGET_MAX',
 	'PUBLIC_SITE_URL',
+	// Backups (scripts/backup.ts)
+	'BACKUP_DIR',
+	'BACKUP_KEEP',
 	// Admin auth (Cloudflare Access)
 	'CF_ACCESS_TEAM_DOMAIN',
 	'CF_ACCESS_AUD',

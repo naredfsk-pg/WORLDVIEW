@@ -26,14 +26,24 @@ export function getConfig(): AppConfig {
 }
 
 export function parseConfig(env: Record<string, string | undefined>): AppConfig {
-	const result = envSchema.safeParse(withoutEmptyValues(env));
+	const present = withoutEmptyValues(env);
+	const result = envSchema.safeParse(present);
 	if (!result.success) {
 		const problems = result.error.issues.map(
 			(issue) => `${issue.path.join('.')}: ${issue.message}`
 		);
 		throw new ConfigError(`Invalid environment configuration:\n- ${problems.join('\n- ')}`);
 	}
-	return toAppConfig(result.data);
+	return toAppConfig(result.data, present.NODE_ENV);
+}
+
+/**
+ * Dev-only tools (`db:seed`, `db:reset`, `job ingest --fixtures`) need NODE_ENV set explicitly to
+ * `development` or `test`. An allowlist on the raw value, not the parsed default: an unset
+ * NODE_ENV (a container that forgot it) refuses, like `production` does.
+ */
+function isDevToolsEnv(rawNodeEnv: string | undefined): boolean {
+	return rawNodeEnv === 'development' || rawNodeEnv === 'test';
 }
 
 export function requireLlmCredentials(config: AppConfig): { baseUrl: string; apiKey: string } {
@@ -130,6 +140,10 @@ const envSchema = z.object({
 	DAILY_EVENT_TARGET_MIN: positiveInt(10),
 	DAILY_EVENT_TARGET_MAX: positiveInt(15),
 
+	// `db:backup` (scripts/backup.ts): target folder and how many backups to keep.
+	BACKUP_DIR: z.string().default('./data/backups'),
+	BACKUP_KEEP: positiveInt(14),
+
 	COMPOSE_PROJECT_NAME: z.string().default('worldview'),
 	PUBLIC_HOSTNAME: z.string().default('localhost'),
 	PUBLIC_SITE_URL: z.url().default('http://localhost:5173'),
@@ -154,7 +168,7 @@ const envSchema = z.object({
 	)
 });
 
-function toAppConfig(env: z.infer<typeof envSchema>) {
+function toAppConfig(env: z.infer<typeof envSchema>, rawNodeEnv: string | undefined) {
 	if (env.DAILY_EVENT_TARGET_MIN > env.DAILY_EVENT_TARGET_MAX) {
 		throw new ConfigError('DAILY_EVENT_TARGET_MIN must not be greater than DAILY_EVENT_TARGET_MAX');
 	}
@@ -162,6 +176,8 @@ function toAppConfig(env: z.infer<typeof envSchema>) {
 	const defaultModel = env.LLM_MODEL_ID;
 	return {
 		nodeEnv: env.NODE_ENV,
+		/** NODE_ENV is explicitly `development` or `test` (dev-only tools may run). */
+		devToolsAllowed: isDevToolsEnv(rawNodeEnv),
 		app: {
 			timezone: env.APP_TIMEZONE,
 			databaseUrl: env.DATABASE_URL,
@@ -170,6 +186,10 @@ function toAppConfig(env: z.infer<typeof envSchema>) {
 			composeProjectName: env.COMPOSE_PROJECT_NAME,
 			publicHostname: env.PUBLIC_HOSTNAME,
 			publicSiteUrl: env.PUBLIC_SITE_URL
+		},
+		backup: {
+			dir: env.BACKUP_DIR,
+			keep: env.BACKUP_KEEP
 		},
 		server: {
 			origin: env.ORIGIN,

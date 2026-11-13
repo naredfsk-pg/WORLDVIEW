@@ -38,7 +38,8 @@ export default defineConfig({
 				test: {
 					name: 'server',
 					environment: 'node',
-					include: ['src/**/*.{test,spec}.{js,ts}'],
+					// scripts/*.test.ts run the CLI scripts end to end (academy:sync).
+					include: ['src/**/*.{test,spec}.{js,ts}', 'scripts/**/*.test.ts'],
 					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
 				}
 			}
