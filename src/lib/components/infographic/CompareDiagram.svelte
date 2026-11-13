@@ -13,12 +13,7 @@
 	const id = $props.id();
 </script>
 
-<div
-	class={[
-		'grid gap-3',
-		columns.length === 2 ? '@lg:grid-cols-2' : '@lg:grid-cols-2 @2xl:grid-cols-3'
-	]}
->
+<div class={['grid gap-3', columns.length === 2 ? '@lg:grid-cols-2' : '@xl:grid-cols-3']}>
 	{#each columns as column, index (index)}
 		<div class="overflow-hidden rounded-[13px] border">
 			<p

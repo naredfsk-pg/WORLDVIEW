@@ -3,9 +3,12 @@
 
 	/** Key numbers as tiles: value + unit, then what it measures. The source is in the figcaption. */
 	let { items }: { items: (InfographicNode & { value: string; unit?: string })[] } = $props();
+
+	/** Three columns only when the rows come out even or nearly so (3, 5, 6 tiles; 4 stay 2×2). */
+	const threeColumns = $derived(items.length === 3 || items.length >= 5);
 </script>
 
-<ul class="grid gap-2.5 @[22rem]:grid-cols-2 @2xl:grid-cols-3">
+<ul class={['grid gap-2.5 @[22rem]:grid-cols-2', threeColumns && '@xl:grid-cols-3']}>
 	{#each items as item, index (index)}
 		<li class="rounded-[13px] border bg-surface-2 p-3.5">
 			<p class="m-0 flex flex-wrap items-baseline gap-x-1.5">

@@ -155,6 +155,7 @@ export function markdownToSearchText(markdown: string): string {
  * - Links must be `https://` (or an in-page `#anchor`); anything else stays plain text.
  *   External links get `rel="noopener noreferrer"` and open in a new tab.
  * - `##` / `###` headings get ids `section-{n}` and form the TOC.
+ * - Tables get `tabindex="0"`, so their own horizontal scroll works from the keyboard.
  * - Skimmable reading path: each `##` section shows its heading and first block; when the rest is
  *   long, it goes inside a native `<details class="lesson-more">` ("อ่านต่อ"). Nothing is removed,
  *   and in-page search (and `LessonArticle`'s anchor handler) can still reach the hidden text.
@@ -165,6 +166,9 @@ export function renderLessonMarkdown(markdown: string): { html: string; toc: Toc
 	const toc: TocItem[] = [];
 
 	tokens.forEach((token, index) => {
+		// Wide tables scroll inside themselves (lesson-prose.css), so keyboard users must be able
+		// to focus them to scroll (axe `scrollable-region-focusable`).
+		if (token.type === 'table_open') token.attrSet('tabindex', '0');
 		if (token.type === 'heading_open' && (token.tag === 'h2' || token.tag === 'h3')) {
 			const id = `section-${toc.length + 1}`;
 			token.attrSet('id', id);

@@ -26,6 +26,13 @@ describe('renderLessonMarkdown', () => {
 		expect(html.match(/<a /g)).toHaveLength(1);
 	});
 
+	it('makes tables keyboard-focusable, because they scroll horizontally', () => {
+		const { html } = renderLessonMarkdown(`| ก | ข |
+|---|---|
+| 1 | 2 |`);
+		expect(html).toContain('<table tabindex="0">');
+	});
+
 	it('does not render images', () => {
 		const { html } = renderLessonMarkdown('![tracker](https://example.org/pixel.png)');
 		expect(html).not.toContain('<img');
