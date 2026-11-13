@@ -28,6 +28,11 @@
 	);
 	const [featured, ...rest] = $derived(events);
 	const categoryCount = $derived(new Set(data.brief?.events.map((event) => event.category)).size);
+	const topTags = $derived.by(() => {
+		const tags = data.brief?.events.flatMap((event) => event.tags) ?? [];
+		const countOf = (tag: string) => tags.filter((item) => item === tag).length;
+		return [...new Set(tags)].sort((a, b) => countOf(b) - countOf(a)).slice(0, 3);
+	});
 	const nextLesson = $derived(
 		data.lessons.find((lesson) => !academyProgress.has(lesson.id)) ?? data.lessons[0]
 	);
@@ -124,6 +129,17 @@
 						<dd class="text-[13px] font-bold">{formatThaiTime(brief.published_at)}</dd>
 					</div>
 				</dl>
+				{#if topTags.length > 0}
+					<ul class="mt-[15px] flex flex-wrap gap-[5px]" aria-label="แท็กยอดนิยม">
+						{#each topTags as tag (tag)}
+							<li
+								class="rounded-full bg-surface-2 px-[9px] py-[5px] text-[10px] text-muted-foreground"
+							>
+								#{tag}
+							</li>
+						{/each}
+					</ul>
+				{/if}
 			</section>
 
 			{#if nextLesson}

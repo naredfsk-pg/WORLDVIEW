@@ -49,9 +49,8 @@
 	</span>
 	<div class="min-w-0 flex-1">
 		<span class="block text-[10px] font-bold text-primary">
-			{categoryLabel(event.category)}{#if regions}<span class="font-normal text-faint">
-					· {regions}</span
-				>{/if}
+			{categoryLabel(event.category)}
+			<span class="font-normal text-faint">{regions ? `· ${regions}` : ''}</span>
 		</span>
 		<h3 class="my-2 text-[15px] leading-[1.55] font-semibold">{event.title_th}</h3>
 		<p class="mb-2 text-xs leading-[1.8] text-muted-foreground">{event.summary_th}</p>

@@ -5,5 +5,5 @@
 	data-testid="demo-notice"
 >
 	<span class="size-1.5 shrink-0 rounded-full bg-current" aria-hidden="true"></span>
-	โหมดตัวอย่าง — ข่าวในระบบตอนนี้เป็นข้อมูลสมมติสำหรับทดสอบ ไม่ใช่ข่าวจริง
+	โหมดตัวอย่าง — ข่าวทั้งหมดเป็นข้อมูลสมมติ ไม่ใช่ข่าวจริง
 </p>
