@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fictional fixture feed (RSS 2.0, English + Thai). Not real news. -->
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Fixture Wire C</title>
+    <link>https://fixtures.worldview.invalid/wire-c</link>
+    <description>Fictional bilingual wire used by tests</description>
+    <language>en</language>
+    <item>
+      <title>Avalor and Meridia agree water-sharing deal for Kessel River</title>
+      <link>https://fixtures.worldview.invalid/wire-c/news/avalor-meridia-kessel-deal</link>
+      <guid>wire-c-3001</guid>
+      <pubDate>Thu, 12 Nov 2026 19:45:00 GMT</pubDate>
+      <category>Meridia</category>
+      <description>Officials from both fictional states signed the deal at a border ceremony.</description>
+    </item>
+    <item>
+      <title>เทศกาลโคมไฟแห่งเมืองเวลลาเปิดฉากอย่างยิ่งใหญ่</title>
+      <link>https://fixtures.worldview.invalid/wire-c/th/vella-lantern-festival</link>
+      <guid>wire-c-3002</guid>
+      <pubDate>Thu, 12 Nov 2026 12:00:00 GMT</pubDate>
+      <dc:language>th</dc:language>
+      <category>วัฒนธรรม</category>
+      <description>&lt;p&gt;นักท่องเที่ยวหลายพันคนร่วมชมขบวนโคมไฟในเมืองสมมติแห่งนี้&lt;/p&gt;</description>
+    </item>
+  </channel>
+</rss>

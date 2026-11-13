@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fictional fixture feed (Atom). Not real news. Source does not allow excerpts. -->
+<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en">
+  <title>Fixture Wire B</title>
+  <id>urn:fixture:wire-b</id>
+  <updated>2026-11-12T20:00:00Z</updated>
+  <entry>
+    <title type="html">Kessel River water-sharing accord signed by Avalor and Meridia</title>
+    <link rel="alternate" href="https://fixtures.worldview.invalid/wire-b/world/kessel-river-accord/"/>
+    <link rel="enclosure" href="https://fixtures.worldview.invalid/wire-b/img/kessel.jpg"/>
+    <id>urn:fixture:wire-b:2001</id>
+    <published>2026-11-12T17:05:00Z</published>
+    <updated>2026-11-12T17:20:00Z</updated>
+    <author><name>Desk B</name></author>
+    <category term="Water"/>
+    <summary>Excerpt that must not be stored because wire B does not allow excerpts.</summary>
+  </entry>
+  <entry>
+    <title>Northland central bank keeps rate at 3.5%</title>
+    <link href="https://fixtures.worldview.invalid/wire-a/2026/11/northland-rate?fbclid=abc123"/>
+    <id>urn:fixture:wire-b:2002</id>
+    <published>2026-11-12T11:30:00Z</published>
+  </entry>
+  <entry>
+    <title>Port Selene opens new deep-water container terminal</title>
+    <link href="https://fixtures.worldview.invalid/wire-b/business/port-selene-terminal"/>
+    <id>urn:fixture:wire-b:2003</id>
+    <published>2026-11-12T19:00:00</published>
+  </entry>
+</feed>

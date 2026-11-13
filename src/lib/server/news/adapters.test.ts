@@ -1,0 +1,110 @@
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+import type { FetchContext, SafeFetch, SourceDefinition } from '#lib/types/news.js';
+import { createFixtureAdapter, createRssAdapter, decodeFeedBytes } from './adapters';
+import { NewsFetchError } from './errors';
+
+const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
+const now = new Date('2026-11-13T00:00:00.000Z');
+
+const source = (overrides: Partial<SourceDefinition>): SourceDefinition => ({
+	id: 'src',
+	name: 'Source',
+	kind: 'fixture',
+	homepage_url: 'https://src.example',
+	feed_url: 'tests/fixtures/feeds/wire-a.xml',
+	license_notes: 'test',
+	allow_excerpt: true,
+	is_demo: true,
+	enabled: true,
+	...overrides
+});
+
+const context = (safeFetch: SafeFetch): FetchContext => ({
+	safeFetch,
+	signal: new AbortController().signal,
+	now
+});
+
+const noNetwork: SafeFetch = async () => {
+	throw new Error('network must not be used');
+};
+
+describe('fixture adapter', () => {
+	it('reads and parses a fixture feed without the network', async () => {
+		const result = await createFixtureAdapter(REPO_ROOT).fetch(source({}), context(noNetwork));
+		expect(result.items).toHaveLength(4);
+		expect(result.fetched_at).toBe('2026-11-13T00:00:00.000Z');
+	});
+
+	it.each([
+		['path traversal', '../../../../etc/passwd'],
+		['traversal out of the fixtures dir', 'tests/fixtures/feeds/../../../package.json'],
+		['an absolute path', fileURLToPath(new URL('../../../../package.json', import.meta.url))],
+		['a non-xml file', 'tests/fixtures/feeds/notes.txt']
+	])('refuses %s', async (_name, feedUrl) => {
+		const pending = createFixtureAdapter(REPO_ROOT).fetch(
+			source({ feed_url: feedUrl }),
+			context(noNetwork)
+		);
+		await expect(pending).rejects.toMatchObject({ kind: 'not_allowed', retryable: false });
+	});
+
+	it('fails a malformed fixture with a non-retryable parse error', async () => {
+		const pending = createFixtureAdapter(REPO_ROOT).fetch(
+			source({ feed_url: 'tests/fixtures/feeds/malformed.xml' }),
+			context(noNetwork)
+		);
+		await expect(pending).rejects.toBeInstanceOf(NewsFetchError);
+		await expect(pending).rejects.toMatchObject({ kind: 'parse_error', retryable: false });
+	});
+});
+
+describe('rss adapter', () => {
+	it('fetches through SafeFetch with the feed Accept header and parses the body', async () => {
+		const requested: { url: string; accept: string | undefined }[] = [];
+		const safeFetch: SafeFetch = async (url, init) => {
+			requested.push({ url, accept: init?.headers?.['accept'] });
+			return new Response(
+				'<rss><channel><item><title>One</title><link>https://x.example/1</link></item></channel></rss>',
+				{ status: 200, headers: { 'content-type': 'application/rss+xml' } }
+			);
+		};
+		const result = await createRssAdapter().fetch(
+			source({ kind: 'rss', feed_url: 'https://x.example/rss.xml' }),
+			context(safeFetch)
+		);
+		expect(requested).toEqual([
+			{ url: 'https://x.example/rss.xml', accept: expect.stringContaining('application/rss+xml') }
+		]);
+		expect(result.items.map((item) => item.title)).toEqual(['One']);
+	});
+
+	it('treats 304 Not Modified as no new items', async () => {
+		const safeFetch: SafeFetch = async () => new Response(null, { status: 304 });
+		const result = await createRssAdapter().fetch(source({ kind: 'rss' }), context(safeFetch));
+		expect(result.items).toEqual([]);
+	});
+});
+
+describe('decodeFeedBytes', () => {
+	it('honours a Thai legacy charset from the XML declaration', () => {
+		// "ข่าว" in windows-874 / TIS-620.
+		const thai = new Uint8Array([0xa2, 0xe8, 0xd2, 0xc7]);
+		const head = new TextEncoder().encode('<?xml version="1.0" encoding="windows-874"?><t>');
+		const bytes = new Uint8Array([...head, ...thai]);
+		expect(decodeFeedBytes(bytes, 'application/xml')).toContain('ข่าว');
+	});
+
+	it('prefers the Content-Type charset and defaults to UTF-8', () => {
+		const utf8 = new TextEncoder().encode('<t>ข่าว</t>');
+		expect(decodeFeedBytes(utf8, null)).toBe('<t>ข่าว</t>');
+		expect(decodeFeedBytes(utf8, 'text/xml; charset="utf-8"')).toBe('<t>ข่าว</t>');
+	});
+
+	it('rejects an unknown charset as a parse error', () => {
+		expect(() => decodeFeedBytes(new Uint8Array([0x3c]), 'text/xml; charset=x-unknown')).toThrow(
+			NewsFetchError
+		);
+	});
+});

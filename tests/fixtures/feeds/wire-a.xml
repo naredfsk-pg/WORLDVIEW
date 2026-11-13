@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fictional fixture feed (RSS 2.0). Not real news. -->
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Fixture Wire A</title>
+    <link>https://fixtures.worldview.invalid/wire-a</link>
+    <description>Fictional wire used by tests</description>
+    <language>en</language>
+    <item>
+      <title>Avalor and Meridia sign Kessel River water-sharing accord</title>
+      <link>https://Fixtures.Worldview.invalid/wire-a/2026/11/kessel-accord/?utm_source=rss&amp;utm_medium=feed#top</link>
+      <guid isPermaLink="false">wire-a-1001</guid>
+      <pubDate>Thu, 12 Nov 2026 16:30:00 GMT</pubDate>
+      <dc:creator>Desk A</dc:creator>
+      <category>Avalor</category>
+      <category>Water</category>
+      <description><![CDATA[<p>The two <b>fictional</b> states agreed to share the river&#8217;s flow during dry months.</p><script>alert('x')</script>]]></description>
+      <content:encoded><![CDATA[<p>FULL ARTICLE TEXT THAT MUST NEVER BE STORED.</p>]]></content:encoded>
+    </item>
+    <item>
+      <title>Northland central bank holds policy rate at 3.5 percent</title>
+      <link>https://fixtures.worldview.invalid/wire-a/2026/11/northland-rate</link>
+      <guid>wire-a-1002</guid>
+      <pubDate>Thu, 12 Nov 2026 18:00:00 +0700</pubDate>
+      <category>Economy</category>
+      <description>Policymakers cited &lt;em&gt;stable&lt;/em&gt; inflation &amp; steady growth.</description>
+    </item>
+    <item>
+      <title>Item without a link is dropped</title>
+      <guid>wire-a-1003</guid>
+      <pubDate>Thu, 12 Nov 2026 18:10:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Item with a script link is dropped</title>
+      <link>javascript:alert(1)</link>
+      <guid>wire-a-1004</guid>
+    </item>
+  </channel>
+</rss>
