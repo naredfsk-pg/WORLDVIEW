@@ -141,3 +141,71 @@
   - Take a `db:backup` first if you want an extra safety net.
 - **No seeded `possible_misinformation` event:** the filled badge is covered by the admin round-trip e2e and the subagent's contrast check, not by the a11y spec.
 - **Each commit was not built on its own;** all gates pass at HEAD.
+
+## Review fixes (2026-11-13 21:26–21:45, Asia/Bangkok)
+
+The orchestrator relayed an independent review ("merge after fixes"). All of it is done on the same branch.
+
+### Steps
+1. 21:26 — Read the review items. Planned one shared pure rule for the brief ranks, and a relation `origin` column so the possible-duplicate relation can be recognised reliably.
+2. 21:27 — **MUST 3 / nit (top ranks).** Added `utils/brief-order.ts` with `TOP_RANKS` and `keepMisinformationOutOfTopRanks`.
+   - `rankBriefCandidates` uses it, and `CORROBORATED_TOP_SLOTS` is now `TOP_RANKS`, so `TOP_SLOTS` is gone.
+   - `readPublishedBrief` applies it again at read time and renumbers the ranks, so the home `featured` slot is covered too.
+3. 21:28 — **SHOULD 4.** The floor in `digest-content.ts` now uses `(event.signals?.sensitive ?? false) || extraction.sensitive`.
+4. 21:29 — **MUST 2.** Migration 0005 changes:
+   - the temp table now has an `id` primary key and is filled with `INSERT … SELECT`;
+   - the restore is `UPDATE … FROM`;
+   - new index `llm_calls_job_run_id_idx`, created before the drop. It is also used by the per-run LLM cap and `usageForJobRun`. It was added to `schema.ts` and to the 0005 snapshot JSON, and `drizzle-kit generate` reports "No schema changes".
+   - New test: 20k LLM calls across 200 runs migrate in about 0.5 s including seeding, with a guard at < 2.5 s.
+5. 21:31 — **SHOULD 7.** `event_relations.origin` (`relations` | `possible_duplicate`): an added column with an inline CHECK.
+   - Migration backfill: an existing pending `same_topic` relation whose event carries `possible_duplicate` is marked `possible_duplicate`.
+   - `flagPossibleDuplicate` stores `origin = possible_duplicate`. A relations-task upsert never overwrites such an edge.
+   - `listPendingRelations` lists only `origin = relations`; `publishPendingRelation` and `dropPendingRelation` refuse any other origin.
+6. 21:33 — **MUST 1.** `applyEventDecision` now follows the same rule as `saveEventContent`: an unpublished event with an admin-edited content field becomes `pending_review [manual_flag]` and is not published.
+   - It now resolves the status it wrote, or null when skipped.
+   - A dry-run option makes the job's `--dry-run` report the same hold.
+   - The job logs the final decision.
+   - The test that expected the wrong behaviour was rewritten.
+7. 21:35 — **SHOULD 6.** `publishPendingRelation` re-reads the row and re-checks `isRejectedPair` inside its immediate transaction. New counter: `relations_skipped`.
+8. 21:36 — **SHOULD 5.** `reviewRelation(…, 'rejected')` also rejects the pair's unreviewed relations (published or pending, both directions), with one revision each. Admin-approved siblings are kept.
+9. 21:37 — **SHOULD 8.** Added the "อัตโนมัติ (ให้ระบบประเมิน)" option.
+   - The save action passes `releaseCredibility`. `updateEventIfCurrent` writes a revision with `after: { credibility_release: true }`, even when the patch is empty.
+   - `adminEditedContentFields` reads revisions in `changed_at` order and drops the credibility keys at a release.
+   - The label stays as stored until the next re-summary.
+   - Editor select and hint updated; e2e option list updated.
+10. 21:38 — **Nits.**
+    - Explainer wording: "มีรายงานจากสำนักข่าวน้อยกว่า 2 สำนัก".
+    - The event page's meta/OG description is prefixed with the label (e2e checks both the labelled and the unlabelled case).
+    - `schema.ts` comments now say that the CHECKs on `events.credibility_level` and `event_relations.origin` live only in 0005.
+11. 21:39 — New tests:
+    - read-time demotion;
+    - manual_flag hold, including the dry run;
+    - possible-duplicate relation never published, even after the draft was published, and not taken over by upsert;
+    - publish re-check after a rejection;
+    - sibling rejection;
+    - release, at repository, form and digest level;
+    - stored-signal floor;
+    - 20k migration.
+12. 21:40 — Gates; ARCHITECTURE (§3, §5, §8, §11) and README updated; commits.
+
+### Commands run & results
+| Time | Command | Result |
+|---|---|---|
+| 21:30 | `npx drizzle-kit generate` (after index and origin in the snapshot) | "No schema changes, nothing to migrate" (no drift) |
+| 21:30 | `npx vitest run src/lib/server/db/migration-0005.test.ts` | 2 passed (20k test 479 ms) |
+| 21:39 | `npm run check` | exit 0, 0 errors, 0 warnings |
+| 21:39 | `npm run lint` | exit 0 |
+| 21:39 | `npx vitest run` | exit 0, 67 files, 1107 passed |
+| 21:40 | `npm run build`; `npm run build:scripts`; `npm run verify:prod-build` | exit 0 / exit 0 / exit 0 |
+| 21:40 | `E2E_PORT=4873 npx playwright test` | exit 0, 342 passed (1.3 min) |
+| 21:42 | `npm run build:scripts`; `npm run verify:prod-build` (again, after the e2e rebuild) | exit 0 / exit 0 |
+| 21:42 | bundled `job.js reevaluate_pending` on a fresh copy of the seeded DB (dry-run, run, `--force`) | dry-run plans 1 publish + 1 relation drop; the run does the same; the forced repeat has all counters 0 |
+| 21:43 | control-character / CRLF scan of the changed files | clean |
+
+### Errors & problems
+| Time | Where | Error | Cause | Resolution |
+|---|---|---|---|---|
+| 21:40 | bundled job smoke test on the local `data/worldview.db` | `no such column: "origin"` | that DB had already applied the earlier 0005; drizzle's migrator skips a migration by its timestamp, not by hash | `npm run db:reset` and a fresh copy. **Any DB migrated with the first 0005 (the orchestrator's production copy) must be re-copied from production** before testing again. Production itself never ran 0005 |
+| 21:41 | smoke test right after the e2e start | `Cannot find module build/scripts/job.js` | the e2e harness rebuilds `build/`, which empties `build/scripts` | ran `build:scripts` again after the e2e run |
+| 21:35 | admin repo release test | revision `[0]` was the override, not the release | `revisionsFor` has no order | `.at(-1)` |
+| 21:34 | Edit tool on `public-read.test.ts` | "File has not been read yet" | the tool needs a Read first | Read, then Edit |
