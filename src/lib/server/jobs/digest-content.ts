@@ -33,12 +33,16 @@ import type {
 	EventContentWrite,
 	EventWithArticles
 } from '#lib/types/repositories.js';
-import { evaluateEventForPublish, mapRefsToArticleIds } from '../editorial/index.js';
+import {
+	evaluateEventForPublish,
+	filterAllegationTags,
+	mapRefsToArticleIds
+} from '../editorial/index.js';
 import { toArticleRef, type RunTask } from './digest-llm.js';
 
 /** ARCHITECTURE §10: at most 12 articles per extraction / summary call (the newest are kept). */
 export const MAX_LLM_ARTICLES = 12;
-/** ARCHITECTURE §9: event tags are the union of the article tags, capped. */
+/** ARCHITECTURE §9: event tags are the union of the article tags (allegation tags dropped), capped. */
 export const MAX_EVENT_TAGS = 10;
 
 export interface ContentDeps {
@@ -172,7 +176,9 @@ export async function generateEventContent(
 
 /**
  * Event taxonomy from the articles' tagging (ARCHITECTURE §9): `category` is the majority (a tie
- * goes to the earliest article; `articles` are oldest first), the rest is the union.
+ * goes to the earliest article; `articles` are oldest first), the rest is the union. Tags that
+ * label an allegation about a person are never public (owner policy), so they are dropped before
+ * the cap and cannot take a topic tag's slot.
  */
 export function deriveEventTaxonomy(articles: readonly ArticleWithSource[]): EventTaxonomy {
 	const counts = new Map<CategorySlug, number>();
@@ -196,7 +202,7 @@ export function deriveEventTaxonomy(articles: readonly ArticleWithSource[]): Eve
 		category,
 		regions: [...regions],
 		countries: [...countries],
-		tags: [...tags].slice(0, MAX_EVENT_TAGS)
+		tags: filterAllegationTags([...tags]).slice(0, MAX_EVENT_TAGS)
 	};
 }
 

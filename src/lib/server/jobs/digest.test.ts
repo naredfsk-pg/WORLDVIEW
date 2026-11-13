@@ -879,3 +879,90 @@ describe('review #8: tagging errors are tracked per article', () => {
 		});
 	});
 });
+
+describe('owner policy: no public tags derived from allegations', () => {
+	const nvidiaTagging = handlers({
+		tagging: (input) => ({
+			items: input.articles.map((article) => ({
+				ref: article.ref,
+				category: 'technology',
+				regions: ['americas'],
+				countries: ['US'],
+				tags: /scandal/i.test(article.title)
+					? ['nvidia', 'nvidia-scandal', 'us-china', 'national-security']
+					: ['nvidia', 'extramarital-affair', 'alleged-spy', 'semiconductors', 'us-china']
+			}))
+		})
+	});
+
+	it('the Nvidia-like event publishes, without the allegation tags but with its topic tags', async () => {
+		const id = await repositories.digest.createDraftEvent(
+			[
+				await addArticle('Chip maker chief summoned to testify about affair with alleged spy'),
+				await addArticle('Chip maker scandal sparks national security furore')
+			],
+			1,
+			clock.toISOString()
+		);
+
+		await digest(nvidiaTagging);
+
+		expect(eventById(id)).toMatchObject({
+			status: 'published',
+			tags: ['nvidia', 'semiconductors', 'us-china', 'national-security']
+		});
+		const detail = await repositories.read.getPublishedEventDetail(id);
+		expect(detail?.tags).toEqual(['nvidia', 'semiconductors', 'us-china', 'national-security']);
+	});
+
+	it('a neutral event keeps every tag', async () => {
+		const id = await repositories.digest.createDraftEvent(
+			[await addArticle('Avalor central bank holds rates')],
+			1,
+			clock.toISOString()
+		);
+		const neutral = ['interest-rates', 'central-banks', 'inflation'];
+
+		await digest(
+			handlers({
+				tagging: (input) => ({
+					items: input.articles.map((article) => ({
+						ref: article.ref,
+						category: 'economy',
+						regions: ['asia'],
+						countries: [],
+						tags: neutral
+					}))
+				})
+			})
+		);
+
+		expect(eventById(id).tags).toEqual(neutral);
+	});
+
+	it('leaves tags an admin set alone', async () => {
+		const id = await repositories.digest.createDraftEvent(
+			[await addArticle('Chip maker chief summoned to testify')],
+			1,
+			clock.toISOString()
+		);
+		await digest(nvidiaTagging);
+		await repositories.admin.updateEvent(
+			id,
+			{ tags: ['nvidia', 'alleged-spy'] },
+			{ changed_by: 'editor@example.com', change_reason: 'editor choice', public_note_th: null },
+			clock.toISOString()
+		);
+		clock = new Date(NOW.getTime() + 60 * 60 * 1000);
+		await repositories.digest.linkArticles(
+			id,
+			[await addArticle('Chip maker chief testimony date set')],
+			1,
+			clock.toISOString()
+		);
+
+		await digest(nvidiaTagging);
+
+		expect(eventById(id)).toMatchObject({ status: 'published', tags: ['nvidia', 'alleged-spy'] });
+	});
+});

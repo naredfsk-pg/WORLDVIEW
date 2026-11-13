@@ -131,7 +131,7 @@ describe('LLMProvider routing and request parameters', () => {
 			{
 				task: 'tagging',
 				model: 'cx/model-b',
-				prompt_version: 'tagging@1',
+				prompt_version: PROMPT_VERSIONS.tagging,
 				status: 'ok',
 				error_kind: null,
 				// The mock reports 10 input tokens; the recorded value is never below the estimate.
