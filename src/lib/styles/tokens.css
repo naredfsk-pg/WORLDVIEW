@@ -1,0 +1,71 @@
+/*
+ * WORLDVIEW semantic tokens (UI_DESIGN_SPEC §5), light and dark.
+ * Components use these through the Tailwind theme in `src/routes/layout.css`; never literal colours.
+ *
+ * Contrast adjustments versus the prototype (WCAG 2.1 AA, 4.5:1 for small text):
+ * - light `--muted` #65756f → #5c6b65 (4.25:1 → 4.9:1 on `--hero`)
+ * - light `--faint` #89978f → #67766f (3.0:1 → 4.6:1 on `--bg`)
+ * - light `--gold`  #ad7833 → #8a5d20 (3.4:1 → 5.2:1 on `--gold-bg`)
+ */
+:root {
+	color-scheme: light;
+	--bg: #f7f8f5;
+	--surface: #ffffff;
+	--surface-2: #f1f4ef;
+	--text: #172622;
+	--muted: #5c6b65;
+	--faint: #67766f;
+	--stroke: #e3e9e3;
+	--accent: #176653;
+	--on-accent: #ffffff;
+	--accent-subtle: #e4f2eb;
+	--hero: #e9f2eb;
+	--hero-dark: #cde2d7;
+	--gold: #8a5d20;
+	--gold-bg: #fbf1de;
+	--nav: #ffffff;
+	--shadow: 0 8px 28px rgb(14 35 26 / 0.035);
+	--overlay: rgb(5 20 14 / 0.5);
+}
+
+:root[data-theme='dark'] {
+	color-scheme: dark;
+	--bg: #101917;
+	--surface: #192522;
+	--surface-2: #1d2c28;
+	--text: #ebf2ee;
+	--muted: #a6b5ae;
+	--faint: #83968c;
+	--stroke: #304039;
+	--accent: #91d9b8;
+	--on-accent: #0c1713;
+	--accent-subtle: #244239;
+	--hero: #21372e;
+	--hero-dark: #355a49;
+	--gold: #ecc080;
+	--gold-bg: #3b3326;
+	--nav: #192522;
+	--shadow: 0 12px 32px rgb(0 0 0 / 0.12);
+	--overlay: rgb(0 0 0 / 0.6);
+}
+
+/* shadcn-svelte variables, mapped onto the semantic tokens. `--accent`/`--muted` keep their
+ * prototype meaning (brand green / secondary text); shadcn's accent/muted surfaces are mapped in
+ * the Tailwind theme instead (`--color-accent`, `--color-muted`). */
+:root {
+	--background: var(--bg);
+	--foreground: var(--text);
+	--card: var(--surface);
+	--card-foreground: var(--text);
+	--popover: var(--surface);
+	--popover-foreground: var(--text);
+	--primary: var(--accent);
+	--primary-foreground: var(--on-accent);
+	--secondary: var(--surface-2);
+	--secondary-foreground: var(--text);
+	--border: var(--stroke);
+	--input: var(--stroke);
+	--ring: var(--accent);
+	--destructive: var(--gold);
+	--radius: 0.75rem;
+}

@@ -1,0 +1,96 @@
+/* Long-form Academy lesson body (sanitized HTML from `renderLessonMarkdown`). UI spec §5: ~16px, line-height ~1.9. */
+.lesson-prose {
+	font-size: 16px;
+	line-height: 1.9;
+	color: var(--text);
+	overflow-wrap: anywhere;
+}
+
+.lesson-prose > * + * {
+	margin-top: 1em;
+}
+
+.lesson-prose h2 {
+	font-size: 21px;
+	font-weight: 700;
+	margin-top: 2em;
+	scroll-margin-top: 24px;
+}
+
+.lesson-prose h3 {
+	font-size: 17px;
+	font-weight: 700;
+	margin-top: 1.6em;
+	scroll-margin-top: 24px;
+}
+
+.lesson-prose ul,
+.lesson-prose ol {
+	padding-left: 1.4em;
+}
+
+.lesson-prose ul {
+	list-style: disc;
+}
+
+.lesson-prose ol {
+	list-style: decimal;
+}
+
+.lesson-prose li + li {
+	margin-top: 0.35em;
+}
+
+.lesson-prose a {
+	color: var(--accent);
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+
+.lesson-prose blockquote {
+	border-left: 3px solid var(--accent);
+	background: var(--surface-2);
+	padding: 12px 16px;
+	border-radius: 0 12px 12px 0;
+	color: var(--muted);
+}
+
+.lesson-prose strong {
+	font-weight: 700;
+}
+
+.lesson-prose code {
+	background: var(--surface-2);
+	border-radius: 6px;
+	padding: 1px 6px;
+	font-size: 0.9em;
+}
+
+.lesson-prose hr {
+	border: 0;
+	border-top: 1px solid var(--stroke);
+}
+
+/* Tables scroll inside themselves so the page never scrolls horizontally. */
+.lesson-prose table {
+	display: block;
+	max-width: 100%;
+	overflow-x: auto;
+	border-collapse: collapse;
+	font-size: 14px;
+	line-height: 1.7;
+}
+
+.lesson-prose th,
+.lesson-prose td {
+	border: 1px solid var(--stroke);
+	padding: 8px 12px;
+	text-align: left;
+	vertical-align: top;
+	min-width: 120px;
+}
+
+.lesson-prose th {
+	background: var(--surface-2);
+	font-weight: 700;
+}
