@@ -9,9 +9,12 @@ export const REVIEW_REASON_LABEL_TH: Record<ReviewReason, string> = {
 	llm_request_rejected: 'คำขอไปยัง AI ถูกปฏิเสธ',
 	unsupported_claim: 'มีข้อความที่ไม่มีหลักฐานรองรับ',
 	url_in_generated_text: 'พบ URL ในข้อความ',
+	contact_in_generated_text: 'พบเบอร์โทร ไอดีไลน์ หรืออีเมลในข้อความ',
 	sensitive_single_source: 'ประเด็นอ่อนไหวที่มีแหล่งข่าวเดียว',
 	missing_thai_fields: 'ข้อความภาษาไทยหรือหมวดหมู่ไม่ครบ',
 	possible_duplicate: 'อาจซ้ำกับข่าวที่เผยแพร่แล้ว (ดูความเชื่อมโยงที่รอตรวจ)',
+	auto_publish_disabled: 'ปิดการเผยแพร่อัตโนมัติ (รอผู้ดูแลอนุมัติ)',
+	new_evidence_pending: 'มีข่าวใหม่เพิ่มเข้ามา ข้อความที่เผยแพร่ยังไม่ได้ปรับ',
 	manual_flag: 'ผู้ดูแลทำเครื่องหมายให้ตรวจ'
 };
 

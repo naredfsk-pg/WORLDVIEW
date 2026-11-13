@@ -1,7 +1,7 @@
 import { error, fail } from '@sveltejs/kit';
 import { z } from 'zod';
 import { getRepositories } from '#lib/server/db/repositories/index.js';
-import { containsUrl, isThaiText } from '#lib/server/editorial/index.js';
+import { containsContact, containsUrl, isThaiText } from '#lib/server/editorial/index.js';
 import { CATEGORY_SLUGS } from '#lib/types/domain.js';
 import type { AdminEventPatch } from '#lib/types/repositories.js';
 import type { AdminEventEditData } from '#lib/types/views.js';
@@ -131,8 +131,9 @@ function saveFailure(
 }
 
 const NO_URL_MESSAGE = 'ห้ามมี URL หรือชื่อโดเมนในข้อความ (ลิงก์มาจากแหล่งข่าวที่บันทึกไว้เท่านั้น)';
+const NO_CONTACT_MESSAGE = 'ห้ามมีเบอร์โทร ไอดีไลน์ หรืออีเมลในข้อความ';
 
-/** Required Thai text (gate G2) with no URL (gate G3), so a saved event still passes the gates. */
+/** Required Thai text (gate G2) with no URL or contact details (gate G3), so a saved event still passes the gates. */
 function requiredThai(label: string, max: number) {
 	return z
 		.string({ error: `กรุณากรอก${label}` })
@@ -140,16 +141,18 @@ function requiredThai(label: string, max: number) {
 		.min(1, `กรุณากรอก${label}`)
 		.max(max, `${label}ยาวเกิน ${max} ตัวอักษร`)
 		.refine(isThaiText, `${label}ต้องมีข้อความภาษาไทย`)
-		.refine((value) => !containsUrl(value), NO_URL_MESSAGE);
+		.refine((value) => !containsUrl(value), NO_URL_MESSAGE)
+		.refine((value) => !containsContact(value), NO_CONTACT_MESSAGE);
 }
 
-/** Optional text, no URL (G3); empty → null. */
+/** Optional text, no URL or contact details (G3); empty → null. */
 function optionalText(label: string, max: number) {
 	return z
 		.string()
 		.trim()
 		.max(max, `${label}ยาวเกิน ${max} ตัวอักษร`)
 		.refine((value) => !containsUrl(value), NO_URL_MESSAGE)
+		.refine((value) => !containsContact(value), NO_CONTACT_MESSAGE)
 		.optional()
 		.transform((value) => (value ? value : null));
 }

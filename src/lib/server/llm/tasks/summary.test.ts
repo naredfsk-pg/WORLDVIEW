@@ -112,3 +112,21 @@ describe('summary task prompt', () => {
 		expect(system).toContain('leave it out of the title');
 	});
 });
+
+describe('generated text normalization (security wave)', () => {
+	it('stores every text field without format characters and NFKC-folded, Thai SARA AM intact', () => {
+		const hidden = String.fromCodePoint(0x200b, 0x202e);
+		const fullwidthEvil = String.fromCodePoint(0xff45, 0xff56, 0xff49, 0xff4c);
+		const result = validateOutput(TASK_DEFINITIONS.summary, SUMMARY_INPUT, {
+			...VALID_SUMMARY,
+			title_th: `น้ำท่วม${hidden}ภาคใต้`,
+			background_th: `ดูที่ ${fullwidthEvil}.com`,
+			claims_th: [{ claimant_th: `กรม${hidden}อุตุ`, claim_th: 'ฝนตกหนัก', evidence: ['a1'] }]
+		});
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.data.title_th).toBe('น้ำท่วมภาคใต้');
+		expect(result.data.background_th).toBe('ดูที่ evil.com');
+		expect(result.data.claims_th[0]?.claimant_th).toBe('กรมอุตุ');
+	});
+});

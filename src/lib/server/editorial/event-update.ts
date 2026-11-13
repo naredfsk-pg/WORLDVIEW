@@ -7,7 +7,7 @@
 import type { EventUpdate } from '../../types/domain';
 import type { ArticleWithSource } from '../../types/news';
 import { isHttpUrl } from '../../utils/url';
-import { containsUrl, isThaiText } from './text';
+import { containsLinkOrContact, isThaiText } from './text';
 
 export type EventUpdateWrite = Omit<EventUpdate, 'id' | 'event_id' | 'created_at'>;
 
@@ -21,7 +21,7 @@ export interface EventUpdateInput {
 
 export function buildEventUpdate(input: EventUpdateInput): EventUpdateWrite | null {
 	const text = input.update_th?.trim() ?? '';
-	if (!isThaiText(text) || containsUrl(text)) return null;
+	if (!isThaiText(text) || containsLinkOrContact(text)) return null;
 
 	const byId = new Map(input.articles.map((article) => [article.id, article]));
 	const evidence: ArticleWithSource[] = [];

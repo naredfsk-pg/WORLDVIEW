@@ -8,7 +8,7 @@ import {
 	VALID_SUMMARY
 } from '../llm/test-fixtures';
 import {
-	countDistinctPublishers,
+	countDistinctSources,
 	evaluateEventForPublish,
 	mapRefsToArticleIds,
 	reviewReasonForLlmError
@@ -24,9 +24,64 @@ function gateInput(overrides: Partial<EventGateInput> = {}): EventGateInput {
 		signals: { impact_breadth: 1, thailand_relevance: 0, sensitive: false },
 		category: 'economy',
 		current_status: 'draft',
+		auto_publish: 'all',
 		...overrides
 	};
 }
+
+describe('evaluateEventForPublish (auto-publish policy)', () => {
+	const oneSource = [
+		LINKED_ARTICLES[0]!,
+		makeArticle({ id: 'art-2', canonical_url: 'https://news.example.org/a/2' })
+	];
+
+	it('off (and an omitted policy): an event that passes every gate waits for an admin', () => {
+		for (const input of [
+			gateInput({ auto_publish: 'off' }),
+			gateInput({ auto_publish: undefined })
+		]) {
+			expect(evaluateEventForPublish(input)).toEqual({
+				status: 'pending_review',
+				review_reasons: ['auto_publish_disabled']
+			});
+		}
+	});
+
+	it('multi_source: publishes only with two registry sources', () => {
+		expect(evaluateEventForPublish(gateInput({ auto_publish: 'multi_source' })).status).toBe(
+			'published'
+		);
+		expect(
+			evaluateEventForPublish(gateInput({ auto_publish: 'multi_source', articles: oneSource }))
+		).toEqual({ status: 'pending_review', review_reasons: ['auto_publish_disabled'] });
+	});
+
+	it('multi_source counts registry sources, not publisher names a feed can choose', () => {
+		const twoNamesOneSource = [
+			LINKED_ARTICLES[0]!,
+			makeArticle({ id: 'art-2', publisher_name: 'Other Outlet', source_name: 'Other Outlet' })
+		];
+		expect(countDistinctSources(twoNamesOneSource)).toBe(1);
+		expect(
+			evaluateEventForPublish(
+				gateInput({ auto_publish: 'multi_source', articles: twoNamesOneSource })
+			).review_reasons
+		).toEqual(['auto_publish_disabled']);
+	});
+
+	it('only adds auto_publish_disabled when every gate passed', () => {
+		const withUrl = { ...VALID_SUMMARY, background_th: 'อ่านต่อ www.example.com' };
+		expect(
+			evaluateEventForPublish(gateInput({ auto_publish: 'off', summary: withUrl })).review_reasons
+		).toEqual(['url_in_generated_text']);
+	});
+
+	it('admin publish ignores the policy', () => {
+		expect(
+			evaluateEventForPublish(gateInput({ mode: 'admin', auto_publish: 'off' })).review_reasons
+		).toEqual([]);
+	});
+});
 
 describe('evaluateEventForPublish (auto)', () => {
 	it('publishes when every gate passes', () => {
@@ -75,6 +130,19 @@ describe('evaluateEventForPublish (auto)', () => {
 		expect(evaluateEventForPublish(gateInput({ summary: inClaim })).review_reasons).toEqual([
 			'url_in_generated_text'
 		]);
+	});
+
+	it('G3: rejects obfuscated URLs and contact baiting (auto and admin)', () => {
+		const obfuscated = { ...VALID_SUMMARY, summary_th: 'อ่านเพิ่มที่ evil[.]com และ evil\u{3002}com' };
+		const contact = { ...VALID_SUMMARY, why_it_matters_th: 'สอบถามโทร 081-234-5678 หรือไลน์ @scam' };
+		for (const mode of ['auto', 'admin'] as const) {
+			expect(
+				evaluateEventForPublish(gateInput({ mode, summary: obfuscated })).review_reasons
+			).toEqual(['url_in_generated_text']);
+			expect(evaluateEventForPublish(gateInput({ mode, summary: contact })).review_reasons).toEqual(
+				['contact_in_generated_text']
+			);
+		}
 	});
 
 	it('G3 checks update_th only for a published event (the only place it is used)', () => {
@@ -228,8 +296,8 @@ describe('evaluateEventForPublish (auto)', () => {
 			makeArticle({ id: 'art-2', canonical_url: 'https://news.example.org/a/2' })
 		];
 
-		expect(countDistinctPublishers(singleSource)).toBe(1);
-		expect(countDistinctPublishers(LINKED_ARTICLES)).toBe(2);
+		expect(countDistinctSources(singleSource)).toBe(1);
+		expect(countDistinctSources(LINKED_ARTICLES)).toBe(2);
 		expect(evaluateEventForPublish(gateInput({ articles: singleSource })).status).toBe('published');
 	});
 

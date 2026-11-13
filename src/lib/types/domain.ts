@@ -167,7 +167,10 @@ export const REVIEW_REASONS = [
 	'unsupported_claim',
 	/** Generated text contains a URL (URLs must come from stored articles only). */
 	'url_in_generated_text',
-	/** Marked sensitive/contested and fewer than 2 distinct publishers. */
+	// CONTRACT-CHANGE (security wave): generated text contains a phone number, LINE id, handle or
+	// e-mail address (contact baiting). Part of G3, like the URL check.
+	'contact_in_generated_text',
+	/** Marked sensitive/contested and fewer than 2 distinct registry sources. */
 	'sensitive_single_source',
 	/** A required Thai field is empty or contains no Thai script, or category is null. */
 	'missing_thai_fields',
@@ -175,6 +178,13 @@ export const REVIEW_REASONS = [
 	// a published event. Never auto-published (carried forward like manual_flag); a pending
 	// same_topic relation points at the published event. An admin publishes or hides it.
 	'possible_duplicate',
+	// CONTRACT-CHANGE (security wave): the event passed every gate, but `EDITORIAL_AUTO_PUBLISH`
+	// (`off`, or `multi_source` with fewer than 2 registry sources) leaves publishing to an admin.
+	'auto_publish_disabled',
+	// CONTRACT-CHANGE (security wave): set on a PUBLISHED event (which stays published) when new
+	// articles were linked but `EDITORIAL_AUTO_PUBLISH` is not `all`, so its text was not
+	// rewritten. Listed in the admin review queue; the admin confirms or edits the text.
+	'new_evidence_pending',
 	/** Flagged by an admin. */
 	'manual_flag'
 ] as const;
