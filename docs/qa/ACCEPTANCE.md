@@ -29,7 +29,7 @@ branch `test/acceptance-suite` from `main` @ `e074515`, 2026-11-13. Bugs are lis
 | 8 | Relations need a type, an explanation and evidence; no causal link without evidence | **Covered**; 1 defence-in-depth bug (BUG-QA-005) |
 | 9 | LLM or provider down → archive and academy still work | **Covered** |
 | 10 | No API keys in the client bundle; admin writes fail without auth | **Covered** |
-| 11 | Job status, last-sync time, error log, backup/restore | **Partial**: backup/restore is a **gap** (a Wave 4 deliverable) |
+| 11 | Job status, last-sync time, error log, backup/restore | **Covered** (Wave 4 closed the backup/restore gap: `backup.test.ts`, README §7) |
 | 12 | Performance baseline | **Covered** as a measured baseline (no targets yet), see `BASELINE.md` |
 
 ## How to run
@@ -172,14 +172,14 @@ The PRD asks for 375 px and 1440 px. The suite also covers the UI_DESIGN_SPEC §
 | `tests/e2e/admin.e2e.ts` › "access control" (5 tests) | No token, wrong audience or email, cross-origin POST (CSRF), no dev bypass in the build, no `CF_ACCESS_*` in the client (pre-existing) |
 | `src/lib/server/auth/admin-guard.test.ts` | JWT verification, dev bypass guards, rate limit on admin POSTs (pre-existing) |
 
-## 11. Operations — Partial
+## 11. Operations — Covered (Wave 4, branch `feature/deploy`)
 
 | Part | Status | Test |
 |---|---|---|
 | Job status | Covered | **New** `tests/e2e/pipeline.e2e.ts` › "#11: job status, last sync and the stored error are visible": `/admin/jobs` lists the ingest, brief and archive runs with their status; `admin.e2e.ts` › "jobs page offers every job …" |
 | Last-sync timestamp | Covered | Same test: `/health` is `ok`, `stale: false`, and `last_ingest_succeeded_at` is within 10 minutes after the pipeline; `ui.e2e.ts` › "the last-update time is always shown in the shell"; `src/routes/health/health.test.ts` (4 tests); `src/lib/utils/freshness.test.ts` |
 | Error logging | Covered | Same pipeline test: the empty-day brief run is `partial`, and `/admin/jobs` shows "ข้อผิดพลาด: 0 events, below DAILY_EVENT_TARGET_MIN 1"; `ingest.test.ts` › "records a crash inside the job body as a failed run with a sanitized error"; jobs log JSON lines with `duration_ms` and `rss_bytes` (`src/lib/server/jobs/runner.ts`) |
-| Backup / restore | **Gap (Wave 4)** | No backup script, restore procedure or restore test exists yet. `README.md` does not mention one, and ARCHITECTURE §16 assigns it to Wave 4. Needed: an SQLite online backup (`.backup` or `VACUUM INTO`) on a schedule, a documented restore, and a test that restores into a fresh database and runs `npm run db:migrate` plus a `/health` check against it |
+| Backup / restore | Covered (Wave 4) | `src/lib/server/db/backup.test.ts` (9 tests): a seeded file DB (30 lessons + demo news) → `backupDatabase` (better-sqlite3 online `.backup()`, WAL writes included) → `restoreDatabase` into a fresh path → equal row counts for every table, `integrity_check` ok, FTS search works, migrations applied; plus retention, a safety copy of the replaced DB, refusal of a corrupt file. Scripts `db:backup` / `db:restore` (`--yes` required); the scheduler container backs up daily at 02:30 ICT to host `./backups`. Verified in the container (backup → restore into `/tmp` → identical counts). Runbook: README §7 |
 
 ## 12. Performance — Covered (baseline only)
 

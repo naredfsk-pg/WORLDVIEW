@@ -280,7 +280,7 @@ When formatting a `BriefDate`, interpret it as Bangkok noon so it never shifts b
 
 ## 8. Job contract
 
-**CLI** (`scripts/job.ts`, npm script `job`, runs via `tsx`):
+**CLI** (`scripts/job.ts`, npm script `job`, runs via `tsx` in dev; in the image it is bundled to `build/scripts/job.js` and run with `node`, §17):
 
 ```
 npm run job -- <ingest|digest|brief_morning|brief_evening|archive_snapshot> [--date YYYY-MM-DD] [--force] [--manual]
@@ -327,7 +327,7 @@ A forced rerun therefore never duplicates anything (PRD §11 #4).
 
 Jobs themselves never auto-retry. The next slot, or a manual rerun from `/admin`, picks up leftovers (digest re-processes drafts and failed events).
 
-**Schedule** (PRD §4.1). Host crontab lines are in UTC (ICT = UTC+7, no DST). `CRON_TZ=Asia/Bangkok` is an option if the host's cron supports it.
+**Schedule** (PRD §4.1). Production runs it in the `scheduler` container (supercronic, `docker/crontab`, §17). Crontab lines are in UTC (ICT = UTC+7, no DST). `CRON_TZ=Asia/Bangkok` is an option if the host's cron supports it.
 
 | ICT | Command | UTC cron |
 |---|---|---|
@@ -589,7 +589,7 @@ Raw `process.env` reads outside `config.ts` (the only ones): `hooks.server.ts` p
 
 | Var | Type | Default | Read by |
 |---|---|---|---|
-| `NODE_ENV` | `development\|test\|production` | development | config (`nodeEnv`); raw value → `server/auth/admin-guard.ts` dev bypass; `server/auth/cloudflare-access.ts` (test JWKS gate); Vite build mode (§4.7) |
+| `NODE_ENV` | `development\|test\|production` | development | config (`nodeEnv`; `devToolsAllowed` = raw value is exactly `development` or `test`, required by `db:seed`, `db:reset`, `job ingest --fixtures`, §17); raw value → `server/auth/admin-guard.ts` dev bypass; `server/auth/cloudflare-access.ts` (test JWKS gate); Vite build mode (§4.7) |
 | `OMNI_API_URL` / `OMNI_API_KEY` | url / secret | — (LLM `not_configured`) | config → `llm` (`createLlmProviderFromConfig`, built in `jobs/registry.ts` and `scripts/llm-smoke.ts`); alias of `LLM_BASE_URL` / `LLM_API_KEY` |
 | `LLM_BASE_URL` / `LLM_API_KEY` | url / secret | — | config → `llm` (override; not in `.env.example`) |
 | `LLM_API_COMPATIBILITY` | `openai_compatible\|custom` | openai_compatible | config → `llm/index.ts` (`custom` = unsupported → `not_configured`) |
@@ -608,6 +608,7 @@ Raw `process.env` reads outside `config.ts` (the only ones): `hooks.server.ts` p
 | `APP_TIMEZONE` | `Asia/Bangkok` only | Asia/Bangkok | config (validated literal; code never reads the host zone) |
 | `DATABASE_URL` | `file:<path>` or `:memory:` | `file:./data/worldview.db` | config → `db/client.ts` `getDb()` (routes), `jobs/registry.ts`, `scripts/migrate.ts`, `seed.ts`, `db-reset.ts` |
 | `DAILY_EVENT_TARGET_MIN` / `_MAX` | int | 10 / 15 | config → `jobs/registry.ts` → brief ranking |
+| `BACKUP_DIR` / `BACKUP_KEEP` | path / int ≥1 | `./data/backups` / 14 | config → `scripts/backup.ts` (container: `/backups`, a host bind mount, §17) |
 | `PUBLIC_SITE_URL` | url | `http://localhost:5173` | config → `routes/+layout.server.ts` (canonical / og URLs) |
 | `PUBLIC_HOSTNAME` | host | localhost | config (parsed, unused by app code); compose / cloudflared docs |
 | `COMPOSE_PROJECT_NAME` | string | worldview | config (parsed, unused by app code); docker compose |
@@ -662,22 +663,28 @@ Unit tests sit next to the code as `src/**/*.test.ts` (Vitest; DB tests use `ope
 | 8 | Relations | No or foreign evidence → `drop`; causal → `pending_review`; E2E `potential_impact` label |
 | 9 | Failure | Fake transport timeout → events `pending_review`, published events keep their text; E2E pages render with the LLM env unset |
 | 10 | Security | Grep `build/client` for secret env names and value patterns; `/admin` GET and POST without the header → 403; a wrong `aud` → 403 |
-| 11 | Ops | `/health` contract test; job_runs visible on `/admin`; backup/restore documented in README (Wave 4) |
+| 11 | Ops | `/health` contract test; job_runs visible on `/admin`; backup/restore: `src/lib/server/db/backup.test.ts` (seeded DB → backup → restore → equal row counts + `integrity_check`), runbook in README (Wave 4) |
 | 12 | Performance | Baseline only: Lighthouse mobile, `build/` size, RSS fetch duration (logged), job RSS (logged) |
 
-## 17. Deploy notes (brief; Wave 4 owns the details)
+## 17. Deploy (Wave 4)
 
-- `adapter-node` → `node build`. In the image, `scripts/` runs through `tsx`, using the `#lib/*` imports.
-  - Entrypoint: `db:migrate && academy:sync && node build`.
-  - Copy `content/` into the image. `data/` is a volume (`./data:/app/data`).
-- Compose services:
-  - `app`: `expose: 3000`, no published ports.
-  - `cloudflared`: image pinned to an exact version; runs `tunnel run` with `TUNNEL_TOKEN`; only this service gets the token.
-- Set `ORIGIN=https://worldview.nared-fu.com` (required for form-action CSRF) and `ADDRESS_HEADER=CF-Connecting-IP`.
-- Cloudflare Access application on `/admin*`; its AUD tag goes in `CF_ACCESS_AUD`.
-- Host cron runs `docker compose exec -T app npm run job -- <type>` on the schedule in §8.
+Files: `Dockerfile`, `docker-compose.yml`, `docker/start-app.sh`, `docker/crontab`, `.dockerignore`. Owner runbook (Thai): `README.md`.
+
+- **Image** (multi-stage, base `node:24.22.3-bookworm-slim` pinned by tag **and** index digest):
+  - Build stage: `NODE_ENV=production`, `npm ci --include=dev --ignore-scripts` (better-sqlite3 loads its bundled `prebuilds/linux-x64.node`; npm's implicit `node-gyp rebuild` would need a toolchain), `npm run build`, `npm run build:scripts`, delete `*.map`, then the production-build guard: `npm run verify:prod-build` plus `grep -rl dev@localhost build/…` fail the build if the §4.7 dev bypass is in the output. Then `npm prune --omit=dev`.
+  - **CLI jobs without dev deps:** `vite.scripts.config.ts` bundles `scripts/{job,migrate,academy-sync,backup,restore}.ts` (our `#lib/*` code inlined, npm packages external) into `build/scripts/*.js`, run with plain `node`. No `tsx`/esbuild/TypeScript in the image, and a job run peaks at about 100 MB RSS instead of about 230 MB. Dev-only scripts (`seed`, `db-reset`, `llm-smoke`) are not bundled, so they are not in the image at all.
+  - Runtime stage copies only `package.json`, the pruned `node_modules`, `build/` (server, client, scripts), `migrations/`, `content/academy/` and `docker/`. It runs as `USER node`; app files are root-owned (read-only for node). `/data` and `/backups` are node-owned, mode 700. `ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATABASE_URL=file:/data/worldview.db BACKUP_DIR=/backups`. `HEALTHCHECK` = node `fetch('http://127.0.0.1:3000/health')` (200 for `ok` and `degraded`). supercronic v0.2.51 comes in through `ADD --checksum=sha256:…`.
+  - Start (`docker/start-app.sh`): `umask 077`, `node build/scripts/migrate.js`, `node build/scripts/academy-sync.js`, `exec node build`. **Never `db:seed`.** `academy:sync` uses the strict loader (all 30 lessons or exit 1 without writing) and `replaceLessonCatalog`; it leaves news tables alone. compose `init: true` forwards SIGTERM to node (adapter-node drains).
+- **Compose** (`name: worldview`):
+  - `app`: `expose: 3000`, no `ports:`, volume `worldview-data:/data`, network `tunnel`, `mem_limit: 512m` (admin reruns run jobs in-process).
+  - `scheduler`: the same image running `supercronic -passthrough-logs docker/crontab`, i.e. the §8 schedule in UTC plus `db:backup` at 02:30 ICT. It shares `worldview-data` (WAL works across containers on the same Docker VM: one kernel, one volume, so the `-shm` shared memory is shared too) and mounts host `./backups:/backups`. Network `jobs` (egress only, not reachable), `mem_limit: 384m`, healthcheck disabled. supercronic does not start a crontab line again while its previous run is still going; idempotency keys cover the rest.
+  - `cloudflared`: `cloudflare/cloudflared:2026.8.2@sha256:…` (the release this machine already runs), `tunnel --no-autoupdate --protocol http2 run`, network `tunnel`, `profiles: [tunnel]` (a plain `docker compose up` stays private; `--profile tunnel` goes live).
+  - Hardening on app and scheduler: `read_only: true`, tmpfs `/tmp`, `cap_drop: [ALL]`, `no-new-privileges`, `pids_limit`, `cpus: 1.0`, json-file log rotation (10 MB × 5). No docker socket mount.
+  - **Env isolation:** no service uses `env_file`. Compose reads the single `.env` only to interpolate `${…}`. app and scheduler receive the explicit `x-app-environment` list (fixed `NODE_ENV=production`, `ORIGIN=https://worldview.nared-fu.com`, `ADDRESS_HEADER=CF-Connecting-IP`, `DATABASE_URL=file:/data/worldview.db`, plus the app settings from `.env`). The proxy variables and `NODE_OPTIONS` are forced empty. cloudflared receives `TUNNEL_TOKEN` only (`${TUNNEL_TOKEN:?…}`, required even for a local `up`). `scripts/deploy-config.test.ts` checks all of this, and `docker compose config` was verified (the token appears once, under cloudflared).
+- **Dev-only tools refuse in production** (allowlist, `config.devToolsAllowed`): `db:seed`, `db:reset` and `job ingest --fixtures` need NODE_ENV explicitly `development` or `test`, and unset refuses. The npm scripts set it through `scripts/dev-tools.env` (a real environment value wins).
+- **Backups:** `db:backup` = better-sqlite3 online `.backup()` (WAL-safe) → `BACKUP_DIR/worldview-YYYYMMDDTHHMMSSZ.db` (journal_mode DELETE, `integrity_check`), keeping the newest `BACKUP_KEEP` (14). `db:restore -- --from FILE --yes [--to file:PATH]` runs with app and scheduler stopped: it checks the source, keeps a `.pre-restore-<stamp>` safety copy, swaps the file in (dropping stale -wal/-shm), runs `integrity_check` again and then migrates. Tested by `src/lib/server/db/backup.test.ts` (seeded DB → backup → restore into a fresh path → equal row counts).
+- Cloudflare: Access application on `/admin*` (every hostname that routes to the app), AUD → `CF_ACCESS_AUD`; public hostname `worldview.nared-fu.com` → `http://app:3000`. README lists URL Normalization, a WAF rate limit on `/search*`, no cache override on `/admin*` or `__data.json`, and the optional static-header Transform Rule (never CSP).
 - SQLite pragmas: WAL, `busy_timeout=5000`, `foreign_keys=ON` (already set in `db/client.ts`).
-- Backups: a daily `sqlite3 data/worldview.db ".backup data/backup/worldview-YYYYMMDD.db"`, with a restore test (README).
 
 ## 18. Decision log: conflicts resolved
 
