@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Deliberately malformed fixture: the item element is never closed. -->
+<rss version="2.0">
+  <channel>
+    <title>Broken feed</title>
+    <item>
+      <title>Unclosed item</title>
+      <link>https://fixtures.worldview.invalid/broken/1</link>
+  </channel>
+</rss>

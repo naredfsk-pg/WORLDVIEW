@@ -183,7 +183,10 @@ export interface BriefRepository {
 export interface JobRunRepository {
 	/** Atomic claim of UNIQUE(idempotency_key). A `running` row older than 30 min is treated as dead and reclaimed. */
 	claim(input: ClaimJobInput): Promise<ClaimJobResult>;
-	finish(runId: string, outcome: JobOutcome, finishedAt: IsoUtc): Promise<void>;
+	// CONTRACT-CHANGE: `finish` now takes the claim token `attempt` (= `JobRun.attempts` returned by
+	// `claim`) and resolves `false` when that claim was lost to a stale-reclaim, so a slow process
+	// can no longer overwrite the newer attempt's outcome. Was: `finish(runId, outcome, finishedAt): Promise<void>`.
+	finish(runId: string, attempt: number, outcome: JobOutcome, finishedAt: IsoUtc): Promise<boolean>;
 	listRecent(limit: number): Promise<JobRun[]>;
 	lastSucceeded(jobType: JobType): Promise<JobRun | null>;
 }
