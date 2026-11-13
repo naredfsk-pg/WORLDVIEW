@@ -308,6 +308,9 @@ export interface SourceHealthView {
 export interface LlmUsageView {
 	requests_today: number;
 	tokens_today: number;
+	// CONTRACT-CHANGE (Wave 2 admin, additive): FR-06 also asks for failures and cache hits.
+	failures_today: number;
+	cache_hits_today: number;
 	max_requests: number;
 	max_tokens: number;
 }
@@ -335,9 +338,25 @@ export interface AdminEventRow {
 }
 
 /** Relation as shown in the review queue (may be pending). */
-export interface AdminRelationRow extends Omit<RelationView, 'reviewed'> {
+// CONTRACT-CHANGE (Wave 2 admin review fix): admin rows use `AdminRelationEndpoint` instead of
+// `EventSummary`, so relations whose events are still uncategorized (or not public) are listed.
+export interface AdminRelationEndpoint {
+	id: string;
+	/** '' for drafts without Thai text. */
+	title_th: string;
+	status: NewsEvent['status'];
+	category: CategorySlug | null;
+}
+
+/** Relation as shown in the admin queue (pending or published). */
+export interface AdminRelationRow extends Omit<
+	RelationView,
+	'reviewed' | 'from_event' | 'to_event'
+> {
 	status: RelationStatus;
 	confidence: number;
+	from_event: AdminRelationEndpoint;
+	to_event: AdminRelationEndpoint;
 }
 
 /** `/admin/review` */

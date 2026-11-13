@@ -439,3 +439,20 @@ export interface ContentRevision {
 	public_note_th: string | null;
 	before_after: { before: JsonObject | null; after: JsonObject | null };
 }
+
+// CONTRACT-CHANGE (Wave 2 admin review fix): audit rows for admin operations that are not
+// content edits (no `content_revisions` entity), e.g. a manual job rerun. Append-only.
+export const ADMIN_ACTION_TYPES = ['rerun_ingest'] as const;
+export type AdminActionType = (typeof ADMIN_ACTION_TYPES)[number];
+
+export interface AdminAction {
+	id: string;
+	created_at: IsoUtc;
+	action: AdminActionType;
+	/** Admin email (`locals.admin.email`). */
+	actor: string;
+	/** What it acted on, e.g. the job slot `ingest:2026-11-13T12#3` (idempotency key # attempt). */
+	target: string;
+	/** Required `change_reason` from the form. */
+	reason: string;
+}

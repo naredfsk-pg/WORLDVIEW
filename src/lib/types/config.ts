@@ -44,6 +44,8 @@ export const ENV_VAR_NAMES = [
 	'CF_ACCESS_TEAM_DOMAIN',
 	'CF_ACCESS_AUD',
 	'ADMIN_ALLOWED_EMAILS',
+	// Test-only (e2e): honoured only with NODE_ENV=test and loopback ORIGIN + URL (ARCHITECTURE §4)
+	'CF_ACCESS_TEST_JWKS_URL',
 	// Runtime / deploy (consumed by adapter-node, docker compose or cloudflared)
 	'ORIGIN',
 	'HOST',
