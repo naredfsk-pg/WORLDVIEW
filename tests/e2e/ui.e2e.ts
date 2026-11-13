@@ -221,6 +221,11 @@ test.describe('credibility labels', () => {
 			await explainer.getByText('ป้ายนี้หมายถึงอะไร').click();
 			await expect(explainer).toHaveAttribute('open', '');
 			await expect(explainer.locator('p')).toContainText('ไม่ใช่การประเมินสำนักข่าว');
+			// Shared links (SEO / OG description) carry the label too.
+			await expect(page.locator('meta[name="description"]')).toHaveAttribute(
+				'content',
+				new RegExp(`^${event.text} · `)
+			);
 		});
 	}
 
@@ -229,6 +234,10 @@ test.describe('credibility labels', () => {
 		const header = page.getByTestId('event-detail').locator('header');
 		await expect(header.getByTestId('credibility-label')).toHaveCount(0);
 		await expect(header.getByTestId('credibility-note')).toHaveCount(0);
+		await expect(page.locator('meta[name="description"]')).not.toHaveAttribute(
+			'content',
+			/ยังไม่ได้รับการยืนยัน|ข้อมูลขัดแย้งกัน|อาจเป็นข้อมูลเท็จ/
+		);
 	});
 
 	test('story cards on Today and the brief carry the label', async ({ page }) => {
