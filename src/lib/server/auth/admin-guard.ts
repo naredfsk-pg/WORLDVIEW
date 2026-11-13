@@ -4,6 +4,7 @@
  * or bad token, or an email that is not allowed → 403; the key set cannot be loaded → 503.
  * Deny pages are Thai and carry no details.
  */
+import { createHash } from 'node:crypto';
 import type { RequestEvent } from '@sveltejs/kit';
 import type { Handle } from '@sveltejs/kit/hooks';
 import type { AdminIdentity } from '../../types/views';
@@ -130,6 +131,18 @@ const DENY_COPY: Record<403 | 429 | 503, { title: string; body: string }> = {
 	}
 };
 
+const DENY_PAGE_STYLE =
+	"body{margin:0;min-height:100svh;display:grid;place-items:center;padding:24px 18px;font-family:'Noto Sans Thai',Tahoma,system-ui,sans-serif;background:#f7f8f5;color:#172622}main{max-width:480px}h1{font-size:24px;margin:0 0 8px}p{color:#5c6b65;margin:0 0 16px}a{color:#176653;font-weight:700}";
+
+/** The deny page's own CSP: nothing but its inline style (`withSecurityHeaders` keeps it). */
+const DENY_PAGE_CSP = [
+	"default-src 'none'",
+	`style-src 'sha256-${createHash('sha256').update(DENY_PAGE_STYLE).digest('base64')}'`,
+	"base-uri 'none'",
+	"form-action 'none'",
+	"frame-ancestors 'none'"
+].join('; ');
+
 function denyPage(status: 403 | 429 | 503, extraHeaders: Record<string, string> = {}): Response {
 	const { title, body } = DENY_COPY[status];
 	const html = `<!doctype html>
@@ -139,12 +152,16 @@ function denyPage(status: 403 | 429 | 503, extraHeaders: Record<string, string> 
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>${status} · ${title} · Worldview</title>
-<style>body{margin:0;min-height:100svh;display:grid;place-items:center;padding:24px 18px;font-family:'Noto Sans Thai',Tahoma,system-ui,sans-serif;background:#f7f8f5;color:#172622}main{max-width:480px}h1{font-size:24px;margin:0 0 8px}p{color:#5c6b65;margin:0 0 16px}a{color:#176653;font-weight:700}</style>
+<style>${DENY_PAGE_STYLE}</style>
 </head>
 <body><main><h1>${title}</h1><p>${body}</p><a href="/">กลับหน้าแรก</a></main></body>
 </html>`;
 	return new Response(html, {
 		status,
-		headers: { 'content-type': 'text/html; charset=utf-8', ...extraHeaders }
+		headers: {
+			'content-type': 'text/html; charset=utf-8',
+			'content-security-policy': DENY_PAGE_CSP,
+			...extraHeaders
+		}
 	});
 }
