@@ -39,6 +39,7 @@ import type { ClaimJobInput, ClaimJobResult, JobOutcome, JobRun, JobType } from 
 import type { LlmCall, LlmUsage } from './llm';
 import type {
 	AdminEventRow,
+	AdminSourceRef,
 	AdminRelationRow,
 	BriefView,
 	EventDetail,
@@ -46,8 +47,7 @@ import type {
 	LessonSummary,
 	RelationView,
 	SearchQuery,
-	SourceHealthView,
-	SourceRef
+	SourceHealthView
 } from './views';
 
 // ---------------------------------------------------------------------------
@@ -293,7 +293,7 @@ export interface AdminRepository {
 	countReviewQueue(): Promise<{ events: number; relations: number }>;
 	getEventForEdit(
 		id: string
-	): Promise<{ event: NewsEvent; sources: SourceRef[]; revisions: ContentRevision[] } | null>;
+	): Promise<{ event: NewsEvent; sources: AdminSourceRef[]; revisions: ContentRevision[] } | null>;
 	updateEvent(id: string, patch: AdminEventPatch, meta: RevisionMeta, now: IsoUtc): Promise<void>;
 	/** Caller must have run the admin publish gate first when status = 'published'. */
 	setEventStatus(id: string, status: EventStatus, meta: RevisionMeta, now: IsoUtc): Promise<void>;

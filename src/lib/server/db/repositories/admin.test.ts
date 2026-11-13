@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Db } from '../client';
-import { contentRevisions, eventRelations, events } from '../schema';
+import { articles, contentRevisions, eventRelations, events } from '../schema';
 import { seedDatabase } from '../seed';
 import { openTestDb } from '../test-db';
 import { createRepositories } from './index';
@@ -70,6 +70,22 @@ describe('AdminRepository', () => {
 			repos.admin.setEventStatus('nope', 'hidden', meta, '2026-11-13T05:00:00.000Z')
 		).rejects.toThrow(/not found/);
 		expect((await repos.admin.listSourceHealth()).every((source) => source.is_demo)).toBe(true);
+	});
+
+	it('shows stored excerpts on the admin event view only', async () => {
+		const excerpt = 'Internal excerpt for the admin view.';
+		db.update(articles).set({ excerpt }).where(eq(articles.id, 'demo-art-01a')).run();
+
+		const edit = await repos.admin.getEventForEdit('demo-evt-01');
+		const publicDetail = await repos.read.getPublishedEventDetail('demo-evt-01');
+
+		expect(edit?.sources.find((source) => source.article_id === 'demo-art-01a')?.excerpt).toBe(
+			excerpt
+		);
+		expect(edit?.sources.map((source) => source.article_id)).toEqual(
+			publicDetail?.sources.map((source) => source.article_id)
+		);
+		expect(JSON.stringify(publicDetail)).not.toContain(excerpt);
 	});
 });
 

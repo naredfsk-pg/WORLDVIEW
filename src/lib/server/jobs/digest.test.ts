@@ -197,6 +197,33 @@ describe('digest on fixture feeds', () => {
 		expect(result.counters.events_published).toBe(1);
 		expect(allEvents().filter((row) => row.status === 'draft')).toHaveLength(3);
 	});
+
+	it('sends the stored excerpt to extraction and summary, and null where the source has none', async () => {
+		const excerptsSent: Record<'extraction' | 'summary', (string | null)[]> = {
+			extraction: [],
+			summary: []
+		};
+		const defaults = handlers();
+		await ingestFixtures();
+		await digest({
+			...defaults,
+			extraction: (input) => {
+				excerptsSent.extraction.push(...input.articles.map((article) => article.excerpt));
+				return defaults.extraction!(input);
+			},
+			summary: (input) => {
+				excerptsSent.summary.push(...input.articles.map((article) => article.excerpt));
+				return defaults.summary!(input);
+			}
+		});
+
+		const riverExcerpt =
+			'The two fictional states agreed to share the river’s flow during dry months.';
+		for (const sent of Object.values(excerptsSent)) {
+			expect(sent).toContain(riverExcerpt);
+			expect(sent).toContain(null); // wire B (Atom) does not allow excerpts
+		}
+	});
 });
 
 describe('digest failures and editorial invariants', () => {
