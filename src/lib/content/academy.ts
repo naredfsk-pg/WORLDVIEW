@@ -7,6 +7,7 @@ import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { CATEGORY_SLUGS, type Lesson } from '../types/domain';
 import type { AcademyWeekMeta, TocItem } from '../types/views';
+import { infographicsSchema, takeawaysSchema } from './infographic';
 
 /** The four weekly themes (PRD FR-01), with the copy from the UI prototype. */
 export const ACADEMY_WEEKS: AcademyWeekMeta[] = [
@@ -76,7 +77,9 @@ export const lessonFrontmatterSchema = z
 		),
 		related_tags: z.array(z.string().regex(KEBAB_CASE, 'tags must be kebab-case')),
 		related_categories: z.array(z.enum(CATEGORY_SLUGS)),
-		last_reviewed_at: z.string().regex(ISO_DATE, 'must be "YYYY-MM-DD"')
+		last_reviewed_at: z.string().regex(ISO_DATE, 'must be "YYYY-MM-DD"'),
+		takeaways: takeawaysSchema,
+		infographics: infographicsSchema
 	})
 	.superRefine((lesson, ctx) => {
 		const [firstDay, lastDay] = WEEK_DAY_RANGES[lesson.week];
@@ -152,6 +155,9 @@ export function markdownToSearchText(markdown: string): string {
  * - Links must be `https://` (or an in-page `#anchor`); anything else stays plain text.
  *   External links get `rel="noopener noreferrer"` and open in a new tab.
  * - `##` / `###` headings get ids `section-{n}` and form the TOC.
+ * - Skimmable reading path: each `##` section shows its heading and first block; when the rest is
+ *   long, it goes inside a native `<details class="lesson-more">` ("อ่านต่อ"). Nothing is removed,
+ *   and in-page search (and `LessonArticle`'s anchor handler) can still reach the hidden text.
  * The result is the only HTML the app renders with `{@html}`.
  */
 export function renderLessonMarkdown(markdown: string): { html: string; toc: TocItem[] } {
@@ -162,11 +168,7 @@ export function renderLessonMarkdown(markdown: string): { html: string; toc: Toc
 		if (token.type === 'heading_open' && (token.tag === 'h2' || token.tag === 'h3')) {
 			const id = `section-${toc.length + 1}`;
 			token.attrSet('id', id);
-			const text = (tokens[index + 1]?.children ?? [])
-				.filter((child) => child.type === 'text' || child.type === 'code_inline')
-				.map((child) => child.content)
-				.join('')
-				.trim();
+			const text = headingText(tokens, index);
 			toc.push({ id, text, level: token.tag === 'h2' ? 2 : 3 });
 		}
 		for (const child of token.children ?? []) {
@@ -178,7 +180,108 @@ export function renderLessonMarkdown(markdown: string): { html: string; toc: Toc
 		}
 	});
 
-	return { html: lessonMarkdown.renderer.render(tokens, lessonMarkdown.options, {}), toc };
+	return { html: renderWithCollapsedSections(tokens), toc };
+}
+
+/** A section's remainder is collapsed only when it holds at least this much text. */
+const COLLAPSE_MIN_CHARS = 280;
+
+type Tokens = ReturnType<typeof lessonMarkdown.parse>;
+/** `[start, end)` token range of one top-level block (paragraph, list, heading, table…). */
+interface Block {
+	start: number;
+	end: number;
+}
+
+/**
+ * Renders the tokens section by section. A `##` section keeps its heading and first content block
+ * visible; a long remainder goes inside `<details>`. Works on whole top-level blocks, so lists,
+ * tables and quotes are never split.
+ */
+function renderWithCollapsedSections(tokens: Tokens): string {
+	const render = (blocks: Block[]) =>
+		blocks.length === 0
+			? ''
+			: lessonMarkdown.renderer.render(
+					tokens.slice(blocks[0]!.start, blocks.at(-1)!.end),
+					lessonMarkdown.options,
+					{}
+				);
+
+	return groupSections(tokens, topLevelBlocks(tokens))
+		.map((section) => {
+			const leadCount = leadBlockCount(tokens, section);
+			const lead = section.slice(0, leadCount);
+			const rest = section.slice(leadCount);
+			const isH2Section = isSectionHeading(tokens, section[0]!);
+			if (!isH2Section || blocksText(tokens, rest).length < COLLAPSE_MIN_CHARS) {
+				return render(section);
+			}
+			const heading = lessonMarkdown.utils.escapeHtml(headingText(tokens, section[0]!.start));
+			return (
+				render(lead) +
+				'<details class="lesson-more"><summary>' +
+				'<span class="lesson-more-open">อ่านต่อ</span>' +
+				'<span class="lesson-more-close">ย่อเนื้อหา</span>' +
+				`<span class="sr-only">: ${heading}</span></summary>` +
+				render(rest) +
+				'</details>'
+			);
+		})
+		.join('');
+}
+
+function topLevelBlocks(tokens: Tokens): Block[] {
+	const blocks: Block[] = [];
+	let depth = 0;
+	let start = 0;
+	tokens.forEach((token, index) => {
+		if (depth === 0) start = index;
+		depth += token.nesting;
+		if (depth === 0) blocks.push({ start, end: index + 1 });
+	});
+	return blocks;
+}
+
+/** Splits the blocks before each `##` heading; text before the first heading is its own group. */
+function groupSections(tokens: Tokens, blocks: Block[]): Block[][] {
+	const sections: Block[][] = [];
+	for (const block of blocks) {
+		if (sections.length === 0 || isSectionHeading(tokens, block)) sections.push([]);
+		sections.at(-1)!.push(block);
+	}
+	return sections;
+}
+
+/** The headings at the start of a section plus the first content block after them. */
+function leadBlockCount(tokens: Tokens, section: Block[]): number {
+	const firstContent = section.findIndex((block) => tokens[block.start]!.type !== 'heading_open');
+	return firstContent === -1 ? section.length : firstContent + 1;
+}
+
+function isSectionHeading(tokens: Tokens, block: Block): boolean {
+	const token = tokens[block.start]!;
+	return token.type === 'heading_open' && token.tag === 'h2';
+}
+
+/** Plain text of the heading whose `heading_open` token is at `index`. */
+function headingText(tokens: Tokens, index: number): string {
+	return (tokens[index + 1]?.children ?? [])
+		.filter((child) => child.type === 'text' || child.type === 'code_inline')
+		.map((child) => child.content)
+		.join('')
+		.trim();
+}
+
+function blocksText(tokens: Tokens, blocks: Block[]): string {
+	return blocks
+		.map((block) =>
+			tokens
+				.slice(block.start, block.end)
+				.map((token) => token.content)
+				.join('')
+		)
+		.join('');
 }
 
 const lessonMarkdown = new MarkdownIt({ html: false, linkify: false, typographer: false }).disable(

@@ -45,6 +45,58 @@ describe('renderLessonMarkdown', () => {
 	});
 });
 
+describe('renderLessonMarkdown reading path', () => {
+	const long = 'ข้อความยาว '.repeat(40);
+
+	it('keeps a section heading and first paragraph visible and folds a long remainder', () => {
+		const { html } = renderLessonMarkdown(
+			`บทนำก่อนหัวข้อ
+
+## ภาพรวม **หลัก**
+
+ย่อหน้าแรก
+
+${long}
+
+### ย่อย
+
+- รายการ
+
+## สรุปสั้น
+
+- ข้อหนึ่ง
+- ข้อสอง`
+		);
+		expect(html.startsWith('<p>บทนำก่อนหัวข้อ</p>')).toBe(true);
+		expect(html.match(/<details class="lesson-more">/g)).toHaveLength(1);
+		const [visible, folded] = html.split('<details class="lesson-more">');
+		expect(visible).toContain('<h2 id="section-1">');
+		expect(visible).toContain('<p>ย่อหน้าแรก</p>');
+		expect(folded).toContain('<h3 id="section-2">ย่อย</h3>');
+		expect(folded).toContain('<span class="sr-only">: ภาพรวม หลัก</span></summary>');
+		// The short last section is not folded and nothing is lost.
+		expect(html.indexOf('</details>')).toBeLessThan(html.indexOf('สรุปสั้น'));
+		expect(html.trimEnd().endsWith('</ul>')).toBe(true);
+		expect(html).toContain(long.trim());
+	});
+
+	it('does not fold a short remainder, and escapes the heading in the summary', () => {
+		expect(
+			renderLessonMarkdown(`## หัวข้อ
+
+แรก
+
+สั้น ๆ`).html
+		).not.toContain('<details');
+		const { html } = renderLessonMarkdown(`## <b>x</b>
+
+แรก
+
+${long}`);
+		expect(html).toContain('<span class="sr-only">: &lt;b&gt;x&lt;/b&gt;</span>');
+	});
+});
+
 describe('academy content loaders', () => {
 	it('exposes 4 weeks with 7/7/7/9 lessons and 30 summaries', () => {
 		expect(ACADEMY_WEEKS).toHaveLength(4);

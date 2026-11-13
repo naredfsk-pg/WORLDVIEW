@@ -23,6 +23,9 @@ const lessonFile = (overrides: Record<string, string> = {}) => {
 		related_tags: '["geopolitics-basics"]',
 		related_categories: '["geopolitics"]',
 		last_reviewed_at: '"2026-11-13"',
+		takeaways: '["ข้อแรก", "ข้อสอง", "ข้อสาม"]',
+		infographics:
+			'[{ type: "flow", title: "ลำดับ", summary: "เหตุนำไปสู่ผล", steps: [{ label: "เหตุ" }, { label: "ผล" }] }]',
 		...overrides
 	};
 	const yaml = Object.entries(fields)
@@ -44,7 +47,13 @@ describe('parseLessonFile', () => {
 		[{ id: '"w1-d02"' }, 'expected "w1-d01"'],
 		[{ related_categories: '["sports"]' }, 'related_categories'],
 		[{ related_tags: '["Cold War"]' }, 'kebab-case'],
-		[{ further_reading: '[{ title: "x", publisher: "y", url: "ftp://x" }]' }, 'further_reading']
+		[{ further_reading: '[{ title: "x", publisher: "y", url: "ftp://x" }]' }, 'further_reading'],
+		[{ takeaways: '["ข้อเดียว"]' }, 'takeaways'],
+		[{ infographics: '[]' }, 'infographics'],
+		[
+			{ infographics: '[{ type: "chart", title: "x", summary: "y", steps: [] }]' },
+			'infographics.0.type'
+		]
 	])('rejects %j and names the file', (overrides, message) => {
 		expect(() => parseLessonFile(PATH, lessonFile(overrides))).toThrow(message);
 		expect(() => parseLessonFile(PATH, lessonFile(overrides))).toThrow(PATH);
@@ -82,12 +91,20 @@ describe('readLessonFiles', () => {
 		expect(lessons.map((lesson) => lesson.id)).toEqual(['w1-d01']);
 		expect(skipped).toHaveLength(1);
 		expect(skipped[0]?.error).toContain('day-02-broken.md');
-		expect(toAcademyLessonRows(lessons)[0]?.search_text).toContain('สำคัญ');
+		const searchText = toAcademyLessonRows(lessons)[0]?.search_text;
+		expect(searchText).toContain('สำคัญ');
+		// Takeaways and infographic text are searchable too.
+		expect(searchText).toContain('ข้อสอง');
+		expect(searchText).toContain('เหตุนำไปสู่ผล');
 	});
 
 	it('parses every lesson file currently in content/academy', () => {
 		const { lessons, skipped } = readLessonFiles();
 		expect(skipped).toEqual([]);
-		expect(lessons.length).toBeGreaterThan(0);
+		expect(lessons).toHaveLength(30);
+		for (const lesson of lessons) {
+			expect(lesson.takeaways.length, lesson.id).toBeGreaterThanOrEqual(3);
+			expect(lesson.infographics.length, lesson.id).toBeGreaterThanOrEqual(1);
+		}
 	});
 });

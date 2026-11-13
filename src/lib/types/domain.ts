@@ -345,6 +345,49 @@ export interface FurtherReading {
 	note?: string;
 }
 
+/** A box in a lesson infographic: a short label and an optional one-sentence detail. */
+export interface InfographicNode {
+	label: string;
+	detail?: string;
+}
+
+interface InfographicBase {
+	title: string;
+	/** Caption and accessible description. */
+	summary: string;
+	source?: string;
+}
+
+/**
+ * Lesson infographic spec (validated by `infographicSchema` in `#lib/content/infographic`).
+ * - `flow`: steps or causes leading to effects, in order.
+ * - `cycle`: steps that loop back to the first.
+ * - `timeline`: dated milestones, oldest first.
+ * - `compare`: 2–3 columns of points.
+ * - `hub`: a central concept with spokes.
+ * - `stats`: a few key numbers; `source` (with a year) is required.
+ * - `layers`: stacked levels, top first; `pyramid` narrows towards the top.
+ */
+export type Infographic =
+	| (InfographicBase & { type: 'flow'; steps: InfographicNode[] })
+	| (InfographicBase & { type: 'cycle'; steps: InfographicNode[] })
+	| (InfographicBase & {
+			type: 'timeline';
+			events: (InfographicNode & { date: string })[];
+	  })
+	| (InfographicBase & { type: 'compare'; columns: { title: string; points: string[] }[] })
+	| (InfographicBase & { type: 'hub'; center: InfographicNode; spokes: InfographicNode[] })
+	| (InfographicBase & {
+			type: 'stats';
+			source: string;
+			items: (InfographicNode & { value: string; unit?: string })[];
+	  })
+	| (InfographicBase & {
+			type: 'layers';
+			variant: 'stack' | 'pyramid';
+			layers: InfographicNode[];
+	  });
+
 /** Exact YAML frontmatter of `content/academy/week-{W}/day-{DD}-{slug}.md`. */
 export interface LessonFrontmatter {
 	/** "w{W}-d{DD}", e.g. "w1-d01". Stable. */
@@ -363,6 +406,10 @@ export interface LessonFrontmatter {
 	related_categories: CategorySlug[];
 	/** BriefDate-format string "YYYY-MM-DD". */
 	last_reviewed_at: string;
+	/** "สรุปใน 30 วินาที": 3–5 one-line key points. */
+	takeaways: string[];
+	/** 1–2 diagrams of the lesson's core idea; the first is the main one. */
+	infographics: Infographic[];
 }
 
 export interface Lesson extends LessonFrontmatter {
