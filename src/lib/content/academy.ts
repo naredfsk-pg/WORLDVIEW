@@ -170,7 +170,8 @@ export function renderLessonMarkdown(markdown: string): { html: string; toc: Toc
 			toc.push({ id, text, level: token.tag === 'h2' ? 2 : 3 });
 		}
 		for (const child of token.children ?? []) {
-			if (child.type === 'link_open' && child.attrGet('href')?.startsWith('https://')) {
+			const href = child.attrGet('href');
+			if (child.type === 'link_open' && typeof href === 'string' && href.startsWith('https://')) {
 				child.attrSet('target', '_blank');
 				child.attrSet('rel', 'noopener noreferrer');
 			}

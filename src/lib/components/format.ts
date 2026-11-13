@@ -167,3 +167,11 @@ export function monthGrid(month: YearMonth): (CalendarDay | null)[][] {
 function toInstant(value: IsoUtc | BriefDate): Date {
 	return new Date(BRIEF_DATE_PATTERN.test(value) ? `${value}T12:00:00+07:00` : value);
 }
+
+/** "month=2026-11&date=2026-11-12" from the non-empty values, for `resolve('/archive?…')`. */
+export function queryString(params: Record<string, string | null | undefined>): string {
+	const entries = Object.entries(params).filter((entry): entry is [string, string] =>
+		Boolean(entry[1])
+	);
+	return new URLSearchParams(entries).toString();
+}
